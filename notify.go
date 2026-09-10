@@ -233,17 +233,15 @@ func (n *Notifier) render(a *Alert) ntfyMessage {
 	}
 
 	tags := []string{"airplane"}
-	priority := n.cfg.Ntfy.Priority
 	if a.Emergency {
 		tags = append(tags, "rotating_light")
-		priority = 5
 	}
 
 	return ntfyMessage{
 		Topic:    n.cfg.Ntfy.Topic,
 		Title:    title,
 		Message:  strings.TrimRight(b.String(), "\n"),
-		Priority: priority,
+		Priority: a.Priority,
 		Tags:     tags,
 		Click:    n.clickURL(a),
 	}

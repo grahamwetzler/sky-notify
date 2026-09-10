@@ -24,7 +24,25 @@ ntfy:
   # token: tk_...      # Bearer token, or:
   # user: someone
   # password: secret
-  priority: 3          # 1-5. Emergency squawks are always sent at 5.
+  priority: 3          # 1-5. Used when no rule matches a database alert.
+
+# Override emergency priorities by code. Omitted codes remain at priority 5; 0 mutes one.
+# squawk_priority:
+#   "7700": 5          # general emergency
+#   "7600": 4          # radio failure
+#   "7500": 5          # hijack
+
+# First matching rule wins. Put specific exceptions before broad rules; priority 0 mutes.
+# rules:
+#   - name: Air Force One
+#     tags: [Air Force One]
+#     priority: 5
+#   - name: Bombers
+#     tags: [Strategic Bomber]
+#     priority: 4
+#   - name: Mute routine military
+#     cmpg: [Mil]
+#     priority: 0
 
 db:
   # Which lists to load, in precedence order — the first file to define an ICAO wins.

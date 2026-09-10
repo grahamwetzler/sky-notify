@@ -35,6 +35,19 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 
 func (d Duration) Std() time.Duration { return time.Duration(d) }
 
+type Rule struct {
+	Name     string   `yaml:"name"`
+	ICAO     []string `yaml:"icao"`
+	Reg      []string `yaml:"reg"`
+	Operator []string `yaml:"operator"`
+	Type     []string `yaml:"type"`
+	ICAOType []string `yaml:"icao_type"`
+	CMPG     []string `yaml:"cmpg"`
+	Category []string `yaml:"category"`
+	Tags     []string `yaml:"tags"`
+	Priority *int     `yaml:"priority"`
+}
+
 type Config struct {
 	Source struct {
 		URL          string   `yaml:"url"`
@@ -68,11 +81,15 @@ type Config struct {
 		Lon           *float64 `yaml:"lon"`
 	} `yaml:"filters"`
 
-	AlertOnEmergencySquawk bool   `yaml:"alert_on_emergency_squawk"`
-	Tar1090URL             string `yaml:"tar1090_url"`
-	LogLevel               string `yaml:"log_level"`
-	Listen                 string `yaml:"listen"`
+	AlertOnEmergencySquawk bool           `yaml:"alert_on_emergency_squawk"`
+	Rules                  []Rule         `yaml:"rules"`
+	SquawkPriority         map[string]int `yaml:"squawk_priority"`
+	Tar1090URL             string         `yaml:"tar1090_url"`
+	LogLevel               string         `yaml:"log_level"`
+	Listen                 string         `yaml:"listen"`
 }
+
+var defaultSquawkPriority = map[string]int{"7500": 5, "7600": 5, "7700": 5}
 
 func defaultConfig() *Config {
 	c := &Config{}
@@ -81,6 +98,10 @@ func defaultConfig() *Config {
 	c.Source.MaxAge = Duration(60 * time.Second)
 	c.Ntfy.URL = "https://ntfy.sh"
 	c.Ntfy.Priority = 3
+	c.SquawkPriority = map[string]int{}
+	for squawk, priority := range defaultSquawkPriority {
+		c.SquawkPriority[squawk] = priority
+	}
 	c.DB.Files = []string{"plane-alert-db.csv"}
 	c.DB.BaseURL = "https://raw.githubusercontent.com/sdr-enthusiasts/plane-alert-db/main"
 	c.DB.RefreshInterval = Duration(24 * time.Hour)
@@ -218,6 +239,14 @@ func LoadConfig(environ []string) (*Config, error) {
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
+	if cfg.SquawkPriority == nil {
+		cfg.SquawkPriority = map[string]int{}
+	}
+	for squawk, priority := range defaultSquawkPriority {
+		if _, ok := cfg.SquawkPriority[squawk]; !ok {
+			cfg.SquawkPriority[squawk] = priority
+		}
+	}
 
 	bindings := envBindings()
 	known := map[string]bool{envConfigVar: true}
@@ -279,6 +308,25 @@ func (c *Config) validate() error {
 	}
 	if c.Ntfy.Priority < 1 || c.Ntfy.Priority > 5 {
 		return fmt.Errorf("ntfy.priority must be 1..5, got %d", c.Ntfy.Priority)
+	}
+	for squawk, priority := range c.SquawkPriority {
+		if _, ok := emergencySquawks[squawk]; !ok {
+			return fmt.Errorf("squawk_priority: unknown squawk %q", squawk)
+		}
+		if priority < 0 || priority > 5 {
+			return fmt.Errorf("squawk_priority.%s must be 0..5, got %d", squawk, priority)
+		}
+	}
+	for i, rule := range c.Rules {
+		if rule.Priority == nil {
+			return fmt.Errorf("rule %d (%q): priority is required", i, rule.Name)
+		}
+		if *rule.Priority < 0 || *rule.Priority > 5 {
+			return fmt.Errorf("rule %d (%q): priority must be 0..5, got %d", i, rule.Name, *rule.Priority)
+		}
+		if len(rule.ICAO)+len(rule.Reg)+len(rule.Operator)+len(rule.Type)+len(rule.ICAOType)+len(rule.CMPG)+len(rule.Category)+len(rule.Tags) == 0 {
+			return fmt.Errorf("rule %d (%q): at least one match field is required", i, rule.Name)
+		}
 	}
 
 	// source.url is either an http(s) URL or an absolute path. Anything else — a typo'd

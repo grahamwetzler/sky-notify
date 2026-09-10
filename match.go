@@ -1,6 +1,10 @@
 package main
 
-import "strings"
+import (
+	"log/slog"
+	"strconv"
+	"strings"
+)
 
 // emergencySquawks: hijack, radio failure, general emergency.
 var emergencySquawks = map[string]string{
@@ -22,6 +26,7 @@ type Alert struct {
 	AC          Aircraft
 	DistanceNM  float64
 	HasDistance bool
+	Priority    int
 }
 
 // Keys are the cooldown keys this alert satisfies. An emergency on a listed aircraft
@@ -69,16 +74,71 @@ func Evaluate(ac Aircraft, db *DB, cfg *Config) *Alert {
 		a.Emergency = true
 		a.Squawk = squawk
 		a.SquawkMeans = means
+		a.Priority = cfg.SquawkPriority[squawk]
+		if a.Priority == 0 {
+			return nil
+		}
 		return a
 	case plane != nil:
 		if !passesFilters(ac, a, cfg) {
 			return nil
 		}
 		a.Trigger = triggerDB
+		a.Priority = cfg.Ntfy.Priority
+		if i, rule := firstMatch(cfg.Rules, plane); rule != nil {
+			name := rule.Name
+			if name == "" {
+				name = strconv.Itoa(i)
+			}
+			slog.Debug("rule matched", "rule", name, "icao", hex, "priority", *rule.Priority)
+			if *rule.Priority == 0 {
+				return nil
+			}
+			a.Priority = *rule.Priority
+		}
 		return a
 	default:
 		return nil
 	}
+}
+
+// firstMatch returns the first rule matching p, or -1 and nil.
+func firstMatch(rules []Rule, p *Plane) (int, *Rule) {
+	for i := range rules {
+		r := &rules[i]
+		if matches(r.ICAO, p.ICAO) && matches(r.Reg, p.Reg) &&
+			matches(r.Operator, p.Operator) && matches(r.Type, p.Type) &&
+			matches(r.ICAOType, p.ICAOType) && matches(r.CMPG, p.CMPG) &&
+			matches(r.Category, p.Category) && matchesAny(r.Tags, p.Tags) {
+			return i, r
+		}
+	}
+	return -1, nil
+}
+
+func matches(want []string, got string) bool {
+	if len(want) == 0 {
+		return true
+	}
+	got = strings.TrimSpace(got)
+	for _, value := range want {
+		if strings.EqualFold(strings.TrimSpace(value), got) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesAny(want, got []string) bool {
+	if len(want) == 0 {
+		return true
+	}
+	for _, value := range got {
+		if matches(want, value) {
+			return true
+		}
+	}
+	return false
 }
 
 // passesFilters fails closed: an enabled filter suppresses an aircraft whose data

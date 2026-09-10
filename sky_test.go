@@ -213,6 +213,64 @@ func TestEmergencyCanBeDisabled(t *testing.T) {
 	}
 }
 
+func intp(v int) *int { return &v }
+
+func TestRuleMatching(t *testing.T) {
+	p := &Plane{ICAO: "adeb2f", Reg: "N12345", Operator: "US Air Force", Type: "Tupolev Tu-154 B-2", ICAOType: "C17", CMPG: "Mil", Category: "Zoomies", Tags: []string{"Cargo", "Heavy"}}
+	for _, tc := range []struct {
+		name      string
+		rules     []Rule
+		wantMatch bool
+	}{
+		{"or within and across fields", []Rule{{CMPG: []string{"Gov", "Mil"}, ICAOType: []string{"C17"}, Priority: intp(3)}}, true},
+		{"and rejects one mismatched field", []Rule{{CMPG: []string{"Mil"}, ICAOType: []string{"B52"}, Priority: intp(3)}}, false},
+		{"exact not substring", []Rule{{Type: []string{"B-2 Spirit"}, Priority: intp(3)}}, false},
+		{"case insensitive field", []Rule{{Operator: []string{" us air force "}, Priority: intp(3)}}, true},
+		{"case insensitive tag", []Rule{{Tags: []string{" heavy "}, Priority: intp(3)}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, got := firstMatch(tc.rules, p)
+			if (got != nil) != tc.wantMatch {
+				t.Errorf("match = %v, want %v", got != nil, tc.wantMatch)
+			}
+		})
+	}
+}
+
+func TestPriorityRulesAndSquawks(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		rules     []Rule
+		squawk    string
+		squawkPri map[string]int
+		wantAlert bool
+		wantPri   int
+	}{
+		{"first match wins", []Rule{{ICAO: []string{"adeb2f"}, Priority: intp(2)}, {ICAO: []string{"adeb2f"}, Priority: intp(4)}}, "", nil, true, 2},
+		{"rule mutes db alert", []Rule{{ICAO: []string{"adeb2f"}, Priority: intp(0)}}, "", nil, false, 0},
+		{"emergency bypasses mute", []Rule{{ICAO: []string{"adeb2f"}, Priority: intp(0)}}, "7700", map[string]int{"7700": 4}, true, 4},
+		{"squawk priority zero mutes", nil, "7600", map[string]int{"7600": 0}, false, 0},
+		{"other squawk keeps default", nil, "7700", map[string]int{"7600": 0}, true, 5},
+		{"no rules uses ntfy priority", nil, "", nil, true, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t)
+			cfg.Rules = tc.rules
+			for code, priority := range tc.squawkPri {
+				cfg.SquawkPriority[code] = priority
+			}
+			db := dbWith(t, cfg, mustParse(t, sampleCSV))
+			a := Evaluate(Aircraft{Hex: "adeb2f", Squawk: tc.squawk}, db, cfg)
+			if (a != nil) != tc.wantAlert {
+				t.Fatalf("alert = %+v, want alert %v", a, tc.wantAlert)
+			}
+			if a != nil && a.Priority != tc.wantPri {
+				t.Errorf("priority = %d, want %d", a.Priority, tc.wantPri)
+			}
+		})
+	}
+}
+
 func TestHaversine(t *testing.T) {
 	// LHR to JFK is ~2990 NM.
 	got := haversineNM(51.4700, -0.4543, 40.6413, -73.7781)
@@ -431,10 +489,41 @@ func TestConfigValidation(t *testing.T) {
 		{"inverted altitudes", "ntfy:\n  topic: t\nfilters:\n  min_altitude_ft: 5000\n  max_altitude_ft: 1000\n"},
 		{"bad tar1090 url", "ntfy:\n  topic: t\ntar1090_url: 'not a url'\n"},
 		{"negative distance", "ntfy:\n  topic: t\nfilters:\n  max_distance_nm: -5\n"},
+		{"bad squawk key", "ntfy:\n  topic: t\nsquawk_priority:\n  '1200': 3\n"},
+		{"bad squawk priority", "ntfy:\n  topic: t\nsquawk_priority:\n  '7700': 6\n"},
+		{"rule priority missing", "ntfy:\n  topic: t\nrules:\n  - cmpg: [Mil]\n"},
+		{"bad rule priority", "ntfy:\n  topic: t\nrules:\n  - cmpg: [Mil]\n    priority: -1\n"},
+		{"rule without fields", "ntfy:\n  topic: t\nrules:\n  - name: everything\n    priority: 3\n"},
 	} {
 		if _, err := loadWith(t, tc.yaml); err == nil {
 			t.Errorf("%s: want a validation error", tc.name)
 		}
+	}
+}
+
+func TestPartialSquawkPriorityMergesDefaults(t *testing.T) {
+	cfg, err := loadWith(t, "ntfy:\n  topic: t\nsquawk_priority:\n  '7600': 4\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SquawkPriority["7600"] != 4 || cfg.SquawkPriority["7700"] != 5 {
+		t.Fatalf("got %v", cfg.SquawkPriority)
+	}
+}
+
+func TestNullSquawkPriorityKeepsDefaults(t *testing.T) {
+	cfg, err := loadWith(t, "ntfy:\n  topic: t\nsquawk_priority:\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, squawk := range []string{"7500", "7600", "7700"} {
+		if cfg.SquawkPriority[squawk] != 5 {
+			t.Errorf("%s priority = %d, want 5", squawk, cfg.SquawkPriority[squawk])
+		}
+	}
+	db := dbWith(t, cfg, nil)
+	if a := Evaluate(Aircraft{Hex: "ffffff", Squawk: "7700"}, db, cfg); a == nil || a.Priority != 5 {
+		t.Fatalf("7700 alert = %+v, want priority 5", a)
 	}
 }
 
@@ -799,10 +888,11 @@ func (n *ntfyServer) start(t *testing.T, cfg *Config) *Notifier {
 
 func testAlert() *Alert {
 	return &Alert{
-		Hex:     "adeb2f",
-		Trigger: triggerDB,
-		Plane:   &Plane{ICAO: "adeb2f", Reg: "N12345", Operator: "US Air Force", Type: "C-17", Link: "ftp://evil.invalid/x"},
-		AC:      Aircraft{Hex: "adeb2f", Flight: "RCH123 ", AltBaro: Altitude{Present: true, Feet: 31000}},
+		Hex:      "adeb2f",
+		Trigger:  triggerDB,
+		Priority: 2,
+		Plane:    &Plane{ICAO: "adeb2f", Reg: "N12345", Operator: "US Air Force", Type: "C-17", Link: "ftp://evil.invalid/x"},
+		AC:       Aircraft{Hex: "adeb2f", Flight: "RCH123 ", AltBaro: Altitude{Present: true, Feet: 31000}},
 
 		DistanceNM:  12.34,
 		HasDistance: true,
@@ -827,6 +917,9 @@ func TestNotifySuccess(t *testing.T) {
 	m := s.bodies[0]
 	if m.Topic != cfg.Ntfy.Topic || m.Title != "US Air Force C-17" {
 		t.Errorf("unexpected message: %+v", m)
+	}
+	if m.Priority != 2 {
+		t.Errorf("priority = %d, want alert priority 2", m.Priority)
 	}
 	if !strings.Contains(m.Message, "N12345") || !strings.Contains(m.Message, "31000 ft") ||
 		!strings.Contains(m.Message, "12.3 NM") {
@@ -906,13 +999,14 @@ func TestNotifyEmergencyFraming(t *testing.T) {
 	n := s.start(t, cfg)
 	a := testAlert()
 	a.Trigger, a.Emergency, a.Squawk, a.SquawkMeans = "emergency:7700", true, "7700", "general emergency"
+	a.Priority = 4
 
 	if err := n.Publish(context.Background(), a); err != nil {
 		t.Fatal(err)
 	}
 	m := s.bodies[0]
-	if m.Priority != 5 {
-		t.Errorf("emergency priority should be 5, got %d", m.Priority)
+	if m.Priority != 4 {
+		t.Errorf("emergency priority should come from the alert, got %d", m.Priority)
 	}
 	if !strings.Contains(strings.Join(m.Tags, ","), "rotating_light") {
 		t.Errorf("emergency should carry the alert tag, got %v", m.Tags)

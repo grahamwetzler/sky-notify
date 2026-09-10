@@ -44,6 +44,18 @@ currently overhead.
 See [`docker-compose.yml`](docker-compose.yml) for a fuller example and
 [`config.example.yaml`](config.example.yaml) for every setting.
 
+### Alert priority rules
+
+The YAML-only `rules` list matches database aircraft by `icao`, `reg`, `operator`,
+`type`, `icao_type`, `cmpg`, `category`, or `tags`. Values within one field are ORed,
+fields are ANDed, and the first matching rule wins. Matches ignore case and surrounding
+space but must be exact—not substrings. Set `priority: 0` to mute a database alert.
+Put specific exceptions before broad rules.
+
+Use `squawk_priority` to override priority for emergency codes `7500`, `7600`, and
+`7700`; `0` disables that code. Emergency rules are independent: an aircraft muted by
+a database rule still alerts when it broadcasts an enabled emergency squawk.
+
 ## Configuration
 
 Configure with environment variables, an optional YAML file, or both — **environment
