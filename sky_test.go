@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -96,15 +95,16 @@ func TestParseCSVSkipsUnusableICAOs(t *testing.T) {
 // legitimate-looking ICAO key and alert on the wrong airframe.
 func TestNonICAOAddressDoesNotMatchDatabase(t *testing.T) {
 	cfg := testConfig(t)
+	alerts := defaultAlerts()
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
 
-	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, cfg); a == nil {
+	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts); a == nil {
 		t.Fatal("plain hex should match the database")
 	}
-	if a := Evaluate(Aircraft{Hex: "~adeb2f"}, db, cfg); a != nil {
+	if a := Evaluate(Aircraft{Hex: "~adeb2f"}, db, alerts); a != nil {
 		t.Fatalf("tilde-prefixed address must not match the database, got %+v", a)
 	}
-	if a := Evaluate(Aircraft{Hex: "~ADEB2F"}, db, cfg); a != nil {
+	if a := Evaluate(Aircraft{Hex: "~ADEB2F"}, db, alerts); a != nil {
 		t.Fatal("uppercase tilde-prefixed address must not match either")
 	}
 }
@@ -149,20 +149,21 @@ func TestAltitudeUnmarshal(t *testing.T) {
 
 func TestFiltersFailClosedOnMissingData(t *testing.T) {
 	cfg := testConfig(t)
+	alerts := defaultAlerts()
 	lat, lon := 51.5, -0.12
-	cfg.Filters.Lat, cfg.Filters.Lon = &lat, &lon
-	cfg.Filters.MaxDistanceNM = 50
+	alerts.Filters.Lat, alerts.Filters.Lon = &lat, &lon
+	alerts.Filters.MaxDistanceNM = 50
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
 
 	// An explicitly configured distance filter must not admit everything positionless.
-	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, cfg); a != nil {
+	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts); a != nil {
 		t.Error("positionless aircraft must be suppressed when a distance filter is on")
 	}
 	near, farLon := 51.6, 10.0
-	if a := Evaluate(Aircraft{Hex: "adeb2f", Lat: &near, Lon: &lon}, db, cfg); a == nil {
+	if a := Evaluate(Aircraft{Hex: "adeb2f", Lat: &near, Lon: &lon}, db, alerts); a == nil {
 		t.Error("nearby aircraft should pass the distance filter")
 	}
-	if a := Evaluate(Aircraft{Hex: "adeb2f", Lat: &near, Lon: &farLon}, db, cfg); a != nil {
+	if a := Evaluate(Aircraft{Hex: "adeb2f", Lat: &near, Lon: &farLon}, db, alerts); a != nil {
 		t.Error("distant aircraft should be suppressed")
 	}
 }
@@ -171,32 +172,34 @@ func TestFiltersFailClosedOnMissingData(t *testing.T) {
 // sail backwards through a min_altitude gate.
 func TestAltitudeFilterFailsClosedAndTreatsGroundAsZero(t *testing.T) {
 	cfg := testConfig(t)
-	cfg.Filters.MinAltitudeFt = 1000
+	alerts := defaultAlerts()
+	alerts.Filters.MinAltitudeFt = 1000
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
 
-	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, cfg); a != nil {
+	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts); a != nil {
 		t.Error("missing alt_baro must be suppressed when an altitude filter is on")
 	}
 	ground := Aircraft{Hex: "adeb2f", AltBaro: Altitude{Present: true, Ground: true}}
-	if a := Evaluate(ground, db, cfg); a != nil {
+	if a := Evaluate(ground, db, alerts); a != nil {
 		t.Error(`"ground" must read as 0 ft and fail a 1000ft floor`)
 	}
 	airborne := Aircraft{Hex: "adeb2f", AltBaro: Altitude{Present: true, Feet: 31000}}
-	if a := Evaluate(airborne, db, cfg); a == nil {
+	if a := Evaluate(airborne, db, alerts); a == nil {
 		t.Error("airborne aircraft should pass the floor")
 	}
 }
 
 func TestEmergencyBypassesFilters(t *testing.T) {
 	cfg := testConfig(t)
+	alerts := defaultAlerts()
 	lat, lon := 51.5, -0.12
-	cfg.Filters.Lat, cfg.Filters.Lon = &lat, &lon
-	cfg.Filters.MaxDistanceNM = 1
-	cfg.Filters.MinAltitudeFt = 30000
+	alerts.Filters.Lat, alerts.Filters.Lon = &lat, &lon
+	alerts.Filters.MaxDistanceNM = 1
+	alerts.Filters.MinAltitudeFt = 30000
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
 
 	// No position, no altitude, not in the database: still worth a notification.
-	a := Evaluate(Aircraft{Hex: "ffffff", Squawk: "7700"}, db, cfg)
+	a := Evaluate(Aircraft{Hex: "ffffff", Squawk: "7700"}, db, alerts)
 	if a == nil || !a.Emergency {
 		t.Fatal("a 7700 must bypass every filter")
 	}
@@ -207,9 +210,10 @@ func TestEmergencyBypassesFilters(t *testing.T) {
 
 func TestEmergencyCanBeDisabled(t *testing.T) {
 	cfg := testConfig(t)
-	cfg.AlertOnEmergencySquawk = false
+	alerts := defaultAlerts()
+	alerts.AlertOnEmergencySquawk = false
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
-	if a := Evaluate(Aircraft{Hex: "ffffff", Squawk: "7700"}, db, cfg); a != nil {
+	if a := Evaluate(Aircraft{Hex: "ffffff", Squawk: "7700"}, db, alerts); a != nil {
 		t.Error("emergency trigger should be off when disabled")
 	}
 }
@@ -256,12 +260,13 @@ func TestPriorityRulesAndSquawks(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testConfig(t)
-			cfg.Rules = tc.rules
+			alerts := defaultAlerts()
+			alerts.Rules = tc.rules
 			for code, priority := range tc.squawkPri {
-				cfg.SquawkPriority[code] = priority
+				alerts.SquawkPriority[code] = priority
 			}
 			db := dbWith(t, cfg, mustParse(t, sampleCSV))
-			a := Evaluate(Aircraft{Hex: "adeb2f", Squawk: tc.squawk}, db, cfg)
+			a := Evaluate(Aircraft{Hex: "adeb2f", Squawk: tc.squawk}, db, alerts)
 			if (a != nil) != tc.wantAlert {
 				t.Fatalf("alert = %+v, want alert %v", a, tc.wantAlert)
 			}
@@ -339,11 +344,12 @@ func TestOneEmergencyDoesNotSuppressADifferentOne(t *testing.T) {
 // so the routine alert does not follow it.
 func TestListedAircraftInEmergencyProducesOneAlertAndAdvancesBothCooldowns(t *testing.T) {
 	cfg := testConfig(t)
+	alerts := defaultAlerts()
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
 	s := NewState(t.TempDir())
-	cooldown := cfg.Cooldown.Std()
+	cooldown := alerts.Cooldown.Std()
 
-	a := Evaluate(Aircraft{Hex: "adeb2f", Squawk: "7700"}, db, cfg)
+	a := Evaluate(Aircraft{Hex: "adeb2f", Squawk: "7700"}, db, alerts)
 	if a == nil || !a.Emergency {
 		t.Fatal("want an emergency alert")
 	}
@@ -417,49 +423,59 @@ func loadWith(t *testing.T, yaml string, env ...string) (*Config, error) {
 	return LoadConfig(append([]string{"SKY_CONFIG=" + path}, env...))
 }
 
+func loadAlertsWith(t *testing.T, yaml string, env ...string) (*Alerts, error) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "alerts.yaml")
+	if yaml != "" {
+		if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return LoadAlerts(append([]string{"SKY_CONFIG=" + filepath.Join(dir, "config.yaml"), "SKY_ALERTS_CONFIG=" + path}, env...))
+}
+
 func TestConfigPrecedenceEnvOverYAMLOverDefault(t *testing.T) {
-	y := "cooldown: 1h\nntfy:\n  topic: from-yaml\n"
+	y := "ntfy:\n  topic: from-yaml\n"
 
 	cfg, err := loadWith(t, y)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Cooldown.Std() != time.Hour || cfg.Ntfy.Topic != "from-yaml" {
-		t.Errorf("yaml should override defaults, got %v / %q", cfg.Cooldown.Std(), cfg.Ntfy.Topic)
-	}
-	if cfg.Source.PollInterval.Std() != 15*time.Second {
-		t.Errorf("untouched key should keep its default, got %v", cfg.Source.PollInterval.Std())
+	if cfg.Ntfy.Topic != "from-yaml" {
+		t.Errorf("yaml should override defaults, got %q", cfg.Ntfy.Topic)
 	}
 
-	cfg, err = loadWith(t, y, "SKY_COOLDOWN=2h", "SKY_NTFY_TOPIC=from-env")
+	cfg, err = loadWith(t, y, "SKY_NTFY_TOPIC=from-env")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Cooldown.Std() != 2*time.Hour || cfg.Ntfy.Topic != "from-env" {
-		t.Errorf("env should win over yaml, got %v / %q", cfg.Cooldown.Std(), cfg.Ntfy.Topic)
+	if cfg.Ntfy.Topic != "from-env" {
+		t.Errorf("env should win over yaml, got %q", cfg.Ntfy.Topic)
 	}
 }
 
 func TestConfigReloadHotSwapTakesEffect(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	environ := []string{"SKY_CONFIG=" + path}
+	path := filepath.Join(dir, "alerts.yaml")
+	environ := []string{"SKY_CONFIG=" + filepath.Join(dir, "config.yaml"), "SKY_ALERTS_CONFIG=" + path, "SKY_NTFY_TOPIC=test-topic"}
 	write := func(priority int) {
 		t.Helper()
-		yaml := fmt.Sprintf("ntfy:\n  topic: test-topic\nrules:\n  - icao: [adeb2f]\n    priority: %d\n", priority)
+		yaml := fmt.Sprintf("rules:\n  - icao: [adeb2f]\n    priority: %d\n", priority)
 		if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
 	write(1)
-	cfg, err := LoadConfig(environ)
+	alerts, err := LoadAlerts(environ)
 	if err != nil {
 		t.Fatal(err)
 	}
-	live := NewLive(cfg)
+	live := NewLive(alerts)
+	cfg := testConfig(t)
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
 	write(5)
-	if _, err := reloadConfig(live, environ, nil); err != nil {
+	if err := reloadConfig(live, environ, nil); err != nil {
 		t.Fatal(err)
 	}
 	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, live.Get()); a == nil || a.Priority != 5 {
@@ -469,12 +485,12 @@ func TestConfigReloadHotSwapTakesEffect(t *testing.T) {
 
 func TestInvalidConfigReloadIsIgnored(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	environ := []string{"SKY_CONFIG=" + path}
-	if err := os.WriteFile(path, []byte("ntfy:\n  topic: test-topic\n"), 0o644); err != nil {
+	path := filepath.Join(dir, "alerts.yaml")
+	environ := []string{"SKY_ALERTS_CONFIG=" + path}
+	if err := os.WriteFile(path, []byte("ntfy:\n  priority: 3\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := LoadConfig(environ)
+	cfg, err := LoadAlerts(environ)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +498,7 @@ func TestInvalidConfigReloadIsIgnored(t *testing.T) {
 	if err := os.WriteFile(path, []byte("ntfy: ["), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reloadConfig(live, environ, nil); err == nil {
+	if err := reloadConfig(live, environ, nil); err == nil {
 		t.Fatal("invalid reload should fail")
 	}
 	if live.Get() != cfg {
@@ -490,50 +506,22 @@ func TestInvalidConfigReloadIsIgnored(t *testing.T) {
 	}
 }
 
-func TestConfigReloadPinsAndReportsColdKeys(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	environ := []string{"SKY_CONFIG=" + path}
-	if err := os.WriteFile(path, []byte("ntfy:\n  topic: startup-topic\ndb:\n  files: [one.csv]\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	running, err := LoadConfig(environ)
-	if err != nil {
-		t.Fatal(err)
-	}
-	live := NewLive(running)
-	if err := os.WriteFile(path, []byte("ntfy:\n  topic: changed-topic\ndb:\n  files: [two.csv]\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	changed, err := reloadConfig(live, environ, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	published := live.Get()
-	if published.Ntfy.Topic != running.Ntfy.Topic || !reflect.DeepEqual(published.DB.Files, running.DB.Files) {
-		t.Fatalf("cold fields changed: topic=%q files=%v", published.Ntfy.Topic, published.DB.Files)
-	}
-	if !reflect.DeepEqual(changed, []string{"ntfy.topic", "db.files"}) {
-		t.Fatalf("changed keys = %v", changed)
-	}
-}
-
 func TestConfigReloadEnvironmentStillWins(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	environ := []string{"SKY_CONFIG=" + path, "SKY_NTFY_PRIORITY=4"}
-	if err := os.WriteFile(path, []byte("ntfy:\n  topic: test-topic\n  priority: 3\n"), 0o644); err != nil {
+	path := filepath.Join(dir, "alerts.yaml")
+	environ := []string{"SKY_ALERTS_CONFIG=" + path, "SKY_NTFY_PRIORITY=4"}
+	if err := os.WriteFile(path, []byte("ntfy:\n  priority: 3\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := LoadConfig(environ)
+	cfg, err := LoadAlerts(environ)
 	if err != nil {
 		t.Fatal(err)
 	}
 	live := NewLive(cfg)
-	if err := os.WriteFile(path, []byte("ntfy:\n  topic: test-topic\n  priority: 2\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("ntfy:\n  priority: 2\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reloadConfig(live, environ, nil); err != nil {
+	if err := reloadConfig(live, environ, nil); err != nil {
 		t.Fatal(err)
 	}
 	if live.Get().Ntfy.Priority != 4 {
@@ -543,9 +531,9 @@ func TestConfigReloadEnvironmentStillWins(t *testing.T) {
 
 func TestWatchConfigReloadsWhenMissingFileAppearsAndChanges(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	environ := []string{"SKY_CONFIG=" + path, "SKY_NTFY_TOPIC=test-topic"}
-	cfg, err := LoadConfig(environ)
+	path := filepath.Join(dir, "alerts.yaml")
+	environ := []string{"SKY_ALERTS_CONFIG=" + path}
+	cfg, err := LoadAlerts(environ)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -557,7 +545,7 @@ func TestWatchConfigReloadsWhenMissingFileAppearsAndChanges(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		watcher.run(ctx, live, environ, 10*time.Millisecond, func(*Config) {
+		watcher.run(ctx, live, environ, 10*time.Millisecond, func(*Alerts) {
 			select {
 			case reloaded <- struct{}{}:
 			default:
@@ -577,14 +565,14 @@ func TestWatchConfigReloadsWhenMissingFileAppearsAndChanges(t *testing.T) {
 			t.Fatal("timed out waiting for config reload")
 		}
 	}
-	if err := os.WriteFile(path, []byte("ntfy:\n  topic: test-topic\n  priority: 2\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("ntfy:\n  priority: 2\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	wait()
 	if live.Get().Ntfy.Priority != 2 {
 		t.Fatalf("priority = %d after file appeared, want 2", live.Get().Ntfy.Priority)
 	}
-	if err := os.WriteFile(path, []byte("ntfy:\n  topic: test-topic\n  priority: 4\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("ntfy:\n  priority: 4\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	wait()
@@ -596,6 +584,95 @@ func TestWatchConfigReloadsWhenMissingFileAppearsAndChanges(t *testing.T) {
 func TestConfigMissingFileIsFine(t *testing.T) {
 	if _, err := LoadConfig([]string{"SKY_CONFIG=/nonexistent/nope.yaml", "SKY_NTFY_TOPIC=t"}); err != nil {
 		t.Fatalf("a missing config file should not be an error: %v", err)
+	}
+}
+
+func TestAlertsMissingFileIsFine(t *testing.T) {
+	if _, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=/nonexistent/alerts.yaml"}); err != nil {
+		t.Fatalf("a missing alerts file should not be an error: %v", err)
+	}
+}
+
+func TestEmptyConfigFilesUseDefaults(t *testing.T) {
+	dir := t.TempDir()
+	config := filepath.Join(dir, "config.yaml")
+	alerts := filepath.Join(dir, "alerts.yaml")
+	for _, path := range []string{config, alerts} {
+		if err := os.WriteFile(path, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env := []string{"SKY_CONFIG=" + config, "SKY_ALERTS_CONFIG=" + alerts, "SKY_NTFY_TOPIC=t"}
+	cfg, err := LoadConfig(env)
+	if err != nil || cfg.Listen != defaultConfig().Listen {
+		t.Fatalf("config = %+v, err = %v", cfg, err)
+	}
+	a, err := LoadAlerts(env)
+	if err != nil || a.Cooldown != defaultAlerts().Cooldown {
+		t.Fatalf("alerts = %+v, err = %v", a, err)
+	}
+}
+
+func TestExampleFilesRespectConfigSplit(t *testing.T) {
+	if err := loadYAML("config.example.yaml", defaultConfig(), configMisplaced, "alerts.example.yaml", "hot-reloaded"); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadYAML("alerts.example.yaml", defaultAlerts(), alertsMisplaced, "config.example.yaml", "startup-only"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMisplacedConfigKeysNameAlertsFile(t *testing.T) {
+	dir := t.TempDir()
+	config := filepath.Join(dir, "config.yaml")
+	alerts := filepath.Join(dir, "alerts.yaml")
+	if err := os.WriteFile(config, []byte("rules: []\nfilters: {}\nsource:\n  poll_interval: 1s\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadConfig([]string{"SKY_CONFIG=" + config, "SKY_ALERTS_CONFIG=" + alerts})
+	if err == nil || !strings.Contains(err.Error(), "move rules, filters, source.poll_interval to "+alerts+" (hot-reloaded)") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMisplacedAlertKeysNameConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	config := filepath.Join(dir, "config.yaml")
+	alerts := filepath.Join(dir, "alerts.yaml")
+	if err := os.WriteFile(alerts, []byte("source:\n  url: http://example.com\nntfy:\n  topic: wrong\nlisten: :9000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadAlerts([]string{"SKY_CONFIG=" + config, "SKY_ALERTS_CONFIG=" + alerts})
+	if err == nil || !strings.Contains(err.Error(), "move source.url, ntfy.topic, listen to "+config+" (startup-only)") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAlertsDefaultBesideResolvedConfig(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "alerts.yaml"), []byte("cooldown: 2h\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a, err := LoadAlerts([]string{"SKY_CONFIG=" + filepath.Join(dir, "config.yaml")})
+	if err != nil || a.Cooldown.Std() != 2*time.Hour {
+		t.Fatalf("alerts = %+v, err = %v", a, err)
+	}
+}
+
+func TestBothLoadersKnowBothEnvironmentTables(t *testing.T) {
+	env := []string{"SKY_CONFIG=/nonexistent/config.yaml", "SKY_ALERTS_CONFIG=/nonexistent/alerts.yaml", "SKY_NTFY_TOPIC=t", "SKY_COOLDOWN=2h"}
+	if _, err := LoadConfig(env); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadAlerts(env); err != nil {
+		t.Fatal(err)
+	}
+	bad := append(env, "SKY_COOLDWON=3h")
+	if _, err := LoadConfig(bad); err == nil {
+		t.Fatal("LoadConfig accepted unknown variable")
+	}
+	if _, err := LoadAlerts(bad); err == nil {
+		t.Fatal("LoadAlerts accepted unknown variable")
 	}
 }
 
@@ -656,7 +733,7 @@ func TestConfigValidation(t *testing.T) {
 }
 
 func TestPartialSquawkPriorityMergesDefaults(t *testing.T) {
-	cfg, err := loadWith(t, "ntfy:\n  topic: t\nsquawk_priority:\n  '7600': 4\n")
+	cfg, err := loadAlertsWith(t, "squawk_priority:\n  '7600': 4\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -666,7 +743,7 @@ func TestPartialSquawkPriorityMergesDefaults(t *testing.T) {
 }
 
 func TestNullSquawkPriorityKeepsDefaults(t *testing.T) {
-	cfg, err := loadWith(t, "ntfy:\n  topic: t\nsquawk_priority:\n")
+	cfg, err := loadAlertsWith(t, "squawk_priority:\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -675,7 +752,7 @@ func TestNullSquawkPriorityKeepsDefaults(t *testing.T) {
 			t.Errorf("%s priority = %d, want 5", squawk, cfg.SquawkPriority[squawk])
 		}
 	}
-	db := dbWith(t, cfg, nil)
+	db := dbWith(t, testConfig(t), nil)
 	if a := Evaluate(Aircraft{Hex: "ffffff", Squawk: "7700"}, db, cfg); a == nil || a.Priority != 5 {
 		t.Fatalf("7700 alert = %+v, want priority 5", a)
 	}
@@ -689,7 +766,7 @@ func TestNonFiniteFilterValuesRejected(t *testing.T) {
 		{"SKY_NTFY_TOPIC=t", "SKY_FILTERS_MAX_DISTANCE_NM=Inf"},
 		{"SKY_NTFY_TOPIC=t", "SKY_FILTERS_MAX_DISTANCE_NM=50", "SKY_FILTERS_LAT=NaN", "SKY_FILTERS_LON=0"},
 	} {
-		if _, err := loadWith(t, "", env...); err == nil {
+		if _, err := loadAlertsWith(t, "", env...); err == nil {
 			t.Errorf("%v: want a validation error", env)
 		}
 	}
@@ -697,7 +774,7 @@ func TestNonFiniteFilterValuesRejected(t *testing.T) {
 
 // A receiver at 0,0 is a valid receiver — the position must be optional, not zero-tested.
 func TestZeroCoordinatesAreValid(t *testing.T) {
-	cfg, err := loadWith(t, "ntfy:\n  topic: t\nfilters:\n  max_distance_nm: 50\n  lat: 0.0\n  lon: 0.0\n")
+	cfg, err := loadAlertsWith(t, "filters:\n  max_distance_nm: 50\n  lat: 0.0\n  lon: 0.0\n")
 	if err != nil {
 		t.Fatalf("0,0 should be a valid receiver position: %v", err)
 	}

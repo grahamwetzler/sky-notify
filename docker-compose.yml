@@ -38,6 +38,7 @@ services:
       - sky-notify-data:/data
       # Optional YAML config. Everything above can be set this way instead.
       # - ./config.yaml:/config/config.yaml:ro
+      # - ./alerts.yaml:/config/alerts.yaml:ro
     networks:
       - adsb
     depends_on:

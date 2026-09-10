@@ -43,7 +43,7 @@ func cooldownKey(hex, trigger string) string { return hex + "|" + trigger }
 
 // Evaluate decides whether one aircraft is worth alerting on. It returns at most one
 // alert: when both triggers fire, the emergency wins and carries the DB metadata.
-func Evaluate(ac Aircraft, db *DB, cfg *Config) *Alert {
+func Evaluate(ac Aircraft, db *DB, cfg *Alerts) *Alert {
 	hex := normalizeHex(ac.Hex)
 	if hex == "" {
 		return nil
@@ -143,7 +143,7 @@ func matchesAny(want, got []string) bool {
 
 // passesFilters fails closed: an enabled filter suppresses an aircraft whose data
 // cannot answer it, rather than admitting it on a zero value.
-func passesFilters(ac Aircraft, a *Alert, cfg *Config) bool {
+func passesFilters(ac Aircraft, a *Alert, cfg *Alerts) bool {
 	f := &cfg.Filters
 	if f.MaxDistanceNM > 0 {
 		if !a.HasDistance {

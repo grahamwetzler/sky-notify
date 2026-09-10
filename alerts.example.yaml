@@ -1,0 +1,39 @@
+# sky-notify alert configuration — every key is optional and hot-reloaded.
+# Startup-only settings live in config.yaml. Mount beside it or point SKY_ALERTS_CONFIG here.
+
+source:
+  poll_interval: 15s
+
+ntfy:
+  priority: 3          # 1-5. Used when no rule matches a database alert.
+
+db:
+  refresh_interval: 24h
+
+# How long to stay quiet after alerting. Routine and emergency triggers are tracked separately.
+cooldown: 24h
+
+filters:
+  # Filters are off by default and fail closed when aircraft data is missing.
+  # Emergencies bypass all filters.
+  min_altitude_ft: 0
+  max_altitude_ft: 0
+  max_distance_nm: 0
+  lat: null            # receiver location, required only for max_distance_nm
+  lon: null
+
+alert_on_emergency_squawk: true
+
+# Omitted emergency codes remain at priority 5; 0 mutes one.
+# squawk_priority:
+#   "7700": 5
+#   "7600": 4
+#   "7500": 5
+
+# First matching rule wins; priority 0 mutes.
+# rules:
+#   - name: Air Force One
+#     tags: [Air Force One]
+#     priority: 5
+
+log_level: info

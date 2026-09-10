@@ -47,12 +47,17 @@ func run() error {
 		fmt.Fprintln(os.Stderr, "config error:", err)
 		os.Exit(1)
 	}
-	live := NewLive(cfg)
+	alerts, err := LoadAlerts(os.Environ())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config error:", err)
+		os.Exit(1)
+	}
+	live := NewLive(alerts)
 	// Constructed here, not inside the goroutine below: its baseline must be the file
-	// LoadConfig just read, or an edit made while we start up is never noticed.
+	// LoadAlerts just read, or an edit made while we start up is never noticed.
 	watcher := newConfigWatcher(os.Environ())
 	var logLevel slog.LevelVar
-	logLevel.Set(parseLevel(cfg.LogLevel))
+	logLevel.Set(parseLevel(alerts.LogLevel))
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: &logLevel})))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -65,7 +70,7 @@ func run() error {
 	httpClient := &http.Client{Timeout: 60 * time.Second}
 	db := NewDB(cfg, httpClient)
 	state := NewState(cfg.CacheDir)
-	state.Load(cfg.Cooldown.Std())
+	state.Load(alerts.Cooldown.Std())
 
 	notifier, err := NewNotifier(cfg)
 	if err != nil {
@@ -111,7 +116,7 @@ func run() error {
 	go func() { defer wg.Done(); refreshLoop(ctx, live, db, state, refreshAtStart) }()
 	go func() {
 		defer wg.Done()
-		watcher.run(ctx, live, os.Environ(), configPollInterval, func(c *Config) {
+		watcher.run(ctx, live, os.Environ(), configPollInterval, func(c *Alerts) {
 			logLevel.Set(parseLevel(c.LogLevel))
 		})
 	}()
@@ -191,7 +196,7 @@ func pollLoop(ctx context.Context, live *Live, src *Source, db *DB, state *State
 	}
 }
 
-func poll(ctx context.Context, cfg *Config, src *Source, db *DB, state *State, q *queue, h *health) {
+func poll(ctx context.Context, cfg *Alerts, src *Source, db *DB, state *State, q *queue, h *health) {
 	f, err := src.Fetch(ctx, time.Now())
 	if err != nil {
 		if ctx.Err() == nil {

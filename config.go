@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"net/url"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -55,9 +56,8 @@ type Rule struct {
 
 type Config struct {
 	Source struct {
-		URL          string   `yaml:"url"`
-		PollInterval Duration `yaml:"poll_interval"`
-		MaxAge       Duration `yaml:"max_age"`
+		URL    string   `yaml:"url"`
+		MaxAge Duration `yaml:"max_age"`
 	} `yaml:"source"`
 
 	Ntfy struct {
@@ -66,19 +66,30 @@ type Config struct {
 		Token    string `yaml:"token"`
 		User     string `yaml:"user"`
 		Password string `yaml:"password"`
-		Priority int    `yaml:"priority"`
 	} `yaml:"ntfy"`
 
 	DB struct {
-		Files           []string `yaml:"files"`
-		BaseURL         string   `yaml:"base_url"`
-		RefreshInterval Duration `yaml:"refresh_interval"`
+		Files   []string `yaml:"files"`
+		BaseURL string   `yaml:"base_url"`
 	} `yaml:"db"`
 
-	CacheDir string   `yaml:"cache_dir"`
-	Cooldown Duration `yaml:"cooldown"`
+	CacheDir   string `yaml:"cache_dir"`
+	Tar1090URL string `yaml:"tar1090_url"`
+	Listen     string `yaml:"listen"`
+}
 
-	Filters struct {
+type Alerts struct {
+	Source struct {
+		PollInterval Duration `yaml:"poll_interval"`
+	} `yaml:"source"`
+	Ntfy struct {
+		Priority int `yaml:"priority"`
+	} `yaml:"ntfy"`
+	DB struct {
+		RefreshInterval Duration `yaml:"refresh_interval"`
+	} `yaml:"db"`
+	Cooldown Duration `yaml:"cooldown"`
+	Filters  struct {
 		MinAltitudeFt int      `yaml:"min_altitude_ft"`
 		MaxAltitudeFt int      `yaml:"max_altitude_ft"`
 		MaxDistanceNM float64  `yaml:"max_distance_nm"`
@@ -89,52 +100,56 @@ type Config struct {
 	AlertOnEmergencySquawk bool           `yaml:"alert_on_emergency_squawk"`
 	Rules                  []Rule         `yaml:"rules"`
 	SquawkPriority         map[string]int `yaml:"squawk_priority"`
-	Tar1090URL             string         `yaml:"tar1090_url"`
 	LogLevel               string         `yaml:"log_level"`
-	Listen                 string         `yaml:"listen"`
 }
 
 var defaultSquawkPriority = map[string]int{"7500": 5, "7600": 5, "7700": 5}
 
 const configPollInterval = 5 * time.Second
 
-// Live holds the config the running loops read. The pointer is swapped wholesale and
-// a published Config is never mutated, so readers need no lock.
-type Live struct{ p atomic.Pointer[Config] }
+// Live holds the alerts the running loops read. The pointer is swapped wholesale and
+// a published Alerts is never mutated, so readers need no lock.
+type Live struct{ p atomic.Pointer[Alerts] }
 
-func NewLive(c *Config) *Live {
+func NewLive(c *Alerts) *Live {
 	l := &Live{}
 	l.p.Store(c)
 	return l
 }
 
-func (l *Live) Get() *Config { return l.p.Load() }
+func (l *Live) Get() *Alerts { return l.p.Load() }
 
 func defaultConfig() *Config {
 	c := &Config{}
 	c.Source.URL = "http://ultrafeeder/data/aircraft.json"
-	c.Source.PollInterval = Duration(15 * time.Second)
 	c.Source.MaxAge = Duration(60 * time.Second)
 	c.Ntfy.URL = "https://ntfy.sh"
-	c.Ntfy.Priority = 3
-	c.SquawkPriority = map[string]int{}
-	for squawk, priority := range defaultSquawkPriority {
-		c.SquawkPriority[squawk] = priority
-	}
 	c.DB.Files = []string{"plane-alert-db.csv"}
 	c.DB.BaseURL = "https://raw.githubusercontent.com/sdr-enthusiasts/plane-alert-db/main"
-	c.DB.RefreshInterval = Duration(24 * time.Hour)
 	c.CacheDir = "/data"
-	c.Cooldown = Duration(24 * time.Hour)
-	c.AlertOnEmergencySquawk = true
-	c.LogLevel = "info"
 	c.Listen = ":8080"
 	return c
+}
+
+func defaultAlerts() *Alerts {
+	a := &Alerts{}
+	a.Source.PollInterval = Duration(15 * time.Second)
+	a.Ntfy.Priority = 3
+	a.DB.RefreshInterval = Duration(24 * time.Hour)
+	a.Cooldown = Duration(24 * time.Hour)
+	a.AlertOnEmergencySquawk = true
+	a.LogLevel = "info"
+	a.SquawkPriority = map[string]int{}
+	for squawk, priority := range defaultSquawkPriority {
+		a.SquawkPriority[squawk] = priority
+	}
+	return a
 }
 
 // envConfigVar names the YAML config path. It is bound separately from the table
 // below (it is read before the file is parsed) but must still count as a known name.
 const envConfigVar = "SKY_CONFIG"
+const envAlertsConfigVar = "SKY_ALERTS_CONFIG"
 
 type envBinding struct {
 	name  string
@@ -147,7 +162,6 @@ type envBinding struct {
 func envBindings() []envBinding {
 	return []envBinding{
 		{"SKY_SOURCE_URL", func(c *Config, v string) error { c.Source.URL = v; return nil }},
-		{"SKY_SOURCE_POLL_INTERVAL", func(c *Config, v string) error { return setDur(&c.Source.PollInterval, v) }},
 		{"SKY_SOURCE_MAX_AGE", func(c *Config, v string) error { return setDur(&c.Source.MaxAge, v) }},
 
 		{"SKY_NTFY_URL", func(c *Config, v string) error { c.Ntfy.URL = v; return nil }},
@@ -155,25 +169,34 @@ func envBindings() []envBinding {
 		{"SKY_NTFY_TOKEN", func(c *Config, v string) error { c.Ntfy.Token = v; return nil }},
 		{"SKY_NTFY_USER", func(c *Config, v string) error { c.Ntfy.User = v; return nil }},
 		{"SKY_NTFY_PASSWORD", func(c *Config, v string) error { c.Ntfy.Password = v; return nil }},
-		{"SKY_NTFY_PRIORITY", func(c *Config, v string) error { return setInt(&c.Ntfy.Priority, v) }},
 
 		{"SKY_DB_FILES", func(c *Config, v string) error { c.DB.Files = splitList(v); return nil }},
 		{"SKY_DB_BASE_URL", func(c *Config, v string) error { c.DB.BaseURL = v; return nil }},
-		{"SKY_DB_REFRESH_INTERVAL", func(c *Config, v string) error { return setDur(&c.DB.RefreshInterval, v) }},
 
 		{"SKY_CACHE_DIR", func(c *Config, v string) error { c.CacheDir = v; return nil }},
-		{"SKY_COOLDOWN", func(c *Config, v string) error { return setDur(&c.Cooldown, v) }},
-
-		{"SKY_FILTERS_MIN_ALTITUDE_FT", func(c *Config, v string) error { return setInt(&c.Filters.MinAltitudeFt, v) }},
-		{"SKY_FILTERS_MAX_ALTITUDE_FT", func(c *Config, v string) error { return setInt(&c.Filters.MaxAltitudeFt, v) }},
-		{"SKY_FILTERS_MAX_DISTANCE_NM", func(c *Config, v string) error { return setFloat(&c.Filters.MaxDistanceNM, v) }},
-		{"SKY_FILTERS_LAT", func(c *Config, v string) error { return setFloatPtr(&c.Filters.Lat, v) }},
-		{"SKY_FILTERS_LON", func(c *Config, v string) error { return setFloatPtr(&c.Filters.Lon, v) }},
-
-		{"SKY_ALERT_ON_EMERGENCY_SQUAWK", func(c *Config, v string) error { return setBool(&c.AlertOnEmergencySquawk, v) }},
 		{"SKY_TAR1090_URL", func(c *Config, v string) error { c.Tar1090URL = v; return nil }},
-		{"SKY_LOG_LEVEL", func(c *Config, v string) error { c.LogLevel = v; return nil }},
 		{"SKY_LISTEN", func(c *Config, v string) error { c.Listen = v; return nil }},
+	}
+}
+
+type alertEnvBinding struct {
+	name  string
+	apply func(*Alerts, string) error
+}
+
+func alertEnvBindings() []alertEnvBinding {
+	return []alertEnvBinding{
+		{"SKY_SOURCE_POLL_INTERVAL", func(a *Alerts, v string) error { return setDur(&a.Source.PollInterval, v) }},
+		{"SKY_NTFY_PRIORITY", func(a *Alerts, v string) error { return setInt(&a.Ntfy.Priority, v) }},
+		{"SKY_DB_REFRESH_INTERVAL", func(a *Alerts, v string) error { return setDur(&a.DB.RefreshInterval, v) }},
+		{"SKY_COOLDOWN", func(a *Alerts, v string) error { return setDur(&a.Cooldown, v) }},
+		{"SKY_FILTERS_MIN_ALTITUDE_FT", func(a *Alerts, v string) error { return setInt(&a.Filters.MinAltitudeFt, v) }},
+		{"SKY_FILTERS_MAX_ALTITUDE_FT", func(a *Alerts, v string) error { return setInt(&a.Filters.MaxAltitudeFt, v) }},
+		{"SKY_FILTERS_MAX_DISTANCE_NM", func(a *Alerts, v string) error { return setFloat(&a.Filters.MaxDistanceNM, v) }},
+		{"SKY_FILTERS_LAT", func(a *Alerts, v string) error { return setFloatPtr(&a.Filters.Lat, v) }},
+		{"SKY_FILTERS_LON", func(a *Alerts, v string) error { return setFloatPtr(&a.Filters.Lon, v) }},
+		{"SKY_ALERT_ON_EMERGENCY_SQUAWK", func(a *Alerts, v string) error { return setBool(&a.AlertOnEmergencySquawk, v) }},
+		{"SKY_LOG_LEVEL", func(a *Alerts, v string) error { a.LogLevel = v; return nil }},
 	}
 }
 
@@ -236,52 +259,15 @@ func splitList(v string) []string {
 // environ is passed in rather than read from os so tests can drive it.
 func LoadConfig(environ []string) (*Config, error) {
 	env := environMap(environ)
-
 	cfg := defaultConfig()
-
 	path := configPath(env)
-	// A missing config file is not an error; a malformed one is.
-	if b, err := os.ReadFile(path); err == nil {
-		dec := yaml.NewDecoder(bytes.NewReader(b))
-		dec.KnownFields(true)
-		if err := dec.Decode(cfg); err != nil {
-			return nil, fmt.Errorf("config %s: %w", path, err)
-		}
-	} else if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("config %s: %w", path, err)
+	if err := loadYAML(path, cfg, configMisplaced, alertsPath(env), "hot-reloaded"); err != nil {
+		return nil, err
 	}
-	if cfg.SquawkPriority == nil {
-		cfg.SquawkPriority = map[string]int{}
+	if err := checkEnv(env); err != nil {
+		return nil, err
 	}
-	for squawk, priority := range defaultSquawkPriority {
-		if _, ok := cfg.SquawkPriority[squawk]; !ok {
-			cfg.SquawkPriority[squawk] = priority
-		}
-	}
-
-	bindings := envBindings()
-	known := map[string]bool{envConfigVar: true}
-	for _, b := range bindings {
-		known[b.name] = true
-	}
-	// SKY_ is this service's namespace: an unrecognised name there is a typo, and a
-	// typo that silently selects a default is exactly the bug this catches.
-	var unknown []string
-	for k := range env {
-		if strings.HasPrefix(k, "SKY_") && !known[k] {
-			unknown = append(unknown, k)
-		}
-	}
-	if len(unknown) > 0 {
-		sort.Strings(unknown)
-		msgs := make([]string, 0, len(unknown))
-		for _, u := range unknown {
-			msgs = append(msgs, fmt.Sprintf("%s (did you mean %s?)", u, nearestName(u, known)))
-		}
-		return nil, fmt.Errorf("unknown environment variable(s): %s", strings.Join(msgs, ", "))
-	}
-
-	for _, b := range bindings {
+	for _, b := range envBindings() {
 		if v, ok := env[b.name]; ok {
 			if err := b.apply(cfg, v); err != nil {
 				return nil, fmt.Errorf("%s: %w", b.name, err)
@@ -295,11 +281,118 @@ func LoadConfig(environ []string) (*Config, error) {
 	return cfg, nil
 }
 
+func LoadAlerts(environ []string) (*Alerts, error) {
+	env := environMap(environ)
+	alerts := defaultAlerts()
+	if err := loadYAML(alertsPath(env), alerts, alertsMisplaced, configPath(env), "startup-only"); err != nil {
+		return nil, err
+	}
+	if alerts.SquawkPriority == nil {
+		alerts.SquawkPriority = map[string]int{}
+	}
+	for squawk, priority := range defaultSquawkPriority {
+		if _, ok := alerts.SquawkPriority[squawk]; !ok {
+			alerts.SquawkPriority[squawk] = priority
+		}
+	}
+	if err := checkEnv(env); err != nil {
+		return nil, err
+	}
+	for _, b := range alertEnvBindings() {
+		if v, ok := env[b.name]; ok {
+			if err := b.apply(alerts, v); err != nil {
+				return nil, fmt.Errorf("%s: %w", b.name, err)
+			}
+		}
+	}
+	if err := alerts.validate(); err != nil {
+		return nil, err
+	}
+	return alerts, nil
+}
+
+// These mirror the other struct's keys; keep them in sync or migration errors fall
+// back to KnownFields' unhelpful "field not found" message.
+// Each list mirrors the other file's keys, and must be extended whenever a key is added
+// to the other struct: a key missing here still fails, but with KnownFields' "field rules
+// not found in type main.Config" instead of a message naming the file it belongs in.
+var configMisplaced = []string{"rules", "filters", "cooldown", "alert_on_emergency_squawk", "squawk_priority", "log_level", "source.poll_interval", "ntfy.priority", "db.refresh_interval"}
+var alertsMisplaced = []string{"source.url", "source.max_age", "ntfy.url", "ntfy.topic", "ntfy.token", "ntfy.user", "ntfy.password", "tar1090_url", "db.files", "db.base_url", "cache_dir", "listen"}
+
+func loadYAML(path string, dst any, misplaced []string, belongs, label string) error {
+	// A missing config file is not an error; a malformed one is.
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("config %s: %w", path, err)
+	}
+	// The loose pass names the destination for moved keys; KnownFields alone cannot.
+	var raw map[string]any
+	if err := yaml.Unmarshal(b, &raw); err != nil {
+		return fmt.Errorf("config %s: %w", path, err)
+	}
+	var found []string
+	for _, key := range misplaced {
+		parts := strings.Split(key, ".")
+		_, ok := raw[parts[0]]
+		if len(parts) == 2 {
+			block, _ := raw[parts[0]].(map[string]any)
+			_, ok = block[parts[1]]
+		}
+		if ok {
+			found = append(found, key)
+		}
+	}
+	if len(found) > 0 {
+		return fmt.Errorf("config %s: move %s to %s (%s) and restart", path, strings.Join(found, ", "), belongs, label)
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(dst); err != nil && !errors.Is(err, io.EOF) {
+		return fmt.Errorf("config %s: %w", path, err)
+	}
+	return nil
+}
+
+func checkEnv(env map[string]string) error {
+	known := map[string]bool{envConfigVar: true, envAlertsConfigVar: true}
+	for _, b := range envBindings() {
+		known[b.name] = true
+	}
+	for _, b := range alertEnvBindings() {
+		known[b.name] = true
+	}
+	var unknown []string
+	for k := range env {
+		if strings.HasPrefix(k, "SKY_") && !known[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	msgs := make([]string, 0, len(unknown))
+	for _, u := range unknown {
+		msgs = append(msgs, fmt.Sprintf("%s (did you mean %s?)", u, nearestName(u, known)))
+	}
+	return fmt.Errorf("unknown environment variable(s): %s", strings.Join(msgs, ", "))
+}
+
 func configPath(env map[string]string) string {
 	if path := env[envConfigVar]; path != "" {
 		return path
 	}
 	return "/config/config.yaml"
+}
+
+func alertsPath(env map[string]string) string {
+	if path := env[envAlertsConfigVar]; path != "" {
+		return path
+	}
+	return filepath.Join(filepath.Dir(configPath(env)), "alerts.yaml")
 }
 
 func environMap(environ []string) map[string]string {
@@ -312,60 +405,19 @@ func environMap(environ []string) map[string]string {
 	return env
 }
 
-// mergeReload pins the cold fields to their running values and reports which of them
-// the operator changed. Source, Notifier and DB captured those at construction, so
-// publishing the new values would make the live config claim what is not in effect.
-func mergeReload(running, next *Config) (*Config, []string) {
-	merged := *next
-	var changed []string
-	check := func(key string, different bool) {
-		if different {
-			changed = append(changed, key)
-		}
-	}
-
-	check("source.url", next.Source.URL != running.Source.URL)
-	check("source.max_age", next.Source.MaxAge != running.Source.MaxAge)
-	check("ntfy.url", next.Ntfy.URL != running.Ntfy.URL)
-	check("ntfy.topic", next.Ntfy.Topic != running.Ntfy.Topic)
-	check("ntfy.token", next.Ntfy.Token != running.Ntfy.Token)
-	check("ntfy.user", next.Ntfy.User != running.Ntfy.User)
-	check("ntfy.password", next.Ntfy.Password != running.Ntfy.Password)
-	check("tar1090_url", next.Tar1090URL != running.Tar1090URL)
-	check("db.files", !reflect.DeepEqual(next.DB.Files, running.DB.Files))
-	check("db.base_url", next.DB.BaseURL != running.DB.BaseURL)
-	check("cache_dir", next.CacheDir != running.CacheDir)
-	check("listen", next.Listen != running.Listen)
-
-	merged.Source.URL = running.Source.URL
-	merged.Source.MaxAge = running.Source.MaxAge
-	merged.Ntfy.URL = running.Ntfy.URL
-	merged.Ntfy.Topic = running.Ntfy.Topic
-	merged.Ntfy.Token = running.Ntfy.Token
-	merged.Ntfy.User = running.Ntfy.User
-	merged.Ntfy.Password = running.Ntfy.Password
-	merged.Tar1090URL = running.Tar1090URL
-	merged.DB.Files = running.DB.Files
-	merged.DB.BaseURL = running.DB.BaseURL
-	merged.CacheDir = running.CacheDir
-	merged.Listen = running.Listen
-	return &merged, changed
-}
-
-func reloadConfig(live *Live, environ []string, onReload func(*Config)) ([]string, error) {
-	next, err := LoadConfig(environ)
+func reloadConfig(live *Live, environ []string, onReload func(*Alerts)) error {
+	next, err := LoadAlerts(environ)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	published, changed := mergeReload(live.Get(), next)
-	live.p.Store(published)
+	live.p.Store(next)
 	if onReload != nil {
-		onReload(published)
+		onReload(next)
 	}
-	return changed, nil
+	return nil
 }
 
-// configWatcher notices edits to the config file. It compares a digest rather than
+// configWatcher notices edits to the alerts file. It compares a digest rather than
 // watching with inotify: the config is a bind mount in Docker, where inotify is
 // unreliable, and editors replace the file by rename. Polling by path survives both.
 type configWatcher struct {
@@ -377,7 +429,7 @@ type configWatcher struct {
 // newConfigWatcher takes the baseline eagerly, so a caller that constructs it before
 // starting the watch goroutine cannot miss an edit made in between.
 func newConfigWatcher(environ []string) *configWatcher {
-	w := &configWatcher{path: configPath(environMap(environ))}
+	w := &configWatcher{path: alertsPath(environMap(environ))}
 	w.digest, w.missing = w.read()
 	return w
 }
@@ -399,7 +451,7 @@ func (w *configWatcher) changed() bool {
 }
 
 // run publishes validated file changes to live until ctx is done.
-func (w *configWatcher) run(ctx context.Context, live *Live, environ []string, interval time.Duration, onReload func(*Config)) {
+func (w *configWatcher) run(ctx context.Context, live *Live, environ []string, interval time.Duration, onReload func(*Alerts)) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -414,15 +466,12 @@ func (w *configWatcher) run(ctx context.Context, live *Live, environ []string, i
 		}
 		// A half-written file parses badly; logging and keeping the running config is
 		// the only acceptable outcome, and the next write fires another attempt.
-		changed, err := reloadConfig(live, environ, onReload)
+		err := reloadConfig(live, environ, onReload)
 		if err != nil {
 			slog.Error("config reload failed, keeping running config", "err", err)
 			continue
 		}
 		slog.Info("config reloaded", "path", w.path)
-		if len(changed) > 0 {
-			slog.Warn("config change needs a restart", "keys", changed)
-		}
 	}
 }
 
@@ -448,29 +497,6 @@ func (c *Config) validate() error {
 			return err
 		}
 	}
-	if c.Ntfy.Priority < 1 || c.Ntfy.Priority > 5 {
-		return fmt.Errorf("ntfy.priority must be 1..5, got %d", c.Ntfy.Priority)
-	}
-	for squawk, priority := range c.SquawkPriority {
-		if _, ok := emergencySquawks[squawk]; !ok {
-			return fmt.Errorf("squawk_priority: unknown squawk %q", squawk)
-		}
-		if priority < 0 || priority > 5 {
-			return fmt.Errorf("squawk_priority.%s must be 0..5, got %d", squawk, priority)
-		}
-	}
-	for i, rule := range c.Rules {
-		if rule.Priority == nil {
-			return fmt.Errorf("rule %d (%q): priority is required", i, rule.Name)
-		}
-		if *rule.Priority < 0 || *rule.Priority > 5 {
-			return fmt.Errorf("rule %d (%q): priority must be 0..5, got %d", i, rule.Name, *rule.Priority)
-		}
-		if len(rule.ICAO)+len(rule.Reg)+len(rule.Operator)+len(rule.Type)+len(rule.ICAOType)+len(rule.CMPG)+len(rule.Category)+len(rule.Tags) == 0 {
-			return fmt.Errorf("rule %d (%q): at least one match field is required", i, rule.Name)
-		}
-	}
-
 	// source.url is either an http(s) URL or an absolute path. Anything else — a typo'd
 	// scheme especially — must fail loudly rather than degrade into a path that never exists.
 	if u, err := url.Parse(c.Source.URL); err == nil && u.Scheme != "" {
@@ -505,41 +531,68 @@ func (c *Config) validate() error {
 		seen[f] = true
 	}
 
+	if c.Source.MaxAge.Std() <= 0 {
+		return fmt.Errorf("source.max_age must be > 0")
+	}
+	return nil
+}
+
+func (a *Alerts) validate() error {
+	if a.Ntfy.Priority < 1 || a.Ntfy.Priority > 5 {
+		return fmt.Errorf("ntfy.priority must be 1..5, got %d", a.Ntfy.Priority)
+	}
+	for squawk, priority := range a.SquawkPriority {
+		if _, ok := emergencySquawks[squawk]; !ok {
+			return fmt.Errorf("squawk_priority: unknown squawk %q", squawk)
+		}
+		if priority < 0 || priority > 5 {
+			return fmt.Errorf("squawk_priority.%s must be 0..5, got %d", squawk, priority)
+		}
+	}
+	for i, rule := range a.Rules {
+		if rule.Priority == nil {
+			return fmt.Errorf("rule %d (%q): priority is required", i, rule.Name)
+		}
+		if *rule.Priority < 0 || *rule.Priority > 5 {
+			return fmt.Errorf("rule %d (%q): priority must be 0..5, got %d", i, rule.Name, *rule.Priority)
+		}
+		if len(rule.ICAO)+len(rule.Reg)+len(rule.Operator)+len(rule.Type)+len(rule.ICAOType)+len(rule.CMPG)+len(rule.Category)+len(rule.Tags) == 0 {
+			return fmt.Errorf("rule %d (%q): at least one match field is required", i, rule.Name)
+		}
+	}
 	for _, d := range []struct {
 		name string
 		val  Duration
 	}{
-		{"cooldown", c.Cooldown},
-		{"source.poll_interval", c.Source.PollInterval},
-		{"source.max_age", c.Source.MaxAge},
-		{"db.refresh_interval", c.DB.RefreshInterval},
+		{"cooldown", a.Cooldown},
+		{"source.poll_interval", a.Source.PollInterval},
+		{"db.refresh_interval", a.DB.RefreshInterval},
 	} {
 		if d.val.Std() <= 0 {
 			return fmt.Errorf("%s must be > 0", d.name)
 		}
 	}
-
 	// NaN and negative values would slip past every `> 0` check and silently disable
 	// the filter the operator just asked for.
-	if math.IsNaN(c.Filters.MaxDistanceNM) || math.IsInf(c.Filters.MaxDistanceNM, 0) || c.Filters.MaxDistanceNM < 0 {
+	if math.IsNaN(a.Filters.MaxDistanceNM) || math.IsInf(a.Filters.MaxDistanceNM, 0) || a.Filters.MaxDistanceNM < 0 {
 		return fmt.Errorf("filters.max_distance_nm must be a non-negative number")
 	}
-	if c.Filters.MaxDistanceNM > 0 {
-		if c.Filters.Lat == nil || c.Filters.Lon == nil {
+	if a.Filters.MaxDistanceNM > 0 {
+		if a.Filters.Lat == nil || a.Filters.Lon == nil {
 			return fmt.Errorf("filters.max_distance_nm requires filters.lat and filters.lon")
 		}
 	}
 	// Validate coordinates whenever they are set, not only when the filter is on.
-	if c.Filters.Lat != nil && !(*c.Filters.Lat >= -90 && *c.Filters.Lat <= 90) {
+	if a.Filters.Lat != nil && !(*a.Filters.Lat >= -90 && *a.Filters.Lat <= 90) {
 		return fmt.Errorf("filters.lat must be in [-90,90]")
 	}
-	if c.Filters.Lon != nil && !(*c.Filters.Lon >= -180 && *c.Filters.Lon <= 180) {
+	if a.Filters.Lon != nil && !(*a.Filters.Lon >= -180 && *a.Filters.Lon <= 180) {
 		return fmt.Errorf("filters.lon must be in [-180,180]")
 	}
-	if c.Filters.MinAltitudeFt < 0 || c.Filters.MaxAltitudeFt < 0 {
+	if a.Filters.MinAltitudeFt < 0 || a.Filters.MaxAltitudeFt < 0 {
 		return fmt.Errorf("filters altitudes must not be negative")
 	}
-	if c.Filters.MaxAltitudeFt > 0 && c.Filters.MaxAltitudeFt <= c.Filters.MinAltitudeFt {
+	if a.Filters.MaxAltitudeFt > 0 && a.Filters.MaxAltitudeFt <= a.Filters.MinAltitudeFt {
 		return fmt.Errorf("filters.max_altitude_ft must exceed filters.min_altitude_ft")
 	}
 	return nil

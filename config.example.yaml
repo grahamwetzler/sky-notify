@@ -1,24 +1,11 @@
-# sky-notify configuration — every key is optional except ntfy.topic.
-# This file is re-read while running. Changes to source.url, source.max_age, ntfy.url,
-# ntfy.topic, ntfy.token, ntfy.user, ntfy.password, tar1090_url, db.files, db.base_url,
-# cache_dir, or listen need a restart.
-#
-# Mount this at /config/config.yaml (or point SKY_CONFIG elsewhere). Any setting here
-# can also be given as an environment variable, which wins over the file:
-#   ntfy.topic          -> SKY_NTFY_TOPIC
-#   source.poll_interval -> SKY_SOURCE_POLL_INTERVAL
-#   filters.max_distance_nm -> SKY_FILTERS_MAX_DISTANCE_NM
-#
-# Unknown keys here, and unknown SKY_* variables, are startup errors — a typo should
-# not silently leave you on a default.
+# sky-notify startup configuration — every key is optional except ntfy.topic.
+# This file is read once. Hot-reloaded settings live in alerts.yaml.
+# Mount at /config/config.yaml or point SKY_CONFIG elsewhere. Environment wins over YAML.
 
 source:
   # An http(s) URL, or an absolute path if you bind-mount ultrafeeder's data directory.
   url: http://ultrafeeder/data/aircraft.json
-  poll_interval: 15s
-  # aircraft.json carries its own timestamp. If it drifts further than this from the
-  # wall clock in either direction, the poll is treated as failed rather than trusted —
-  # a feeder that dies while still serving a frozen file is the failure worth catching.
+  # aircraft.json carries its own timestamp. Reject stale or future-dated data.
   max_age: 60s
 
 ntfy:
@@ -27,60 +14,17 @@ ntfy:
   # token: tk_...      # Bearer token, or:
   # user: someone
   # password: secret
-  priority: 3          # 1-5. Used when no rule matches a database alert.
-
-# Override emergency priorities by code. Omitted codes remain at priority 5; 0 mutes one.
-# squawk_priority:
-#   "7700": 5          # general emergency
-#   "7600": 4          # radio failure
-#   "7500": 5          # hijack
-
-# First matching rule wins. Put specific exceptions before broad rules; priority 0 mutes.
-# rules:
-#   - name: Air Force One
-#     tags: [Air Force One]
-#     priority: 5
-#   - name: Bombers
-#     tags: [Strategic Bomber]
-#     priority: 4
-#   - name: Mute routine military
-#     cmpg: [Mil]
-#     priority: 0
 
 db:
-  # Which lists to load, in precedence order — the first file to define an ICAO wins.
-  # plane-alert-db.csv is the superset; the mil/civ/gov/pol files are subsets of it.
+  # The first file to define an ICAO wins. plane-alert-db.csv is the superset.
   files:
     - plane-alert-db.csv
   base_url: https://raw.githubusercontent.com/sdr-enthusiasts/plane-alert-db/main
-  refresh_interval: 24h
 
-# Holds the cached list and the cooldown ledger. Put a volume here.
+# Holds the cached list and cooldown ledger. Put a volume here.
 cache_dir: /data
-
-# How long to stay quiet about an aircraft after alerting on it. Tracked separately per
-# trigger, so a routine sighting never mutes a later emergency squawk from the same airframe.
-cooldown: 24h
-
-filters:
-  # All off by default: the interesting-aircraft list is already the filter, and a
-  # default radius would silently suppress the alerts you installed this for.
-  #
-  # These FAIL CLOSED. With a filter enabled, an aircraft whose data cannot answer it is
-  # suppressed — so max_distance_nm hides Mode-S-only traffic that broadcasts no position,
-  # which is often exactly the military traffic you wanted. Emergencies bypass all of them.
-  min_altitude_ft: 0
-  max_altitude_ft: 0
-  max_distance_nm: 0
-  lat: null            # your receiver, required only for max_distance_nm
-  lon: null
-
-# Alert on squawk 7500 (hijack), 7600 (radio failure) and 7700 (general emergency),
-# whether or not the aircraft is on the interesting list.
-alert_on_emergency_squawk: true
 
 # Optional: makes each notification click through to your own map.
 tar1090_url: ""
 
-log_level: info
 listen: ":8080"

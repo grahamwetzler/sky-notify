@@ -58,9 +58,10 @@ a database rule still alerts when it broadcasts an enabled emergency squawk.
 
 ## Configuration
 
-Configure with environment variables, an optional YAML file, or both — **environment
-wins over the file, which wins over the defaults**. The file is optional; if
-`/config/config.yaml` isn't there, that's fine.
+Configure with environment variables and two optional YAML files — **environment wins
+over the files, which win over the defaults**. `config.yaml` contains startup-only
+settings. `alerts.yaml` contains hot-reloaded settings and defaults beside the resolved
+config path. Missing files are fine. See both example files for the exact split.
 
 | Variable | Default | |
 |---|---|---|
@@ -84,6 +85,7 @@ wins over the file, which wins over the defaults**. The file is optional; if
 | `SKY_LOG_LEVEL` | `info` | |
 | `SKY_LISTEN` | `:8080` | serves `/healthz` |
 | `SKY_CONFIG` | `/config/config.yaml` | |
+| `SKY_ALERTS_CONFIG` | `alerts.yaml` beside `SKY_CONFIG` | |
 
 A typo'd YAML key or an unrecognised `SKY_*` variable is a **startup error**, not a
 silent fallback to the default. `SKY_` is this service's namespace, and
@@ -91,10 +93,9 @@ silent fallback to the default. `SKY_` is this service's namespace, and
 
 ## Things worth knowing
 
-The config file is re-read every 5 seconds. Alerting rules, priorities, filters, cooldown,
-log level, and poll/refresh intervals update live; changes to `source.url`,
-`source.max_age`, `ntfy.url`, `ntfy.topic`, `ntfy.token`, `ntfy.user`, `ntfy.password`,
-`tar1090_url`, `db.files`, `db.base_url`, `cache_dir`, or `listen` need a restart.
+`config.yaml` is read at startup. `alerts.yaml` is re-read every 5 seconds, so every
+setting in it updates live. A key placed in the wrong file is a startup error that names
+the file it belongs in.
 
 **Filters are off by default, and they fail closed.** The interesting-aircraft list is
 already the filter — a default radius would silently suppress the alerts you installed
