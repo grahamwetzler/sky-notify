@@ -127,7 +127,14 @@ go vet ./...
 docker build -t sky-notify .
 ```
 
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs gofmt/vet/test on every
+push and pull request. Pushes to `main` and `v*` tags also publish a multi-arch
+(amd64 + arm64) image to `ghcr.io/<owner>/sky-notify` — `latest` from `main`, semver tags
+from releases. Nothing to configure: it authenticates with the built-in `GITHUB_TOKEN`.
+
 ## Credits & licence
+
+This service is MIT licensed — see [`LICENSE`](LICENSE).
 
 The interesting-aircraft list is [plane-alert-db](https://github.com/sdr-enthusiasts/plane-alert-db)
 by the SDR Enthusiasts, used under ODbL 1.0 / DbCL 1.0. This service only reads it.
