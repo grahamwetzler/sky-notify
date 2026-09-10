@@ -119,14 +119,13 @@ func NewLive(c *Alerts) *Live {
 
 func (l *Live) Get() *Alerts { return l.p.Load() }
 
+// defaultConfig carries only values that are not statements about someone else's
+// deployment. Where the aircraft feed lives, which ntfy server to post to, where the
+// database is hosted and where the cache goes are all site facts: guessing them means
+// a misconfigured instance quietly talks to the wrong host instead of refusing to start.
 func defaultConfig() *Config {
 	c := &Config{}
-	c.Source.URL = "http://ultrafeeder/data/aircraft.json"
 	c.Source.MaxAge = Duration(60 * time.Second)
-	c.Ntfy.URL = "https://ntfy.sh"
-	c.DB.Files = []string{"plane-alert-db.csv"}
-	c.DB.BaseURL = "https://raw.githubusercontent.com/sdr-enthusiasts/plane-alert-db/main"
-	c.CacheDir = "/data"
 	c.Listen = ":8080"
 	return c
 }
@@ -478,8 +477,19 @@ func (w *configWatcher) run(ctx context.Context, live *Live, environ []string, i
 var dbFileRe = regexp.MustCompile(`^[A-Za-z0-9._-]+\.csv$`)
 
 func (c *Config) validate() error {
-	if c.Ntfy.Topic == "" {
-		return fmt.Errorf("ntfy.topic is required (set SKY_NTFY_TOPIC)")
+	for _, r := range []struct{ name, env, val string }{
+		{"source.url", "SKY_SOURCE_URL", c.Source.URL},
+		{"ntfy.url", "SKY_NTFY_URL", c.Ntfy.URL},
+		{"ntfy.topic", "SKY_NTFY_TOPIC", c.Ntfy.Topic},
+		{"db.base_url", "SKY_DB_BASE_URL", c.DB.BaseURL},
+		{"cache_dir", "SKY_CACHE_DIR", c.CacheDir},
+	} {
+		if r.val == "" {
+			return fmt.Errorf("%s is required (set %s)", r.name, r.env)
+		}
+	}
+	if len(c.DB.Files) == 0 {
+		return fmt.Errorf("db.files is required (set SKY_DB_FILES)")
 	}
 	if len(c.Ntfy.Topic) > 64 || !regexp.MustCompile(`^[A-Za-z0-9_-]+$`).MatchString(c.Ntfy.Topic) {
 		return fmt.Errorf("ntfy.topic must be 1-64 chars of [A-Za-z0-9_-]")
@@ -517,9 +527,6 @@ func (c *Config) validate() error {
 		return fmt.Errorf("ntfy: user and password must be set together")
 	}
 
-	if len(c.DB.Files) == 0 {
-		return fmt.Errorf("db.files must not be empty")
-	}
 	seen := map[string]bool{}
 	for _, f := range c.DB.Files {
 		if !dbFileRe.MatchString(f) {

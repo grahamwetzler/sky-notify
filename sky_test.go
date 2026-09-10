@@ -18,9 +18,25 @@ import (
 func testConfig(t *testing.T) *Config {
 	t.Helper()
 	c := defaultConfig()
+	c.Source.URL = "http://source.invalid/data/aircraft.json"
+	c.Ntfy.URL = "https://ntfy.invalid"
 	c.Ntfy.Topic = "test-topic"
+	c.DB.BaseURL = "https://db.invalid/plane-alert-db"
+	c.DB.Files = []string{"plane-alert-db.csv"}
 	c.CacheDir = t.TempDir()
 	return c
+}
+
+// requiredEnv is the environment LoadConfig needs before it will start: none of these
+// have a default any more. ntfy.topic is left out so tests can supply it either way.
+func requiredEnv() []string {
+	return []string{
+		"SKY_SOURCE_URL=http://source.invalid/data/aircraft.json",
+		"SKY_NTFY_URL=https://ntfy.invalid",
+		"SKY_DB_BASE_URL=https://db.invalid/plane-alert-db",
+		"SKY_DB_FILES=plane-alert-db.csv",
+		"SKY_CACHE_DIR=/tmp/sky-notify-test",
+	}
 }
 
 func mustParse(t *testing.T, csv string) []Plane {
@@ -420,7 +436,7 @@ func loadWith(t *testing.T, yaml string, env ...string) (*Config, error) {
 			t.Fatal(err)
 		}
 	}
-	return LoadConfig(append([]string{"SKY_CONFIG=" + path}, env...))
+	return LoadConfig(append(append(requiredEnv(), "SKY_CONFIG="+path), env...))
 }
 
 func loadAlertsWith(t *testing.T, yaml string, env ...string) (*Alerts, error) {
@@ -582,7 +598,7 @@ func TestWatchConfigReloadsWhenMissingFileAppearsAndChanges(t *testing.T) {
 }
 
 func TestConfigMissingFileIsFine(t *testing.T) {
-	if _, err := LoadConfig([]string{"SKY_CONFIG=/nonexistent/nope.yaml", "SKY_NTFY_TOPIC=t"}); err != nil {
+	if _, err := LoadConfig(append(requiredEnv(), "SKY_CONFIG=/nonexistent/nope.yaml", "SKY_NTFY_TOPIC=t")); err != nil {
 		t.Fatalf("a missing config file should not be an error: %v", err)
 	}
 }
@@ -602,7 +618,7 @@ func TestEmptyConfigFilesUseDefaults(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	env := []string{"SKY_CONFIG=" + config, "SKY_ALERTS_CONFIG=" + alerts, "SKY_NTFY_TOPIC=t"}
+	env := append(requiredEnv(), "SKY_CONFIG="+config, "SKY_ALERTS_CONFIG="+alerts, "SKY_NTFY_TOPIC=t")
 	cfg, err := LoadConfig(env)
 	if err != nil || cfg.Listen != defaultConfig().Listen {
 		t.Fatalf("config = %+v, err = %v", cfg, err)
@@ -660,7 +676,7 @@ func TestAlertsDefaultBesideResolvedConfig(t *testing.T) {
 }
 
 func TestBothLoadersKnowBothEnvironmentTables(t *testing.T) {
-	env := []string{"SKY_CONFIG=/nonexistent/config.yaml", "SKY_ALERTS_CONFIG=/nonexistent/alerts.yaml", "SKY_NTFY_TOPIC=t", "SKY_COOLDOWN=2h"}
+	env := append(requiredEnv(), "SKY_CONFIG=/nonexistent/config.yaml", "SKY_ALERTS_CONFIG=/nonexistent/alerts.yaml", "SKY_NTFY_TOPIC=t", "SKY_COOLDOWN=2h")
 	if _, err := LoadConfig(env); err != nil {
 		t.Fatal(err)
 	}
@@ -702,31 +718,38 @@ func TestConfigRejectsUnknownSKYEnvVarButAcceptsSKYCONFIG(t *testing.T) {
 }
 
 func TestConfigValidation(t *testing.T) {
-	for _, tc := range []struct{ name, yaml string }{
-		{"no topic", "ntfy:\n  topic: \"\"\n"},
-		{"topic with slash", "ntfy:\n  topic: a/b\n"},
-		{"bad priority", "ntfy:\n  topic: t\n  priority: 9\n"},
-		{"token and password", "ntfy:\n  topic: t\n  token: x\n  user: u\n  password: p\n"},
-		{"user without password", "ntfy:\n  topic: t\n  user: u\n"},
-		{"empty db files", "ntfy:\n  topic: t\ndb:\n  files: []\n"},
-		{"db file traversal", "ntfy:\n  topic: t\ndb:\n  files: ['../../etc/passwd.csv']\n"},
-		{"db file not csv", "ntfy:\n  topic: t\ndb:\n  files: ['x.txt']\n"},
-		{"duplicate db file", "ntfy:\n  topic: t\ndb:\n  files: ['a.csv','a.csv']\n"},
-		{"bad source scheme", "ntfy:\n  topic: t\nsource:\n  url: htp://oops/data.json\n"},
-		{"relative source path", "ntfy:\n  topic: t\nsource:\n  url: data/aircraft.json\n"},
-		{"zero cooldown", "ntfy:\n  topic: t\ncooldown: 0s\n"},
-		{"distance without position", "ntfy:\n  topic: t\nfilters:\n  max_distance_nm: 50\n"},
-		{"lat out of range", "ntfy:\n  topic: t\nfilters:\n  lat: 91.0\n  lon: 0.0\n"},
-		{"inverted altitudes", "ntfy:\n  topic: t\nfilters:\n  min_altitude_ft: 5000\n  max_altitude_ft: 1000\n"},
-		{"bad tar1090 url", "ntfy:\n  topic: t\ntar1090_url: 'not a url'\n"},
-		{"negative distance", "ntfy:\n  topic: t\nfilters:\n  max_distance_nm: -5\n"},
-		{"bad squawk key", "ntfy:\n  topic: t\nsquawk_priority:\n  '1200': 3\n"},
-		{"bad squawk priority", "ntfy:\n  topic: t\nsquawk_priority:\n  '7700': 6\n"},
-		{"rule priority missing", "ntfy:\n  topic: t\nrules:\n  - cmpg: [Mil]\n"},
-		{"bad rule priority", "ntfy:\n  topic: t\nrules:\n  - cmpg: [Mil]\n    priority: -1\n"},
-		{"rule without fields", "ntfy:\n  topic: t\nrules:\n  - name: everything\n    priority: 3\n"},
+	for _, tc := range []struct {
+		name, yaml string
+		env        []string
+	}{
+		{name: "no topic", yaml: "ntfy:\n  topic: \"\"\n"},
+		{name: "no source url", env: []string{"SKY_SOURCE_URL="}},
+		{name: "no ntfy url", env: []string{"SKY_NTFY_URL="}},
+		{name: "no db base url", env: []string{"SKY_DB_BASE_URL="}},
+		{name: "no cache dir", env: []string{"SKY_CACHE_DIR="}},
+		{name: "topic with slash", yaml: "ntfy:\n  topic: a/b\n"},
+		{name: "bad priority", yaml: "ntfy:\n  topic: t\n  priority: 9\n"},
+		{name: "token and password", yaml: "ntfy:\n  topic: t\n  token: x\n  user: u\n  password: p\n"},
+		{name: "user without password", yaml: "ntfy:\n  topic: t\n  user: u\n"},
+		{name: "empty db files", env: []string{"SKY_DB_FILES="}},
+		{name: "db file traversal", env: []string{"SKY_DB_FILES=../../etc/passwd.csv"}},
+		{name: "db file not csv", env: []string{"SKY_DB_FILES=x.txt"}},
+		{name: "duplicate db file", env: []string{"SKY_DB_FILES=a.csv,a.csv"}},
+		{name: "bad source scheme", env: []string{"SKY_SOURCE_URL=htp://oops/data.json"}},
+		{name: "relative source path", env: []string{"SKY_SOURCE_URL=data/aircraft.json"}},
+		{name: "zero cooldown", yaml: "ntfy:\n  topic: t\ncooldown: 0s\n"},
+		{name: "distance without position", yaml: "ntfy:\n  topic: t\nfilters:\n  max_distance_nm: 50\n"},
+		{name: "lat out of range", yaml: "ntfy:\n  topic: t\nfilters:\n  lat: 91.0\n  lon: 0.0\n"},
+		{name: "inverted altitudes", yaml: "ntfy:\n  topic: t\nfilters:\n  min_altitude_ft: 5000\n  max_altitude_ft: 1000\n"},
+		{name: "bad tar1090 url", yaml: "ntfy:\n  topic: t\ntar1090_url: 'not a url'\n"},
+		{name: "negative distance", yaml: "ntfy:\n  topic: t\nfilters:\n  max_distance_nm: -5\n"},
+		{name: "bad squawk key", yaml: "ntfy:\n  topic: t\nsquawk_priority:\n  '1200': 3\n"},
+		{name: "bad squawk priority", yaml: "ntfy:\n  topic: t\nsquawk_priority:\n  '7700': 6\n"},
+		{name: "rule priority missing", yaml: "ntfy:\n  topic: t\nrules:\n  - cmpg: [Mil]\n"},
+		{name: "bad rule priority", yaml: "ntfy:\n  topic: t\nrules:\n  - cmpg: [Mil]\n    priority: -1\n"},
+		{name: "rule without fields", yaml: "ntfy:\n  topic: t\nrules:\n  - name: everything\n    priority: 3\n"},
 	} {
-		if _, err := loadWith(t, tc.yaml); err == nil {
+		if _, err := loadWith(t, tc.yaml, tc.env...); err == nil {
 			t.Errorf("%s: want a validation error", tc.name)
 		}
 	}
@@ -784,7 +807,7 @@ func TestZeroCoordinatesAreValid(t *testing.T) {
 }
 
 func TestAbsoluteFilePathSourceIsAccepted(t *testing.T) {
-	cfg, err := loadWith(t, "ntfy:\n  topic: t\nsource:\n  url: /run/ultrafeeder/aircraft.json\n")
+	cfg, err := loadWith(t, "ntfy:\n  topic: t\n", "SKY_SOURCE_URL=/run/ultrafeeder/aircraft.json")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,28 +1,35 @@
-# sky-notify startup configuration — every key is optional except ntfy.topic.
-# This file is read once. Hot-reloaded settings live in alerts.yaml.
-# Mount at /config/config.yaml or point SKY_CONFIG elsewhere. Environment wins over YAML.
+# sky-notify startup configuration. This file is read once; hot-reloaded settings live
+# in alerts.yaml. Mount at /config/config.yaml or point SKY_CONFIG elsewhere.
+# Environment wins over YAML.
+#
+# Nothing below is guessed for you. Every key here except tar1090_url is REQUIRED:
+# they describe your deployment — which feeder, which ntfy server, which database
+# mirror, which volume — and a wrong guess would silently talk to the wrong host.
 
 source:
-  # An http(s) URL, or an absolute path if you bind-mount ultrafeeder's data directory.
-  url: http://ultrafeeder/data/aircraft.json
+  # An http(s) URL, or an absolute path if you bind-mount the feeder's data directory.
+  # e.g. http://ultrafeeder/data/aircraft.json, or /run/ultrafeeder/aircraft.json
+  url: ""
   # aircraft.json carries its own timestamp. Reject stale or future-dated data.
   max_age: 60s
 
 ntfy:
-  url: https://ntfy.sh
-  topic: ""            # REQUIRED. On public ntfy.sh the topic name is the only secret.
+  url: ""              # e.g. https://ntfy.sh, or your own https://ntfy.example.com
+  topic: ""            # On a public ntfy server the topic name is the only secret.
   # token: tk_...      # Bearer token, or:
   # user: someone
   # password: secret
 
 db:
-  # The first file to define an ICAO wins. plane-alert-db.csv is the superset.
-  files:
-    - plane-alert-db.csv
-  base_url: https://raw.githubusercontent.com/sdr-enthusiasts/plane-alert-db/main
+  # The first file to define an ICAO wins. In the plane-alert-db project
+  # plane-alert-db.csv is the superset.
+  files: []
+  # Where those files are served from, e.g.
+  # https://raw.githubusercontent.com/sdr-enthusiasts/plane-alert-db/main
+  base_url: ""
 
-# Holds the cached list and cooldown ledger. Put a volume here.
-cache_dir: /data
+# Holds the cached list and the cooldown ledger. Put a volume here.
+cache_dir: ""
 
 # Optional: makes each notification click through to your own map.
 tar1090_url: ""

@@ -25,14 +25,22 @@ services:
     image: ghcr.io/grahamwetzler/sky-notify:latest
     restart: unless-stopped
     environment:
-      SKY_NTFY_TOPIC: your-secret-topic-name
       SKY_SOURCE_URL: http://ultrafeeder/data/aircraft.json
+      SKY_NTFY_URL: https://ntfy.sh
+      SKY_NTFY_TOPIC: your-secret-topic-name
+      SKY_DB_BASE_URL: https://raw.githubusercontent.com/sdr-enthusiasts/plane-alert-db/main
+      SKY_DB_FILES: plane-alert-db.csv
+      SKY_CACHE_DIR: /data
     volumes:
       - sky-notify-data:/data
 
 volumes:
   sky-notify-data:
 ```
+
+All six are required. sky-notify assumes nothing about your deployment — which feeder,
+which ntfy server, which database mirror, which volume — so a misconfigured instance
+refuses to start instead of quietly talking to somewhere you did not choose.
 
 Subscribe to that topic in the ntfy app and you're done. On public ntfy.sh **the topic
 name is the only secret**, so pick something unguessable.
@@ -65,18 +73,18 @@ config path. Missing files are fine. See both example files for the exact split.
 
 | Variable | Default | |
 |---|---|---|
+| `SKY_SOURCE_URL` | — | **required**; an http(s) URL **or** an absolute file path |
+| `SKY_NTFY_URL` | — | **required**; `https://ntfy.sh` or your own server |
 | `SKY_NTFY_TOPIC` | — | **required** |
-| `SKY_NTFY_URL` | `https://ntfy.sh` | set this for self-hosted ntfy |
+| `SKY_DB_BASE_URL` | — | **required**; e.g. plane-alert-db `main`, or a fork |
+| `SKY_DB_FILES` | — | **required**; comma-separated, first file to define an ICAO wins |
+| `SKY_CACHE_DIR` | — | **required**; holds the cached list and cooldown ledger |
 | `SKY_NTFY_TOKEN` | — | or `SKY_NTFY_USER` + `SKY_NTFY_PASSWORD` |
 | `SKY_NTFY_PRIORITY` | `3` | 1–5; emergencies always send at 5 |
-| `SKY_SOURCE_URL` | `http://ultrafeeder/data/aircraft.json` | an http(s) URL **or** an absolute file path |
 | `SKY_SOURCE_POLL_INTERVAL` | `15s` | |
 | `SKY_SOURCE_MAX_AGE` | `60s` | how stale `aircraft.json` may be before the feed counts as dead |
 | `SKY_COOLDOWN` | `24h` | how long to stay quiet about an aircraft after alerting |
-| `SKY_DB_FILES` | `plane-alert-db.csv` | comma-separated; first file to define an ICAO wins |
-| `SKY_DB_BASE_URL` | plane-alert-db `main` | point at a fork if you like |
 | `SKY_DB_REFRESH_INTERVAL` | `24h` | |
-| `SKY_CACHE_DIR` | `/data` | |
 | `SKY_TAR1090_URL` | — | makes notifications click through to your map |
 | `SKY_ALERT_ON_EMERGENCY_SQUAWK` | `true` | 7500 / 7600 / 7700, listed or not |
 | `SKY_FILTERS_LAT` / `_LON` | — | your receiver; needed only for the distance filter |

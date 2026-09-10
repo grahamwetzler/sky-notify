@@ -4,24 +4,27 @@ services:
     container_name: sky-notify
     restart: unless-stopped
     environment:
-      # --- required ---
-      SKY_NTFY_TOPIC: your-secret-topic-name
-
-      # --- where to read aircraft from ---
-      # An http(s) URL, or an absolute path if you bind-mount ultrafeeder's data.
+      # --- required: nothing here has a default, the service refuses to start without it ---
+      # Where to read aircraft from. An http(s) URL, or an absolute path if you
+      # bind-mount ultrafeeder's data directory.
       SKY_SOURCE_URL: http://ultrafeeder/data/aircraft.json
-      SKY_SOURCE_POLL_INTERVAL: 15s
-
-      # --- ntfy ---
-      # SKY_NTFY_URL: https://ntfy.example.com   # self-hosted
-      # SKY_NTFY_TOKEN: tk_...                   # or SKY_NTFY_USER + SKY_NTFY_PASSWORD
-      # SKY_NTFY_PRIORITY: "3"
+      # Which ntfy server, and the topic on it. On public ntfy.sh the topic name is
+      # the only secret.
+      SKY_NTFY_URL: https://ntfy.sh
+      SKY_NTFY_TOPIC: your-secret-topic-name
+      # Which interesting-aircraft database to mirror, and which files from it.
+      SKY_DB_BASE_URL: https://raw.githubusercontent.com/sdr-enthusiasts/plane-alert-db/main
+      SKY_DB_FILES: plane-alert-db.csv
+      # Where the cached list and cooldown ledger live. Matches the volume below.
+      SKY_CACHE_DIR: /data
 
       # --- optional ---
+      # SKY_SOURCE_POLL_INTERVAL: 15s
+      # SKY_NTFY_TOKEN: tk_...                   # or SKY_NTFY_USER + SKY_NTFY_PASSWORD
+      # SKY_NTFY_PRIORITY: "3"
       # Makes each notification click through to your own map.
       # SKY_TAR1090_URL: http://ultrafeeder/
       # SKY_COOLDOWN: 24h
-      # SKY_DB_FILES: plane-alert-db.csv
       # SKY_LOG_LEVEL: info
 
       # Filters are OFF by default: the interesting-aircraft list is already the filter.
