@@ -1,3 +1,5 @@
 /sky-notify
 /data/
 config.yaml
+compose.test.yaml
+run-test.sh
