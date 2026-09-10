@@ -5,7 +5,7 @@ source:
   poll_interval: 15s
 
 ntfy:
-  priority: 3          # 1-5. Used when no rule matches a database alert.
+  priority: 3          # 1-5. Used for database alerts when rules is empty.
 
 db:
   refresh_interval: 24h
@@ -30,7 +30,7 @@ alert_on_emergency_squawk: true
 #   "7600": 4
 #   "7500": 5
 
-# First matching rule wins; priority 0 mutes.
+# A non-empty rules list allows only matching database aircraft; priority 0 mutes.
 # rules:
 #   - name: Air Force One
 #     tags: [Air Force One]

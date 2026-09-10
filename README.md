@@ -57,12 +57,13 @@ See [`docker-compose.yml`](docker-compose.yml) for a fuller example and
 The YAML-only `rules` list matches database aircraft by `icao`, `reg`, `operator`,
 `type`, `icao_type`, `cmpg`, `category`, or `tags`. Values within one field are ORed,
 fields are ANDed, and the first matching rule wins. Matches ignore case and surrounding
-space but must be exact—not substrings. Set `priority: 0` to mute a database alert.
-Put specific exceptions before broad rules.
+space but must be exact—not substrings. Without `rules`, every database aircraft alerts at
+`ntfy.priority`. With `rules`, only matching aircraft alert; set `priority: 0` to mute a
+match. Put specific exceptions before broad rules.
 
 Use `squawk_priority` to override priority for emergency codes `7500`, `7600`, and
-`7700`; `0` disables that code. Emergency rules are independent: an aircraft muted by
-a database rule still alerts when it broadcasts an enabled emergency squawk.
+`7700`; `0` disables that code. Emergency squawks are independent of rules either way:
+an aircraft excluded or muted by rules still alerts when it broadcasts an enabled one.
 
 ## Configuration
 
@@ -80,7 +81,7 @@ config path. Missing files are fine. See both example files for the exact split.
 | `SKY_DB_FILES` | — | **required**; comma-separated, first file to define an ICAO wins |
 | `SKY_CACHE_DIR` | — | **required**; holds the cached list and cooldown ledger |
 | `SKY_NTFY_TOKEN` | — | or `SKY_NTFY_USER` + `SKY_NTFY_PASSWORD` |
-| `SKY_NTFY_PRIORITY` | `3` | 1–5; emergencies always send at 5 |
+| `SKY_NTFY_PRIORITY` | `3` | 1–5; database alerts use this when `rules` is empty |
 | `SKY_SOURCE_POLL_INTERVAL` | `15s` | |
 | `SKY_SOURCE_MAX_AGE` | `60s` | how stale `aircraft.json` may be before the feed counts as dead |
 | `SKY_COOLDOWN` | `24h` | how long to stay quiet about an aircraft after alerting |
@@ -105,12 +106,12 @@ silent fallback to the default. `SKY_` is this service's namespace, and
 setting in it updates live. A key placed in the wrong file is a startup error that names
 the file it belongs in.
 
-**Filters are off by default, and they fail closed.** The interesting-aircraft list is
-already the filter — a default radius would silently suppress the alerts you installed
-this for. If you *do* enable one, an aircraft whose data can't answer it is suppressed
-rather than admitted: `max_distance_nm` hides Mode-S-only traffic that broadcasts no
-position, which is frequently the military traffic you wanted. Emergency squawks bypass
-every filter.
+**Filters are off by default, and they fail closed.** The interesting-aircraft list — and
+your `rules` allowlist, once you write one — already narrow what alerts; a default radius
+would silently suppress the alerts you installed this for. If you *do* enable one, an
+aircraft whose data can't answer it is suppressed rather than admitted: `max_distance_nm`
+hides Mode-S-only traffic that broadcasts no position, which is frequently the military
+traffic you wanted. Emergency squawks bypass every filter.
 
 **Delivery is at-least-once.** Publishing to ntfy and recording the cooldown can't be
 made atomic, so a crash in the gap between them re-alerts that aircraft on restart. The

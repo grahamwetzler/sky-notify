@@ -268,8 +268,11 @@ func TestPriorityRulesAndSquawks(t *testing.T) {
 		wantPri   int
 	}{
 		{"first match wins", []Rule{{ICAO: []string{"adeb2f"}, Priority: intp(2)}, {ICAO: []string{"adeb2f"}, Priority: intp(4)}}, "", nil, true, 2},
+		{"rules exclude unmatched aircraft", []Rule{{ICAO: []string{"ffffff"}, Priority: intp(2)}}, "", nil, false, 0},
+		{"later matching rule alerts", []Rule{{ICAO: []string{"ffffff"}, Priority: intp(2)}, {ICAO: []string{"adeb2f"}, Priority: intp(4)}}, "", nil, true, 4},
 		{"rule mutes db alert", []Rule{{ICAO: []string{"adeb2f"}, Priority: intp(0)}}, "", nil, false, 0},
 		{"emergency bypasses mute", []Rule{{ICAO: []string{"adeb2f"}, Priority: intp(0)}}, "7700", map[string]int{"7700": 4}, true, 4},
+		{"emergency bypasses allowlist", []Rule{{ICAO: []string{"ffffff"}, Priority: intp(2)}}, "7700", map[string]int{"7700": 4}, true, 4},
 		{"squawk priority zero mutes", nil, "7600", map[string]int{"7600": 0}, false, 0},
 		{"other squawk keeps default", nil, "7700", map[string]int{"7600": 0}, true, 5},
 		{"no rules uses ntfy priority", nil, "", nil, true, 3},

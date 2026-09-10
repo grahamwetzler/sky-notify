@@ -95,6 +95,9 @@ func Evaluate(ac Aircraft, db *DB, cfg *Alerts) *Alert {
 				return nil
 			}
 			a.Priority = *rule.Priority
+		} else if len(cfg.Rules) > 0 {
+			slog.Debug("no rule matched", "icao", hex)
+			return nil
 		}
 		return a
 	default:
