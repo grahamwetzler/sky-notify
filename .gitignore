@@ -3,3 +3,5 @@
 config.yaml
 compose.test.yaml
 run-test.sh
+PLAN.md
+PLAN-REVIEW-LOG.md
