@@ -240,8 +240,10 @@ func notifyLoop(ctx context.Context, live *Live, n *Notifier, state *State, q *q
 			}
 			key := cooldownKey(a.Hex, a.Trigger)
 
-			// Re-check immediately before sending: a db alert queued before a later
-			// emergency advanced both cooldowns must not be delivered behind it.
+			// Belt and braces. The queue holds one entry per key and marks it in flight,
+			// so nothing should advance this cooldown while the alert waits — but the
+			// cost of being wrong is a duplicate notification, and this check is a map
+			// lookup.
 			if !state.Eligible(key, cooldown) {
 				q.done(key)
 				continue
@@ -270,7 +272,7 @@ func notifyLoop(ctx context.Context, live *Live, n *Notifier, state *State, q *q
 
 			delete(backoff, key)
 			delete(delay, key)
-			state.Record(a.Keys(), cooldown)
+			state.Record(key, cooldown)
 			q.done(key)
 			slog.Info("notified", "icao", a.Hex, "trigger", a.Trigger, "reg", a.AC.Reg)
 		}

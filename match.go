@@ -2,23 +2,22 @@ package main
 
 import (
 	"log/slog"
-	"strconv"
 	"strings"
 )
 
-// emergencySquawks: hijack, radio failure, general emergency.
+// emergencySquawks: hijack, radio failure, general emergency. No longer a trigger — a
+// rule with a `squawk` field is — but still the label table, and still what earns an
+// alert its queue precedence and its notification framing.
 var emergencySquawks = map[string]string{
 	"7500": "hijack",
 	"7600": "radio failure",
 	"7700": "general emergency",
 }
 
-const triggerDB = "db"
-
 // Alert is one thing worth notifying about.
 type Alert struct {
 	Hex         string
-	Trigger     string // "db" or "emergency:<squawk>"
+	Trigger     string // the name of the rule that matched
 	Emergency   bool
 	Squawk      string
 	SquawkMeans string
@@ -29,94 +28,107 @@ type Alert struct {
 	Priority    int
 }
 
-// Keys are the cooldown keys this alert satisfies. An emergency on a listed aircraft
-// advances the db cooldown too, so the routine alert does not follow it.
-func (a *Alert) Keys() []string {
-	keys := []string{a.Hex + "|" + a.Trigger}
-	if a.Emergency && a.Plane != nil {
-		keys = append(keys, a.Hex+"|"+triggerDB)
-	}
-	return keys
-}
-
 func cooldownKey(hex, trigger string) string { return hex + "|" + trigger }
 
-// Evaluate decides whether one aircraft is worth alerting on. It returns at most one
-// alert: when both triggers fire, the emergency wins and carries the DB metadata.
+// Evaluate decides whether one aircraft is worth alerting on. Rules are the only reason
+// anything alerts: with no rules configured this always returns nil, emergencies included.
 func Evaluate(ac Aircraft, db *DB, cfg *Alerts) *Alert {
 	hex := normalizeHex(ac.Hex)
 	if hex == "" {
 		return nil
 	}
-
 	var plane *Plane
 	if !isNonICAO(hex) {
-		if p, ok := db.Lookup(hex); ok {
-			plane = p
-		}
+		plane, _ = db.Lookup(hex)
 	}
-
-	squawk := strings.TrimSpace(ac.Squawk)
-	means, isEmergency := emergencySquawks[squawk]
-	isEmergency = isEmergency && cfg.AlertOnEmergencySquawk
-
 	a := &Alert{Hex: hex, Plane: plane, AC: ac}
-	if cfg.Filters.Lat != nil && cfg.Filters.Lon != nil && ac.Lat != nil && ac.Lon != nil {
-		a.DistanceNM = haversineNM(*cfg.Filters.Lat, *cfg.Filters.Lon, *ac.Lat, *ac.Lon)
+	if cfg.Lat != nil && cfg.Lon != nil && ac.Lat != nil && ac.Lon != nil {
+		a.DistanceNM = haversineNM(*cfg.Lat, *cfg.Lon, *ac.Lat, *ac.Lon)
 		a.HasDistance = true
 	}
-
-	switch {
-	case isEmergency:
-		// Emergencies bypass every filter: a 7700 at any altitude or distance, with or
-		// without a position, is always worth knowing about.
-		a.Trigger = "emergency:" + squawk
-		a.Emergency = true
-		a.Squawk = squawk
-		a.SquawkMeans = means
-		a.Priority = cfg.SquawkPriority[squawk]
-		if a.Priority == 0 {
-			return nil
-		}
-		return a
-	case plane != nil:
-		if !passesFilters(ac, a, cfg) {
-			return nil
-		}
-		a.Trigger = triggerDB
-		a.Priority = cfg.Ntfy.Priority
-		if i, rule := firstMatch(cfg.Rules, plane); rule != nil {
-			name := rule.Name
-			if name == "" {
-				name = strconv.Itoa(i)
-			}
-			slog.Debug("rule matched", "rule", name, "icao", hex, "priority", *rule.Priority)
-			if *rule.Priority == 0 {
-				return nil
-			}
-			a.Priority = *rule.Priority
-		} else if len(cfg.Rules) > 0 {
-			slog.Debug("no rule matched", "icao", hex)
-			return nil
-		}
-		return a
-	default:
+	rule := firstMatch(cfg.Rules, ac, plane, a)
+	if rule == nil {
 		return nil
 	}
+	priority := cfg.Ntfy.Priority
+	if rule.Priority != nil {
+		priority = *rule.Priority
+	}
+	if priority == 0 {
+		slog.Debug("rule matched but muted", "rule", rule.Name, "icao", hex)
+		return nil
+	}
+	a.Trigger, a.Priority = rule.Name, priority
+	// Derived from the squawk itself, never from which rule fired: the queue's eviction
+	// and ordering (main.go) and the notification's framing (notify.go) must treat a 7700
+	// as urgent however the operator happened to write the rule that caught it.
+	if squawk := strings.TrimSpace(ac.Squawk); emergencySquawks[squawk] != "" {
+		a.Emergency, a.Squawk, a.SquawkMeans = true, squawk, emergencySquawks[squawk]
+	}
+	return a
 }
 
-// firstMatch returns the first rule matching p, or -1 and nil.
-func firstMatch(rules []Rule, p *Plane) (int, *Rule) {
+// firstMatch returns the first rule matching the aircraft, or nil. First match wins, so
+// a narrow exception placed ahead of a broad rule shadows it.
+func firstMatch(rules []Rule, ac Aircraft, p *Plane, a *Alert) *Rule {
 	for i := range rules {
-		r := &rules[i]
-		if matches(r.ICAO, p.ICAO) && matches(r.Reg, p.Reg) &&
-			matches(r.Operator, p.Operator) && matches(r.Type, p.Type) &&
-			matches(r.ICAOType, p.ICAOType) && matches(r.CMPG, p.CMPG) &&
-			matches(r.Category, p.Category) && matchesAny(r.Tags, p.Tags) {
-			return i, r
+		if rules[i].matches(ac, p, a) {
+			return &rules[i]
 		}
 	}
-	return -1, nil
+	return nil
+}
+
+// matches ANDs every condition the rule states. A field the rule leaves out is not a
+// condition at all, which is what makes an empty rules list silent rather than universal.
+func (r *Rule) matches(ac Aircraft, p *Plane, a *Alert) bool {
+	if r.Listed != nil && *r.Listed != (p != nil) {
+		return false
+	}
+	// Database fields need no "requires a listed aircraft" guard: with p nil every value
+	// below is empty, and matches() already fails a non-empty want against an empty got.
+	var db Plane
+	if p != nil {
+		db = *p
+	}
+	if !matches(r.ICAO, a.Hex) || !matches(r.Squawk, strings.TrimSpace(ac.Squawk)) {
+		return false
+	}
+	if !matches(r.Operator, db.Operator) || !matches(r.Type, db.Type) ||
+		!matches(r.CMPG, db.CMPG) || !matches(r.Category, db.Category) || !matchesAny(r.Tags, db.Tags) {
+		return false
+	}
+	// Registration and ICAO type exist in both the database and the feed, and disagree
+	// often enough (the feed carries what the aircraft broadcasts) that either source
+	// satisfying the rule has to count.
+	if !matchesEither(r.Reg, db.Reg, ac.Reg) || !matchesEither(r.ICAOType, db.ICAOType, ac.Type) {
+		return false
+	}
+	return r.withinLimits(ac, a)
+}
+
+func matchesEither(want []string, a, b string) bool {
+	return len(want) == 0 || matches(want, a) || matches(want, b)
+}
+
+// withinLimits fails closed: a rule that states a limit suppresses an aircraft whose data
+// cannot answer it, rather than admitting it on a zero value. max_distance_nm therefore
+// hides Mode-S-only traffic that broadcasts no position — frequently the military traffic
+// the rule was written for — so a rule states a limit only when it means it.
+func (r *Rule) withinLimits(ac Aircraft, a *Alert) bool {
+	if r.MaxDistanceNM != nil && (!a.HasDistance || a.DistanceNM > *r.MaxDistanceNM) {
+		return false
+	}
+	if r.MinAltitudeFt == nil && r.MaxAltitudeFt == nil {
+		return true
+	}
+	if !ac.AltBaro.Present {
+		return false
+	}
+	if r.MinAltitudeFt != nil && ac.AltBaro.Feet < *r.MinAltitudeFt {
+		return false
+	}
+	return r.MaxAltitudeFt == nil || ac.AltBaro.Feet <= *r.MaxAltitudeFt
 }
 
 func matches(want []string, got string) bool {
@@ -142,30 +154,4 @@ func matchesAny(want, got []string) bool {
 		}
 	}
 	return false
-}
-
-// passesFilters fails closed: an enabled filter suppresses an aircraft whose data
-// cannot answer it, rather than admitting it on a zero value.
-func passesFilters(ac Aircraft, a *Alert, cfg *Alerts) bool {
-	f := &cfg.Filters
-	if f.MaxDistanceNM > 0 {
-		if !a.HasDistance {
-			return false
-		}
-		if a.DistanceNM > f.MaxDistanceNM {
-			return false
-		}
-	}
-	if f.MinAltitudeFt > 0 || f.MaxAltitudeFt > 0 {
-		if !ac.AltBaro.Present {
-			return false
-		}
-		if f.MinAltitudeFt > 0 && ac.AltBaro.Feet < f.MinAltitudeFt {
-			return false
-		}
-		if f.MaxAltitudeFt > 0 && ac.AltBaro.Feet > f.MaxAltitudeFt {
-			return false
-		}
-	}
-	return true
 }

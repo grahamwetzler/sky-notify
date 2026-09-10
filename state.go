@@ -71,15 +71,13 @@ func (s *State) Eligible(key string, cooldown time.Duration) bool {
 	return !ok || s.Now().Sub(t) >= cooldown
 }
 
-// Record advances the cooldown for every key and persists synchronously. The write
+// Record advances the cooldown and persists synchronously. The write
 // error is reported (and surfaced in /healthz) but never returned as a reason to retry
 // the notification.
-func (s *State) Record(keys []string, cooldown time.Duration) {
+func (s *State) Record(key string, cooldown time.Duration) {
 	now := s.Now()
 	s.mu.Lock()
-	for _, k := range keys {
-		s.last[k] = now
-	}
+	s.last[key] = now
 	s.prune(cooldown, now)
 	s.gen++
 	s.dirty = true

@@ -52,18 +52,15 @@ currently overhead.
 See [`docker-compose.yml`](docker-compose.yml) for a fuller example and
 [`config.example.yaml`](config.example.yaml) for every setting.
 
-### Alert priority rules
+### Rules
 
-The YAML-only `rules` list matches database aircraft by `icao`, `reg`, `operator`,
-`type`, `icao_type`, `cmpg`, `category`, or `tags`. Values within one field are ORed,
-fields are ANDed, and the first matching rule wins. Matches ignore case and surrounding
-space but must be exact—not substrings. Without `rules`, every database aircraft alerts at
-`ntfy.priority`. With `rules`, only matching aircraft alert; set `priority: 0` to mute a
-match. Put specific exceptions before broad rules.
-
-Use `squawk_priority` to override priority for emergency codes `7500`, `7600`, and
-`7700`; `0` disables that code. Emergency squawks are independent of rules either way:
-an aircraft excluded or muted by rules still alerts when it broadcasts an enabled one.
+Nothing alerts unless a rule in `alerts.yaml` matches, including emergency squawks and
+aircraft in plane-alert-db. Rules can match feed fields (`icao`, `reg`, `icao_type`,
+`squawk`), database fields (`operator`, `type`, `cmpg`, `category`, `tags`), database
+membership (`listed`), and per-rule altitude or distance limits. Values within one field
+are ORed, fields and limits are ANDed, and the first matching rule wins. Matches ignore
+case and surrounding space but must be exact—not substrings. A rule without `priority`
+uses `ntfy.priority`; `priority: 0` mutes and stops evaluation. Put exceptions first.
 
 ## Configuration
 
@@ -81,16 +78,13 @@ config path. Missing files are fine. See both example files for the exact split.
 | `SKY_DB_FILES` | — | **required**; comma-separated, first file to define an ICAO wins |
 | `SKY_CACHE_DIR` | — | **required**; holds the cached list and cooldown ledger |
 | `SKY_NTFY_TOKEN` | — | or `SKY_NTFY_USER` + `SKY_NTFY_PASSWORD` |
-| `SKY_NTFY_PRIORITY` | `3` | 1–5; database alerts use this when `rules` is empty |
+| `SKY_NTFY_PRIORITY` | `3` | 1–5; default for rules that omit `priority` |
 | `SKY_SOURCE_POLL_INTERVAL` | `15s` | |
 | `SKY_SOURCE_MAX_AGE` | `60s` | how stale `aircraft.json` may be before the feed counts as dead |
 | `SKY_COOLDOWN` | `24h` | how long to stay quiet about an aircraft after alerting |
 | `SKY_DB_REFRESH_INTERVAL` | `24h` | |
 | `SKY_TAR1090_URL` | — | makes notifications click through to your map |
-| `SKY_ALERT_ON_EMERGENCY_SQUAWK` | `true` | 7500 / 7600 / 7700, listed or not |
-| `SKY_FILTERS_LAT` / `_LON` | — | your receiver; needed only for the distance filter |
-| `SKY_FILTERS_MAX_DISTANCE_NM` | `0` (off) | |
-| `SKY_FILTERS_MIN_ALTITUDE_FT` / `_MAX_ALTITUDE_FT` | `0` (off) | |
+| `SKY_LAT` / `SKY_LON` | — | your receiver; needed by rules with `max_distance_nm` |
 | `SKY_LOG_LEVEL` | `info` | |
 | `SKY_LISTEN` | `:8080` | serves `/healthz` |
 | `SKY_CONFIG` | `/config/config.yaml` | |
@@ -106,22 +100,17 @@ silent fallback to the default. `SKY_` is this service's namespace, and
 setting in it updates live. A key placed in the wrong file is a startup error that names
 the file it belongs in.
 
-**Filters are off by default, and they fail closed.** The interesting-aircraft list — and
-your `rules` allowlist, once you write one — already narrow what alerts; a default radius
-would silently suppress the alerts you installed this for. If you *do* enable one, an
-aircraft whose data can't answer it is suppressed rather than admitted: `max_distance_nm`
-hides Mode-S-only traffic that broadcasts no position, which is frequently the military
-traffic you wanted. Emergency squawks bypass every filter.
+**Per-rule limits fail closed.** A rule with an altitude limit does not match without
+`alt_baro`, and one with `max_distance_nm` does not match without a position. This matters
+for Mode-S-only traffic, which often includes the military aircraft you wanted to see.
 
 **Delivery is at-least-once.** Publishing to ntfy and recording the cooldown can't be
 made atomic, so a crash in the gap between them re-alerts that aircraft on restart. The
 gap is a synchronous `fsync`'d write, so it's small — but it isn't zero, and pretending
 otherwise would be the actual defect.
 
-**Cooldowns are per aircraft *and* per trigger.** A routine sighting of a listed airframe
-never mutes a later emergency squawk from the same one, and a 7600 doesn't mute a
-subsequent 7700. If a listed aircraft squawks an emergency you get one notification, not
-two.
+**Cooldowns are per aircraft *and* rule name.** Two rules that match the same aircraft
+have independent cooldowns, while only the first matching rule alerts in each poll.
 
 **A stale list is served forever.** If the refresh fails, sky-notify keeps using the
 cached list and warns — an airframe that was interesting last month still is. What it
@@ -137,7 +126,7 @@ treat this as observability — or wire it to something that does act on it.
 ## Development
 
 ```sh
-go test -race ./...   # 44 tests, no framework
+go test -race ./...   # 66 tests, no framework
 go vet ./...
 docker build -t sky-notify .
 ```
