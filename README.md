@@ -22,7 +22,7 @@ Ground speed: 420 kt
 ```yaml
 services:
   sky-notify:
-    image: sky-notify:latest
+    image: ghcr.io/grahamwetzler/sky-notify:latest
     restart: unless-stopped
     environment:
       SKY_NTFY_TOPIC: your-secret-topic-name
@@ -129,8 +129,9 @@ docker build -t sky-notify .
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs gofmt/vet/test on every
 push and pull request. Pushes to `main` and `v*` tags also publish a multi-arch
-(amd64 + arm64) image to `ghcr.io/<owner>/sky-notify` — `latest` from `main`, semver tags
-from releases. Nothing to configure: it authenticates with the built-in `GITHUB_TOKEN`.
+(amd64 + arm64) image to
+[`ghcr.io/grahamwetzler/sky-notify`](https://github.com/grahamwetzler/sky-notify/pkgs/container/sky-notify)
+— `latest` from `main`, semver tags from releases. Nothing to configure: it authenticates with the built-in `GITHUB_TOKEN`.
 
 ## Credits & licence
 

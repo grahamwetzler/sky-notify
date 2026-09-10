@@ -1,7 +1,6 @@
 services:
   sky-notify:
-    image: sky-notify:latest
-    build: .
+    image: ghcr.io/grahamwetzler/sky-notify:latest
     container_name: sky-notify
     restart: unless-stopped
     environment:
