@@ -1,11 +1,15 @@
-FROM golang:1.26 AS build
+# Pinned to the *build* platform so the arm64 image is cross-compiled natively
+# instead of compiled inside an emulated arm64 VM, which is many times slower.
+FROM --platform=$BUILDPLATFORM golang:1.26 AS build
 WORKDIR /src
 
 COPY go.mod go.sum ./
 RUN go mod download
 
+ARG TARGETOS TARGETARCH
 COPY *.go ./
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/sky-notify .
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/sky-notify .
 
 # /data is created here so it can be copied in with the runtime uid. Docker seeds a
 # fresh named volume from the image path *including its ownership* — without this the
