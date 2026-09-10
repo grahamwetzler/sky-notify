@@ -1,0 +1,59 @@
+services:
+  sky-notify:
+    image: sky-notify:latest
+    build: .
+    container_name: sky-notify
+    restart: unless-stopped
+    environment:
+      # --- required ---
+      SKY_NTFY_TOPIC: your-secret-topic-name
+
+      # --- where to read aircraft from ---
+      # An http(s) URL, or an absolute path if you bind-mount ultrafeeder's data.
+      SKY_SOURCE_URL: http://ultrafeeder/data/aircraft.json
+      SKY_SOURCE_POLL_INTERVAL: 15s
+
+      # --- ntfy ---
+      # SKY_NTFY_URL: https://ntfy.example.com   # self-hosted
+      # SKY_NTFY_TOKEN: tk_...                   # or SKY_NTFY_USER + SKY_NTFY_PASSWORD
+      # SKY_NTFY_PRIORITY: "3"
+
+      # --- optional ---
+      # Makes each notification click through to your own map.
+      # SKY_TAR1090_URL: http://ultrafeeder/
+      # SKY_COOLDOWN: 24h
+      # SKY_DB_FILES: plane-alert-db.csv
+      # SKY_LOG_LEVEL: info
+
+      # Filters are OFF by default: the interesting-aircraft list is already the filter.
+      # Turn these on only if you want to narrow it further. Note that they FAIL CLOSED —
+      # with a filter enabled, an aircraft whose data cannot answer it is suppressed.
+      # SKY_FILTERS_LAT: "51.5007"
+      # SKY_FILTERS_LON: "-0.1246"
+      # SKY_FILTERS_MAX_DISTANCE_NM: "50"
+      # SKY_FILTERS_MIN_ALTITUDE_FT: "0"
+    volumes:
+      # Holds the cached interesting-aircraft list and the alert cooldown ledger.
+      # Both survive restarts; without this you re-download the list and re-alert on
+      # everything currently overhead every time the container restarts.
+      - sky-notify-data:/data
+      # Optional YAML config. Everything above can be set this way instead.
+      # - ./config.yaml:/config/config.yaml:ro
+    networks:
+      - adsb
+    depends_on:
+      - ultrafeeder
+
+  # Your existing ultrafeeder service — shown only so the example resolves.
+  ultrafeeder:
+    image: ghcr.io/sdr-enthusiasts/docker-adsb-ultrafeeder:latest
+    container_name: ultrafeeder
+    restart: unless-stopped
+    networks:
+      - adsb
+
+volumes:
+  sky-notify-data:
+
+networks:
+  adsb:
