@@ -95,10 +95,16 @@ func (s *Source) Fetch(ctx context.Context, now time.Time) (*feed, error) {
 		return nil, err
 	}
 
+	// A BOM makes encoding/json fail on byte one ("invalid character 'ï'"); readsb never
+	// writes one, but a proxy or an edited file can.
+	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))
+
 	dec := json.NewDecoder(bytes.NewReader(body))
 	var f feed
 	if err := dec.Decode(&f); err != nil {
-		return nil, fmt.Errorf("decode aircraft.json: %w", err)
+		// The first bytes turn "invalid character" into something diagnosable: gzip, an
+		// HTML error page, a truncated write.
+		return nil, fmt.Errorf("decode aircraft.json (starts %q): %w", body[:min(len(body), 48)], err)
 	}
 	// Exactly one complete JSON value: a truncated document must be an error, never a
 	// short aircraft list.

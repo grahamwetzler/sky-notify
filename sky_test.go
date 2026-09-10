@@ -836,6 +836,23 @@ func TestSourceRejectsTruncatedDocument(t *testing.T) {
 	}
 }
 
+func TestSourceToleratesBOM(t *testing.T) {
+	cfg := testConfig(t)
+	now := time.Now()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "\xef\xbb\xbf"+feedJSON(now, `{"hex":"adeb2f"}`))
+	}))
+	defer srv.Close()
+	cfg.Source.URL = srv.URL
+	f, err := NewSource(cfg, srv.Client()).Fetch(context.Background(), now)
+	if err != nil {
+		t.Fatalf("a BOM-prefixed document must still decode: %v", err)
+	}
+	if len(f.Aircraft) != 1 {
+		t.Fatalf("got %d aircraft, want 1", len(f.Aircraft))
+	}
+}
+
 func TestReadLimitedRejectsOversize(t *testing.T) {
 	if _, err := readLimited(strings.NewReader("hello"), 3); err == nil {
 		t.Fatal("want an error when the source exceeds the limit")
