@@ -803,6 +803,9 @@ func testAlert() *Alert {
 		Trigger: triggerDB,
 		Plane:   &Plane{ICAO: "adeb2f", Reg: "N12345", Operator: "US Air Force", Type: "C-17", Link: "ftp://evil.invalid/x"},
 		AC:      Aircraft{Hex: "adeb2f", Flight: "RCH123 ", AltBaro: Altitude{Present: true, Feet: 31000}},
+
+		DistanceNM:  12.34,
+		HasDistance: true,
 	}
 }
 
@@ -825,8 +828,14 @@ func TestNotifySuccess(t *testing.T) {
 	if m.Topic != cfg.Ntfy.Topic || m.Title != "US Air Force C-17" {
 		t.Errorf("unexpected message: %+v", m)
 	}
-	if !strings.Contains(m.Message, "N12345") || !strings.Contains(m.Message, "31000 ft") {
+	if !strings.Contains(m.Message, "N12345") || !strings.Contains(m.Message, "31000 ft") ||
+		!strings.Contains(m.Message, "12.3 NM") {
 		t.Errorf("body missing detail: %q", m.Message)
+	}
+	// The hex is phone-screen noise: it identifies nothing a human reads, and the
+	// click target already carries it to tar1090.
+	if strings.Contains(m.Message, "adeb2f") {
+		t.Errorf("body should not carry the ICAO hex: %q", m.Message)
 	}
 	// plane-alert-db links are untrusted: a non-http scheme must be dropped.
 	if m.Click != "" {

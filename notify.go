@@ -207,7 +207,6 @@ func (n *Notifier) render(a *Alert) ntfyMessage {
 		reg = p.Reg
 	}
 	line("Registration", reg)
-	line("ICAO", a.Hex)
 	line("Callsign", strings.TrimSpace(a.AC.Flight))
 	if p != nil {
 		line("Operator", p.Operator)
