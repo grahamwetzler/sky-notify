@@ -760,6 +760,7 @@ type ntfyServer struct {
 	statuses []int // consumed in order; the last one repeats
 	retryHdr string
 	bodies   []ntfyMessage
+	paths    []string
 	hits     int
 }
 
@@ -769,6 +770,7 @@ func (n *ntfyServer) start(t *testing.T, cfg *Config) *Notifier {
 		var m ntfyMessage
 		json.NewDecoder(r.Body).Decode(&m)
 		n.bodies = append(n.bodies, m)
+		n.paths = append(n.paths, r.URL.Path)
 		st := http.StatusOK
 		if n.hits < len(n.statuses) {
 			st = n.statuses[n.hits]
@@ -813,6 +815,11 @@ func TestNotifySuccess(t *testing.T) {
 	}
 	if len(s.bodies) != 1 {
 		t.Fatalf("want 1 publish, got %d", len(s.bodies))
+	}
+	// ntfy parses a JSON publish document only at the server root. POSTing it to
+	// /<topic> returns 200 and delivers the raw JSON as the message text.
+	if s.paths[0] != "/" {
+		t.Errorf("publish must POST to the server root, got %q", s.paths[0])
 	}
 	m := s.bodies[0]
 	if m.Topic != cfg.Ntfy.Topic || m.Title != "US Air Force C-17" {

@@ -39,13 +39,12 @@ func NewNotifier(cfg *Config) (*Notifier, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Build the target with net/url, never string concatenation, so a topic can never
-	// redirect the request somewhere else.
-	target := base.JoinPath(cfg.Ntfy.Topic)
-
+	// Publish to the server root, NOT /<topic>: ntfy only parses the body as a publish
+	// document at the root. POSTing this JSON to /<topic> "succeeds" with a 200 and
+	// delivers the raw JSON text as the message body. The topic travels in the payload.
 	return &Notifier{
 		cfg: cfg,
-		url: target.String(),
+		url: base.String(),
 		client: &http.Client{
 			Timeout: 15 * time.Second,
 			// Go's default would silently downgrade a redirected POST to a GET and hand
