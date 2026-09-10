@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -436,6 +437,159 @@ func TestConfigPrecedenceEnvOverYAMLOverDefault(t *testing.T) {
 	}
 	if cfg.Cooldown.Std() != 2*time.Hour || cfg.Ntfy.Topic != "from-env" {
 		t.Errorf("env should win over yaml, got %v / %q", cfg.Cooldown.Std(), cfg.Ntfy.Topic)
+	}
+}
+
+func TestConfigReloadHotSwapTakesEffect(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	environ := []string{"SKY_CONFIG=" + path}
+	write := func(priority int) {
+		t.Helper()
+		yaml := fmt.Sprintf("ntfy:\n  topic: test-topic\nrules:\n  - icao: [adeb2f]\n    priority: %d\n", priority)
+		if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(1)
+	cfg, err := LoadConfig(environ)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := NewLive(cfg)
+	db := dbWith(t, cfg, mustParse(t, sampleCSV))
+	write(5)
+	if _, err := reloadConfig(live, environ, nil); err != nil {
+		t.Fatal(err)
+	}
+	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, live.Get()); a == nil || a.Priority != 5 {
+		t.Fatalf("reloaded alert = %+v, want priority 5", a)
+	}
+}
+
+func TestInvalidConfigReloadIsIgnored(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	environ := []string{"SKY_CONFIG=" + path}
+	if err := os.WriteFile(path, []byte("ntfy:\n  topic: test-topic\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(environ)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := NewLive(cfg)
+	if err := os.WriteFile(path, []byte("ntfy: ["), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reloadConfig(live, environ, nil); err == nil {
+		t.Fatal("invalid reload should fail")
+	}
+	if live.Get() != cfg {
+		t.Fatal("invalid reload replaced the running config")
+	}
+}
+
+func TestConfigReloadPinsAndReportsColdKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	environ := []string{"SKY_CONFIG=" + path}
+	if err := os.WriteFile(path, []byte("ntfy:\n  topic: startup-topic\ndb:\n  files: [one.csv]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	running, err := LoadConfig(environ)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := NewLive(running)
+	if err := os.WriteFile(path, []byte("ntfy:\n  topic: changed-topic\ndb:\n  files: [two.csv]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := reloadConfig(live, environ, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	published := live.Get()
+	if published.Ntfy.Topic != running.Ntfy.Topic || !reflect.DeepEqual(published.DB.Files, running.DB.Files) {
+		t.Fatalf("cold fields changed: topic=%q files=%v", published.Ntfy.Topic, published.DB.Files)
+	}
+	if !reflect.DeepEqual(changed, []string{"ntfy.topic", "db.files"}) {
+		t.Fatalf("changed keys = %v", changed)
+	}
+}
+
+func TestConfigReloadEnvironmentStillWins(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	environ := []string{"SKY_CONFIG=" + path, "SKY_NTFY_PRIORITY=4"}
+	if err := os.WriteFile(path, []byte("ntfy:\n  topic: test-topic\n  priority: 3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(environ)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := NewLive(cfg)
+	if err := os.WriteFile(path, []byte("ntfy:\n  topic: test-topic\n  priority: 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reloadConfig(live, environ, nil); err != nil {
+		t.Fatal(err)
+	}
+	if live.Get().Ntfy.Priority != 4 {
+		t.Fatalf("priority = %d, want environment value 4", live.Get().Ntfy.Priority)
+	}
+}
+
+func TestWatchConfigReloadsWhenMissingFileAppearsAndChanges(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	environ := []string{"SKY_CONFIG=" + path, "SKY_NTFY_TOPIC=test-topic"}
+	cfg, err := LoadConfig(environ)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := NewLive(cfg)
+	// Baseline taken before the file is written, so the appearance is a real change.
+	watcher := newConfigWatcher(environ)
+	reloaded := make(chan struct{}, 2)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		watcher.run(ctx, live, environ, 10*time.Millisecond, func(*Config) {
+			select {
+			case reloaded <- struct{}{}:
+			default:
+			}
+		})
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+
+	wait := func() {
+		t.Helper()
+		select {
+		case <-reloaded:
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for config reload")
+		}
+	}
+	if err := os.WriteFile(path, []byte("ntfy:\n  topic: test-topic\n  priority: 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wait()
+	if live.Get().Ntfy.Priority != 2 {
+		t.Fatalf("priority = %d after file appeared, want 2", live.Get().Ntfy.Priority)
+	}
+	if err := os.WriteFile(path, []byte("ntfy:\n  topic: test-topic\n  priority: 4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wait()
+	if live.Get().Ntfy.Priority != 4 {
+		t.Fatalf("priority = %d after file changed, want 4", live.Get().Ntfy.Priority)
 	}
 }
 

@@ -91,6 +91,11 @@ silent fallback to the default. `SKY_` is this service's namespace, and
 
 ## Things worth knowing
 
+The config file is re-read every 5 seconds. Alerting rules, priorities, filters, cooldown,
+log level, and poll/refresh intervals update live; changes to `source.url`,
+`source.max_age`, `ntfy.url`, `ntfy.topic`, `ntfy.token`, `ntfy.user`, `ntfy.password`,
+`tar1090_url`, `db.files`, `db.base_url`, `cache_dir`, or `listen` need a restart.
+
 **Filters are off by default, and they fail closed.** The interesting-aircraft list is
 already the filter — a default radius would silently suppress the alerts you installed
 this for. If you *do* enable one, an aircraft whose data can't answer it is suppressed

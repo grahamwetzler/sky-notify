@@ -2,15 +2,20 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -90,6 +95,20 @@ type Config struct {
 }
 
 var defaultSquawkPriority = map[string]int{"7500": 5, "7600": 5, "7700": 5}
+
+const configPollInterval = 5 * time.Second
+
+// Live holds the config the running loops read. The pointer is swapped wholesale and
+// a published Config is never mutated, so readers need no lock.
+type Live struct{ p atomic.Pointer[Config] }
+
+func NewLive(c *Config) *Live {
+	l := &Live{}
+	l.p.Store(c)
+	return l
+}
+
+func (l *Live) Get() *Config { return l.p.Load() }
 
 func defaultConfig() *Config {
 	c := &Config{}
@@ -216,19 +235,11 @@ func splitList(v string) []string {
 // LoadConfig applies defaults, then the YAML file (if present), then the environment.
 // environ is passed in rather than read from os so tests can drive it.
 func LoadConfig(environ []string) (*Config, error) {
-	env := map[string]string{}
-	for _, kv := range environ {
-		if k, v, ok := strings.Cut(kv, "="); ok {
-			env[k] = v
-		}
-	}
+	env := environMap(environ)
 
 	cfg := defaultConfig()
 
-	path := env[envConfigVar]
-	if path == "" {
-		path = "/config/config.yaml"
-	}
+	path := configPath(env)
 	// A missing config file is not an error; a malformed one is.
 	if b, err := os.ReadFile(path); err == nil {
 		dec := yaml.NewDecoder(bytes.NewReader(b))
@@ -282,6 +293,137 @@ func LoadConfig(environ []string) (*Config, error) {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+func configPath(env map[string]string) string {
+	if path := env[envConfigVar]; path != "" {
+		return path
+	}
+	return "/config/config.yaml"
+}
+
+func environMap(environ []string) map[string]string {
+	env := map[string]string{}
+	for _, kv := range environ {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			env[k] = v
+		}
+	}
+	return env
+}
+
+// mergeReload pins the cold fields to their running values and reports which of them
+// the operator changed. Source, Notifier and DB captured those at construction, so
+// publishing the new values would make the live config claim what is not in effect.
+func mergeReload(running, next *Config) (*Config, []string) {
+	merged := *next
+	var changed []string
+	check := func(key string, different bool) {
+		if different {
+			changed = append(changed, key)
+		}
+	}
+
+	check("source.url", next.Source.URL != running.Source.URL)
+	check("source.max_age", next.Source.MaxAge != running.Source.MaxAge)
+	check("ntfy.url", next.Ntfy.URL != running.Ntfy.URL)
+	check("ntfy.topic", next.Ntfy.Topic != running.Ntfy.Topic)
+	check("ntfy.token", next.Ntfy.Token != running.Ntfy.Token)
+	check("ntfy.user", next.Ntfy.User != running.Ntfy.User)
+	check("ntfy.password", next.Ntfy.Password != running.Ntfy.Password)
+	check("tar1090_url", next.Tar1090URL != running.Tar1090URL)
+	check("db.files", !reflect.DeepEqual(next.DB.Files, running.DB.Files))
+	check("db.base_url", next.DB.BaseURL != running.DB.BaseURL)
+	check("cache_dir", next.CacheDir != running.CacheDir)
+	check("listen", next.Listen != running.Listen)
+
+	merged.Source.URL = running.Source.URL
+	merged.Source.MaxAge = running.Source.MaxAge
+	merged.Ntfy.URL = running.Ntfy.URL
+	merged.Ntfy.Topic = running.Ntfy.Topic
+	merged.Ntfy.Token = running.Ntfy.Token
+	merged.Ntfy.User = running.Ntfy.User
+	merged.Ntfy.Password = running.Ntfy.Password
+	merged.Tar1090URL = running.Tar1090URL
+	merged.DB.Files = running.DB.Files
+	merged.DB.BaseURL = running.DB.BaseURL
+	merged.CacheDir = running.CacheDir
+	merged.Listen = running.Listen
+	return &merged, changed
+}
+
+func reloadConfig(live *Live, environ []string, onReload func(*Config)) ([]string, error) {
+	next, err := LoadConfig(environ)
+	if err != nil {
+		return nil, err
+	}
+	published, changed := mergeReload(live.Get(), next)
+	live.p.Store(published)
+	if onReload != nil {
+		onReload(published)
+	}
+	return changed, nil
+}
+
+// configWatcher notices edits to the config file. It compares a digest rather than
+// watching with inotify: the config is a bind mount in Docker, where inotify is
+// unreliable, and editors replace the file by rename. Polling by path survives both.
+type configWatcher struct {
+	path    string
+	digest  [32]byte
+	missing bool
+}
+
+// newConfigWatcher takes the baseline eagerly, so a caller that constructs it before
+// starting the watch goroutine cannot miss an edit made in between.
+func newConfigWatcher(environ []string) *configWatcher {
+	w := &configWatcher{path: configPath(environMap(environ))}
+	w.digest, w.missing = w.read()
+	return w
+}
+
+func (w *configWatcher) read() ([32]byte, bool) {
+	b, err := os.ReadFile(w.path)
+	return sha256.Sum256(b), os.IsNotExist(err)
+}
+
+// changed reports whether the file differs from the last state seen, and records it.
+// A file that appears or disappears counts, so an empty read is not mistaken for one.
+func (w *configWatcher) changed() bool {
+	digest, missing := w.read()
+	if digest == w.digest && missing == w.missing {
+		return false
+	}
+	w.digest, w.missing = digest, missing
+	return true
+}
+
+// run publishes validated file changes to live until ctx is done.
+func (w *configWatcher) run(ctx context.Context, live *Live, environ []string, interval time.Duration, onReload func(*Config)) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		if !w.changed() {
+			continue
+		}
+		// A half-written file parses badly; logging and keeping the running config is
+		// the only acceptable outcome, and the next write fires another attempt.
+		changed, err := reloadConfig(live, environ, onReload)
+		if err != nil {
+			slog.Error("config reload failed, keeping running config", "err", err)
+			continue
+		}
+		slog.Info("config reloaded", "path", w.path)
+		if len(changed) > 0 {
+			slog.Warn("config change needs a restart", "keys", changed)
+		}
+	}
 }
 
 var dbFileRe = regexp.MustCompile(`^[A-Za-z0-9._-]+\.csv$`)

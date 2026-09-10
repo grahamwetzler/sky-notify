@@ -1,4 +1,7 @@
 # sky-notify configuration — every key is optional except ntfy.topic.
+# This file is re-read while running. Changes to source.url, source.max_age, ntfy.url,
+# ntfy.topic, ntfy.token, ntfy.user, ntfy.password, tar1090_url, db.files, db.base_url,
+# cache_dir, or listen need a restart.
 #
 # Mount this at /config/config.yaml (or point SKY_CONFIG elsewhere). Any setting here
 # can also be given as an environment variable, which wins over the file:

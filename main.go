@@ -47,7 +47,13 @@ func run() error {
 		fmt.Fprintln(os.Stderr, "config error:", err)
 		os.Exit(1)
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: parseLevel(cfg.LogLevel)})))
+	live := NewLive(cfg)
+	// Constructed here, not inside the goroutine below: its baseline must be the file
+	// LoadConfig just read, or an edit made while we start up is never noticed.
+	watcher := newConfigWatcher(os.Environ())
+	var logLevel slog.LevelVar
+	logLevel.Set(parseLevel(cfg.LogLevel))
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: &logLevel})))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -66,7 +72,7 @@ func run() error {
 		return err
 	}
 	source := NewSource(cfg, httpClient)
-	h := &health{cfg: cfg, db: db, state: state, notifier: notifier}
+	h := &health{live: live, db: db, state: state, notifier: notifier}
 
 	// Cold start needs a complete list. Running with a partial or empty one would look
 	// healthy while silently matching nothing.
@@ -95,14 +101,20 @@ func run() error {
 	pollDone := make(chan struct{})
 
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 	go func() {
 		defer wg.Done()
 		defer close(pollDone)
-		pollLoop(ctx, cfg, source, db, state, q, h)
+		pollLoop(ctx, live, source, db, state, q, h)
 	}()
-	go func() { defer wg.Done(); notifyLoop(notifyCtx, cfg, notifier, state, q) }()
-	go func() { defer wg.Done(); refreshLoop(ctx, cfg, db, state, refreshAtStart) }()
+	go func() { defer wg.Done(); notifyLoop(notifyCtx, live, notifier, state, q) }()
+	go func() { defer wg.Done(); refreshLoop(ctx, live, db, state, refreshAtStart) }()
+	go func() {
+		defer wg.Done()
+		watcher.run(ctx, live, os.Environ(), configPollInterval, func(c *Config) {
+			logLevel.Set(parseLevel(c.LogLevel))
+		})
+	}()
 
 	go func() {
 		slog.Info("listening", "addr", cfg.Listen)
@@ -130,7 +142,7 @@ func run() error {
 	defer cancel()
 	srv.Shutdown(shutCtx)
 	wg.Wait()
-	state.Flush(cfg.Cooldown.Std())
+	state.Flush(live.Get().Cooldown.Std())
 	return nil
 }
 
@@ -160,11 +172,17 @@ func seedDB(ctx context.Context, db *DB) error {
 	}
 }
 
-func pollLoop(ctx context.Context, cfg *Config, src *Source, db *DB, state *State, q *queue, h *health) {
-	t := time.NewTicker(cfg.Source.PollInterval.Std())
+func pollLoop(ctx context.Context, live *Live, src *Source, db *DB, state *State, q *queue, h *health) {
+	interval := live.Get().Source.PollInterval.Std()
+	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
+		cfg := live.Get()
 		poll(ctx, cfg, src, db, state, q, h)
+		if next := cfg.Source.PollInterval.Std(); next != interval {
+			interval = next
+			t.Reset(interval)
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -197,8 +215,7 @@ func poll(ctx context.Context, cfg *Config, src *Source, db *DB, state *State, q
 	}
 }
 
-func notifyLoop(ctx context.Context, cfg *Config, n *Notifier, state *State, q *queue) {
-	cooldown := cfg.Cooldown.Std()
+func notifyLoop(ctx context.Context, live *Live, n *Notifier, state *State, q *queue) {
 	backoff := map[string]time.Time{}
 	delay := map[string]time.Duration{}
 
@@ -210,6 +227,7 @@ func notifyLoop(ctx context.Context, cfg *Config, n *Notifier, state *State, q *
 		case <-time.After(time.Second):
 		}
 
+		cooldown := live.Get().Cooldown.Std()
 		for {
 			a := q.take()
 			if a == nil {
@@ -254,7 +272,7 @@ func notifyLoop(ctx context.Context, cfg *Config, n *Notifier, state *State, q *
 	}
 }
 
-func refreshLoop(ctx context.Context, cfg *Config, db *DB, state *State, refreshAtStart bool) {
+func refreshLoop(ctx context.Context, live *Live, db *DB, state *State, refreshAtStart bool) {
 	// Done here, inside the single refresher, rather than in a parallel goroutine:
 	// two overlapping cycles could race each other's results and could each satisfy
 	// the other's "two consecutive refreshes agree" shrink confirmation.
@@ -264,7 +282,8 @@ func refreshLoop(ctx context.Context, cfg *Config, db *DB, state *State, refresh
 		}
 	}
 
-	refresh := time.NewTicker(cfg.DB.RefreshInterval.Std())
+	interval := live.Get().DB.RefreshInterval.Std()
+	refresh := time.NewTicker(interval)
 	defer refresh.Stop()
 	// Retries a previously failed state write; a no-op when the ledger is clean.
 	flush := time.NewTicker(time.Minute)
@@ -275,11 +294,16 @@ func refreshLoop(ctx context.Context, cfg *Config, db *DB, state *State, refresh
 		case <-ctx.Done():
 			return
 		case <-refresh.C:
+			cfg := live.Get()
 			if err := db.Refresh(ctx); err != nil && ctx.Err() == nil {
 				slog.Warn("db refresh failed, continuing with cached list", "err", err)
 			}
+			if next := cfg.DB.RefreshInterval.Std(); next != interval {
+				interval = next
+				refresh.Reset(interval)
+			}
 		case <-flush.C:
-			state.Flush(cfg.Cooldown.Std())
+			state.Flush(live.Get().Cooldown.Std())
 		}
 	}
 }
@@ -372,7 +396,7 @@ func (q *queue) depth() int {
 }
 
 type health struct {
-	cfg      *Config
+	live     *Live
 	db       *DB
 	state    *State
 	notifier *Notifier
@@ -407,7 +431,7 @@ func (h *health) mux(q *queue) http.Handler {
 		stateErr := h.state.WriteErr()
 
 		var reasons []string
-		stale := h.cfg.Source.PollInterval.Std() * 3
+		stale := h.live.Get().Source.PollInterval.Std() * 3
 		if lastPoll.IsZero() {
 			reasons = append(reasons, "no successful poll yet")
 		} else if age := time.Since(lastPoll); age > stale {
