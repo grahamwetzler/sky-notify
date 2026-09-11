@@ -88,12 +88,14 @@ func (tk *track) circling() bool {
 			turn += wrap180(p.heading - s[i-1].heading)
 		}
 		lat += p.lat
-		lon += p.lon
+		// Relative to the first sample, so an orbit across the antimeridian does not
+		// average 179.99 and -179.99 to 0.
+		lon += wrap180(p.lon - s[0].lon)
 	}
 	if math.Abs(turn) < circleMinTurnDeg {
 		return false
 	}
-	lat, lon = lat/float64(len(s)), lon/float64(len(s))
+	lat, lon = lat/float64(len(s)), s[0].lon+lon/float64(len(s))
 	for _, p := range s {
 		if haversineNM(lat, lon, p.lat, p.lon) > circleMaxRadiusNM {
 			return false

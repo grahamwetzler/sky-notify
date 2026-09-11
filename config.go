@@ -588,6 +588,12 @@ func (a *Alerts) validate() error {
 				return fmt.Errorf("rule %d (%q): passes_within must be > 0", i, rule.Name)
 			}
 		}
+		// Samples further apart than maxSampleGap break the orbit, so slower polling would
+		// leave a circling rule valid but unable ever to match. Half the gap leaves room
+		// for one missed poll.
+		if rule.Circling != nil && *rule.Circling && a.Source.PollInterval.Std() > maxSampleGap/2 {
+			return fmt.Errorf("rule %d (%q): circling needs source.poll_interval of at most %s", i, rule.Name, maxSampleGap/2)
+		}
 	}
 	for _, d := range []struct {
 		name string

@@ -166,7 +166,8 @@ func (r *Rule) passesOverhead(ac Aircraft, a *Alert) bool {
 	if r.PassesWithin != nil {
 		horizon = r.PassesWithin.Std()
 	}
-	nm, in := closestApproach(a.recvLat, a.recvLon, *ac.Lat, *ac.Lon, ac.GS, heading, horizon)
+	age := time.Duration(ac.SeenPos * float64(time.Second))
+	nm, in := closestApproach(a.recvLat, a.recvLon, *ac.Lat, *ac.Lon, ac.GS, heading, age, horizon)
 	if nm > *r.PassesWithinNM {
 		return false
 	}

@@ -68,7 +68,7 @@ approach to your `lat`/`lon` along the aircraft's current ground track and speed
 next five minutes". `circling: true` matches an aircraft that has turned a full circle
 inside 2 NM during the last 10 minutes, which is how news and police helicopters fly. It
 needs several minutes of positions before it can match, and that history is held in
-memory only, so a restart starts it again.
+memory only, so a restart starts it again. It needs `source.poll_interval` of 30s or less.
 
 ## Configuration
 

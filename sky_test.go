@@ -391,16 +391,20 @@ func TestClosestApproach(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		heading float64
+		age     time.Duration
 		horizon time.Duration
 		wantNM  float64
 		wantIn  time.Duration
 	}{
-		{"heading straight over", 0, 5 * time.Minute, 0, 5 * time.Minute},
-		{"crossing", 90, 5 * time.Minute, 10, 0},
-		{"receding", 180, 5 * time.Minute, 10, 0},
-		{"clamped to horizon", 0, 2 * time.Minute, 6, 2 * time.Minute},
+		{"heading straight over", 0, 0, 5 * time.Minute, 0, 5 * time.Minute},
+		{"crossing", 90, 0, 5 * time.Minute, 10, 0},
+		{"receding", 180, 0, 5 * time.Minute, 10, 0},
+		{"clamped to horizon", 0, 0, 2 * time.Minute, 6, 2 * time.Minute},
+		{"old position counts from now", 0, 2 * time.Minute, 5 * time.Minute, 0, 3 * time.Minute},
+		// Reported inbound 6 minutes ago: it has since passed and is 2 NM beyond.
+		{"already passed since last position", 0, 6 * time.Minute, 5 * time.Minute, 2, 0},
 	} {
-		nm, in := closestApproach(lat, lon, south, lon, 120, tc.heading, tc.horizon)
+		nm, in := closestApproach(lat, lon, south, lon, 120, tc.heading, tc.age, tc.horizon)
 		if math.Abs(nm-tc.wantNM) > 0.1 || (in-tc.wantIn).Abs() > 5*time.Second {
 			t.Errorf("%s: got %.2f NM in %s, want %.0f NM in %s", tc.name, nm, in, tc.wantNM, tc.wantIn)
 		}
@@ -440,6 +444,11 @@ func TestCirclingDetection(t *testing.T) {
 	for i := 10; i < len(gapped.samples); i++ {
 		gapped.samples[i].t = gapped.samples[i].t.Add(2 * time.Minute)
 	}
+	// The same orbit moved onto the antimeridian, so its longitudes straddle ±180.
+	dateline := fly(60, repeat(20, 30))
+	for i := range dateline.samples {
+		dateline.samples[i].lon = wrap180(dateline.samples[i].lon + 180.12)
+	}
 	for _, tc := range []struct {
 		name string
 		tk   *track
@@ -450,6 +459,7 @@ func TestCirclingDetection(t *testing.T) {
 		{"straight line", fly(120, repeat(20, 0)), false},
 		{"holding pattern", fly(180, hold), false},
 		{"gap splits the orbit", gapped, false},
+		{"orbit across the antimeridian", dateline, true},
 		{"no history", nil, false},
 	} {
 		if got := tc.tk.circling(); got != tc.want {
@@ -1002,6 +1012,7 @@ func TestRuleValidationNamesRule(t *testing.T) {
 		{"horizon without distance", "lat: 0\nlon: 0\nrules:\n  - name: overhead\n    listed: true\n    passes_within: 5m\n"},
 		{"zero horizon", "lat: 0\nlon: 0\nrules:\n  - name: overhead\n    passes_within_nm: 1\n    passes_within: 0s\n"},
 		{"non-finite overhead", "lat: 0\nlon: 0\nrules:\n  - name: overhead\n    passes_within_nm: .nan\n"},
+		{"circling with slow polls", "source:\n  poll_interval: 45s\nrules:\n  - name: orbit\n    circling: true\n"},
 	} {
 		_, err := loadAlertsWith(t, tc.yaml)
 		if err == nil || !strings.Contains(err.Error(), "rule ") {
