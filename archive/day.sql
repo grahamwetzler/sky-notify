@@ -63,20 +63,25 @@ FROM numbered
 WHERE getvariable('day')::DATE NOT IN (FROM loaded_days)
 GROUP BY day, icao, visit;
 
--- Type 1: the newest day's details win. A row is rewritten only when they changed, and never
--- from a day older than the details it holds, so a backfill cannot roll a plane back.
+-- Type 1: the newest day's details win. A row is rewritten only when this is the newest day
+-- the plane has been seen (fact_visit already holds this day), so a backfill cannot roll a
+-- plane back even past a newer day that repeated the same details. And only when the details
+-- changed, so an unchanged plane is not rewritten every day.
 MERGE INTO dim_plane d
 USING (
     SELECT icao, day,
            any_value(reg) AS reg, any_value(type) AS type, any_value(description) AS description,
            any_value(owner_operator) AS owner_operator, any_value(year) AS year,
            any_value(dbFlags & 1 > 0) AS military, any_value(dbFlags & 2 > 0) AS interesting,
-           any_value(dbFlags & 4 > 0) AS pia, any_value(dbFlags & 8 > 0) AS ladd
+           any_value(dbFlags & 4 > 0) AS pia, any_value(dbFlags & 8 > 0) AS ladd,
+           any_value(newest) AS newest
     FROM staged
+    JOIN (SELECT icao, max(day) AS newest FROM fact_visit
+          WHERE icao IN (SELECT icao FROM staged) GROUP BY icao) USING (icao)
     WHERE getvariable('day')::DATE NOT IN (FROM loaded_days)
     GROUP BY icao, day
 ) s ON d.icao = s.icao
-WHEN MATCHED AND (d.details_since IS NULL OR s.day > d.details_since)
+WHEN MATCHED AND s.day = s.newest
      AND row(d.reg, d.type, d.description, d.owner_operator, d.year, d.military, d.interesting, d.pia, d.ladd)
          IS DISTINCT FROM row(s.reg, s.type, s.description, s.owner_operator, s.year, s.military, s.interesting, s.pia, s.ladd)
     THEN UPDATE SET reg = s.reg, type = s.type, description = s.description, owner_operator = s.owner_operator,
