@@ -62,6 +62,14 @@ are ORed, fields and limits are ANDed, and the first matching rule wins. Matches
 case and surrounding space but must be exact—not substrings. A rule without `priority`
 uses `ntfy.priority`; `priority: 0` mutes and stops evaluation. Put exceptions first.
 
+Two conditions follow an aircraft's motion. `passes_within_nm` predicts the closest
+approach to your `lat`/`lon` along the aircraft's current ground track and speed, within
+`passes_within` (default `5m`), so `passes_within_nm: 1` means "will fly over me in the
+next five minutes". `circling: true` matches an aircraft that has turned a full circle
+inside 2 NM during the last 10 minutes, which is how news and police helicopters fly. It
+needs several minutes of positions before it can match, and that history is held in
+memory only, so a restart starts it again.
+
 ## Configuration
 
 Configure with environment variables and two optional YAML files — **environment wins
@@ -101,7 +109,8 @@ setting in it updates live. A key placed in the wrong file is a startup error th
 the file it belongs in.
 
 **Per-rule limits fail closed.** A rule with an altitude limit does not match without
-`alt_baro`, and one with `max_distance_nm` does not match without a position. This matters
+`alt_baro`, and one with `max_distance_nm` or `passes_within_nm` does not match without a
+position (`passes_within_nm` also needs a ground track when the aircraft is moving). This matters
 for Mode-S-only traffic, which often includes the military aircraft you wanted to see.
 
 **Delivery is at-least-once.** Publishing to ntfy and recording the cooldown can't be
@@ -126,7 +135,7 @@ treat this as observability — or wire it to something that does act on it.
 ## Development
 
 ```sh
-go test -race ./...   # 66 tests, no framework
+go test -race ./...   # 70 tests, no framework
 go vet ./...
 docker build -t sky-notify .
 ```

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -116,13 +117,13 @@ func TestNonICAOAddressDoesNotMatchDatabase(t *testing.T) {
 	alerts.Rules = []Rule{{Name: "listed", Listed: &listed}}
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
 
-	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts); a == nil {
+	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts, nil); a == nil {
 		t.Fatal("plain hex should match the database")
 	}
-	if a := Evaluate(Aircraft{Hex: "~adeb2f"}, db, alerts); a != nil {
+	if a := Evaluate(Aircraft{Hex: "~adeb2f"}, db, alerts, nil); a != nil {
 		t.Fatalf("tilde-prefixed address must not match the database, got %+v", a)
 	}
-	if a := Evaluate(Aircraft{Hex: "~ADEB2F"}, db, alerts); a != nil {
+	if a := Evaluate(Aircraft{Hex: "~ADEB2F"}, db, alerts, nil); a != nil {
 		t.Fatal("uppercase tilde-prefixed address must not match either")
 	}
 }
@@ -175,14 +176,14 @@ func TestFiltersFailClosedOnMissingData(t *testing.T) {
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
 
 	// An explicitly configured distance filter must not admit everything positionless.
-	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts); a != nil {
+	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts, nil); a != nil {
 		t.Error("positionless aircraft must be suppressed when a distance filter is on")
 	}
 	near, farLon := 51.6, 10.0
-	if a := Evaluate(Aircraft{Hex: "adeb2f", Lat: &near, Lon: &lon}, db, alerts); a == nil {
+	if a := Evaluate(Aircraft{Hex: "adeb2f", Lat: &near, Lon: &lon}, db, alerts, nil); a == nil {
 		t.Error("nearby aircraft should pass the distance filter")
 	}
-	if a := Evaluate(Aircraft{Hex: "adeb2f", Lat: &near, Lon: &farLon}, db, alerts); a != nil {
+	if a := Evaluate(Aircraft{Hex: "adeb2f", Lat: &near, Lon: &farLon}, db, alerts, nil); a != nil {
 		t.Error("distant aircraft should be suppressed")
 	}
 }
@@ -196,15 +197,15 @@ func TestAltitudeFilterFailsClosedAndTreatsGroundAsZero(t *testing.T) {
 	alerts.Rules = []Rule{{Name: "airborne", MinAltitudeFt: &minimum}}
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
 
-	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts); a != nil {
+	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts, nil); a != nil {
 		t.Error("missing alt_baro must be suppressed when an altitude filter is on")
 	}
 	ground := Aircraft{Hex: "adeb2f", AltBaro: Altitude{Present: true, Ground: true}}
-	if a := Evaluate(ground, db, alerts); a != nil {
+	if a := Evaluate(ground, db, alerts, nil); a != nil {
 		t.Error(`"ground" must read as 0 ft and fail a 1000ft floor`)
 	}
 	airborne := Aircraft{Hex: "adeb2f", AltBaro: Altitude{Present: true, Feet: 31000}}
-	if a := Evaluate(airborne, db, alerts); a == nil {
+	if a := Evaluate(airborne, db, alerts, nil); a == nil {
 		t.Error("airborne aircraft should pass the floor")
 	}
 }
@@ -214,7 +215,7 @@ func TestSilenceIsTheDefault(t *testing.T) {
 	alerts := defaultAlerts()
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
 	for _, ac := range []Aircraft{{Hex: "adeb2f"}, {Hex: "ffffff"}, {Hex: "ffffff", Squawk: "7700"}} {
-		if a := Evaluate(ac, db, alerts); a != nil {
+		if a := Evaluate(ac, db, alerts, nil); a != nil {
 			t.Fatalf("empty rules must be silent, got %+v", a)
 		}
 	}
@@ -225,7 +226,7 @@ func TestEmergencyRequiresAndUsesRule(t *testing.T) {
 	alerts := defaultAlerts()
 	alerts.Rules = []Rule{{Name: "emergency", Squawk: []string{"7500", "7600", "7700"}}}
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
-	if a := Evaluate(Aircraft{Hex: "ffffff", Squawk: "7700"}, db, alerts); a == nil || !a.Emergency || a.Trigger != "emergency" {
+	if a := Evaluate(Aircraft{Hex: "ffffff", Squawk: "7700"}, db, alerts, nil); a == nil || !a.Emergency || a.Trigger != "emergency" {
 		t.Fatalf("squawk rule should produce framed emergency, got %+v", a)
 	}
 }
@@ -276,7 +277,7 @@ func TestPriorityRulesAndSquawks(t *testing.T) {
 			alerts := defaultAlerts()
 			alerts.Rules = tc.rules
 			db := dbWith(t, cfg, mustParse(t, sampleCSV))
-			a := Evaluate(Aircraft{Hex: "adeb2f", Squawk: tc.squawk}, db, alerts)
+			a := Evaluate(Aircraft{Hex: "adeb2f", Squawk: tc.squawk}, db, alerts, nil)
 			if (a != nil) != tc.wantAlert {
 				t.Fatalf("alert = %+v, want alert %v", a, tc.wantAlert)
 			}
@@ -299,7 +300,7 @@ func TestListedAndFeedOnlyRules(t *testing.T) {
 	}{{boolp(true), "adeb2f", true}, {boolp(true), "ffffff", false}, {boolp(false), "ffffff", true}, {nil, "ffffff", true}} {
 		a := defaultAlerts()
 		a.Rules = []Rule{{Name: "rule", Listed: tc.listed, ICAO: []string{tc.hex}}}
-		if got := Evaluate(Aircraft{Hex: tc.hex}, db, a); (got != nil) != tc.want {
+		if got := Evaluate(Aircraft{Hex: tc.hex}, db, a, nil); (got != nil) != tc.want {
 			t.Errorf("listed=%v hex=%s alert=%+v", tc.listed, tc.hex, got)
 		}
 	}
@@ -314,7 +315,7 @@ func TestUnlistedAircraftMatchesFeedFieldsAndLimits(t *testing.T) {
 	alerts.Lat, alerts.Lon = &lat, &lon
 	alerts.Rules = []Rule{{Name: "low flyer", Reg: []string{"N1"}, ICAOType: []string{"C172"}, MinAltitudeFt: &minAltitude, MaxAltitudeFt: &maxAltitude, MaxDistanceNM: &maxDistance}}
 	ac := Aircraft{Hex: "ffffff", Reg: "n1", Type: "c172", Lat: &lat, Lon: &lon, AltBaro: Altitude{Present: true, Feet: 1000}}
-	if got := Evaluate(ac, db, alerts); got == nil || got.Plane != nil {
+	if got := Evaluate(ac, db, alerts, nil); got == nil || got.Plane != nil {
 		t.Fatalf("feed-only rule should match unlisted aircraft, got %+v", got)
 	}
 }
@@ -329,15 +330,15 @@ func TestRegAndICAOTypeMatchFromEitherSource(t *testing.T) {
 
 	alerts := defaultAlerts()
 	alerts.Rules = []Rule{{Name: "by database reg", Reg: []string{"N12345"}}}
-	if got := Evaluate(listed, db, alerts); got == nil {
+	if got := Evaluate(listed, db, alerts, nil); got == nil {
 		t.Error("the database registration should match even when the feed disagrees")
 	}
 	alerts.Rules = []Rule{{Name: "by feed reg", Reg: []string{"other"}}}
-	if got := Evaluate(listed, db, alerts); got == nil {
+	if got := Evaluate(listed, db, alerts, nil); got == nil {
 		t.Error("the feed registration should match even when the database disagrees")
 	}
 	alerts.Rules = []Rule{{Name: "by database type", ICAOType: []string{"C17"}}}
-	if got := Evaluate(listed, db, alerts); got == nil {
+	if got := Evaluate(listed, db, alerts, nil); got == nil {
 		t.Error("the database ICAO type should match even when the feed disagrees")
 	}
 }
@@ -351,7 +352,7 @@ func TestPerRuleLimitsSelectLaterRule(t *testing.T) {
 		{Name: "low", ICAO: []string{"ffffff"}, MaxAltitudeFt: &low, Priority: intp(2)},
 		{Name: "high", ICAO: []string{"ffffff"}, MinAltitudeFt: &high, MaxAltitudeFt: &ceiling, Priority: intp(4)},
 	}
-	got := Evaluate(Aircraft{Hex: "ffffff", AltBaro: Altitude{Present: true, Feet: 5000}}, db, alerts)
+	got := Evaluate(Aircraft{Hex: "ffffff", AltBaro: Altitude{Present: true, Feet: 5000}}, db, alerts, nil)
 	if got == nil || got.Trigger != "high" || got.Priority != 4 {
 		t.Fatalf("later altitude rule should win, got %+v", got)
 	}
@@ -363,7 +364,7 @@ func TestDistanceLimitFailsClosedThenEvaluationContinues(t *testing.T) {
 	limit := 3.0
 	alerts := defaultAlerts()
 	alerts.Rules = []Rule{{Name: "near", ICAO: []string{"ffffff"}, MaxDistanceNM: &limit}, {Name: "anywhere", ICAO: []string{"ffffff"}}}
-	got := Evaluate(Aircraft{Hex: "ffffff"}, db, alerts)
+	got := Evaluate(Aircraft{Hex: "ffffff"}, db, alerts, nil)
 	if got == nil || got.Trigger != "anywhere" {
 		t.Fatalf("missing position should fail only the limited rule, got %+v", got)
 	}
@@ -381,6 +382,131 @@ func TestHaversine(t *testing.T) {
 }
 
 // ---------- cooldown ----------
+
+// ---------- motion ----------
+
+func TestClosestApproach(t *testing.T) {
+	lat, lon := 51.5, -0.12
+	south := lat - 10.0/60 // 10 NM south
+	for _, tc := range []struct {
+		name    string
+		heading float64
+		horizon time.Duration
+		wantNM  float64
+		wantIn  time.Duration
+	}{
+		{"heading straight over", 0, 5 * time.Minute, 0, 5 * time.Minute},
+		{"crossing", 90, 5 * time.Minute, 10, 0},
+		{"receding", 180, 5 * time.Minute, 10, 0},
+		{"clamped to horizon", 0, 2 * time.Minute, 6, 2 * time.Minute},
+	} {
+		nm, in := closestApproach(lat, lon, south, lon, 120, tc.heading, tc.horizon)
+		if math.Abs(nm-tc.wantNM) > 0.1 || (in-tc.wantIn).Abs() > 5*time.Second {
+			t.Errorf("%s: got %.2f NM in %s, want %.0f NM in %s", tc.name, nm, in, tc.wantNM, tc.wantIn)
+		}
+	}
+}
+
+// fly integrates 15s steps at gs knots; turns[i] is the heading change before step i.
+func fly(gs float64, turns []float64) *track {
+	lat, lon, hdg := 51.5, -0.12, 0.0
+	tk := &track{}
+	for i, turn := range turns {
+		hdg = math.Mod(hdg+turn+360, 360)
+		d := gs * 15 / 3600
+		lat += d * math.Cos(hdg*math.Pi/180) / 60
+		lon += d * math.Sin(hdg*math.Pi/180) / (60 * math.Cos(lat*math.Pi/180))
+		tk.samples = append(tk.samples, sample{time.Unix(int64(i*15), 0), lat, lon, hdg})
+	}
+	return tk
+}
+
+func repeat(n int, v float64) []float64 {
+	out := make([]float64, n)
+	for i := range out {
+		out[i] = v
+	}
+	return out
+}
+
+func TestCirclingDetection(t *testing.T) {
+	// A holding pattern turns a full circle too, but over miles: two 6 NM legs.
+	var hold []float64
+	for range 2 {
+		hold = append(hold, repeat(8, 0)...)
+		hold = append(hold, repeat(6, 30)...)
+	}
+	gapped := fly(60, repeat(20, 30))
+	for i := 10; i < len(gapped.samples); i++ {
+		gapped.samples[i].t = gapped.samples[i].t.Add(2 * time.Minute)
+	}
+	for _, tc := range []struct {
+		name string
+		tk   *track
+		want bool
+	}{
+		{"half-mile orbit", fly(60, repeat(20, 30)), true},
+		{"left-hand orbit", fly(60, repeat(20, -30)), true},
+		{"straight line", fly(120, repeat(20, 0)), false},
+		{"holding pattern", fly(180, hold), false},
+		{"gap splits the orbit", gapped, false},
+		{"no history", nil, false},
+	} {
+		if got := tc.tk.circling(); got != tc.want {
+			t.Errorf("%s: circling = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestTrackerRecordsNewPositionsAndForgets(t *testing.T) {
+	lat, lon, hdg := 51.5, -0.12, 90.0
+	tr := NewTracker()
+	at := func(now, seenPos float64) *feed {
+		return &feed{Now: now, Aircraft: []Aircraft{{Hex: "ABCDEF", Lat: &lat, Lon: &lon, Track: &hdg, SeenPos: seenPos}}}
+	}
+	tr.Update(at(1000, 0))
+	tr.Update(at(1000, 0))
+	tr.Update(at(1015, 15)) // readsb repeating the same position
+	if n := len(tr.get("abcdef").samples); n != 1 {
+		t.Fatalf("repeated positions must be one sample, got %d", n)
+	}
+	tr.Update(at(1030, 0))
+	if n := len(tr.get("abcdef").samples); n != 2 {
+		t.Fatalf("a new position must be recorded, got %d samples", n)
+	}
+	tr.Update(&feed{Now: 1030 + circleWindow.Seconds() + 1})
+	if tr.get("abcdef") != nil {
+		t.Fatal("a track with nothing left in the window must be forgotten")
+	}
+}
+
+func TestMotionRulesFailClosedAndRecordPrediction(t *testing.T) {
+	cfg := testConfig(t)
+	db := dbWith(t, cfg, nil)
+	lat, lon, within := 51.5, -0.12, 1.0
+	alerts := defaultAlerts()
+	alerts.Lat, alerts.Lon = &lat, &lon
+	alerts.Rules = []Rule{{Name: "overhead", PassesWithinNM: &within}}
+
+	south, north := lat-10.0/60, 0.0
+	moving := Aircraft{Hex: "ffffff", Lat: &south, Lon: &lon, GS: 120}
+	if a := Evaluate(moving, db, alerts, nil); a != nil {
+		t.Error("a moving aircraft without a ground track must fail closed")
+	}
+	moving.Track = &north
+	a := Evaluate(moving, db, alerts, nil)
+	if a == nil || !a.HasPass || a.PassNM > 0.1 || a.PassIn < 4*time.Minute {
+		t.Fatalf("inbound aircraft should match with its prediction recorded, got %+v", a)
+	}
+
+	alerts.Rules = []Rule{{Name: "orbit", Circling: boolp(true)}}
+	if a := Evaluate(moving, db, alerts, nil); a != nil {
+		t.Error("no history must not read as circling")
+	}
+	if a := Evaluate(moving, db, alerts, fly(60, repeat(20, 30))); a == nil || !a.Circling || a.HasPass {
+		t.Errorf("orbiting aircraft should match the circling rule alone, got %+v", a)
+	}
+}
 
 func TestCooldownStateMachine(t *testing.T) {
 	dir := t.TempDir()
@@ -421,14 +547,14 @@ func TestCooldownsAreIndependentPerRule(t *testing.T) {
 	cooldown := alerts.Cooldown.Std()
 
 	// A quiet pass matches the second rule; only that rule's cooldown advances.
-	routine := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts)
+	routine := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts, nil)
 	if routine == nil || routine.Trigger != "listed" {
 		t.Fatalf("want the listed rule, got %+v", routine)
 	}
 	s.Record(cooldownKey(routine.Hex, routine.Trigger), cooldown)
 
 	// The same airframe squawking 7700 now matches the first rule, on its own key.
-	emergency := Evaluate(Aircraft{Hex: "adeb2f", Squawk: "7700"}, db, alerts)
+	emergency := Evaluate(Aircraft{Hex: "adeb2f", Squawk: "7700"}, db, alerts, nil)
 	if emergency == nil || emergency.Trigger != "emergency" {
 		t.Fatalf("want the emergency rule, got %+v", emergency)
 	}
@@ -450,7 +576,7 @@ func TestListedAircraftInEmergencyProducesOneAlert(t *testing.T) {
 	s := NewState(t.TempDir())
 	cooldown := alerts.Cooldown.Std()
 
-	a := Evaluate(Aircraft{Hex: "adeb2f", Squawk: "7700"}, db, alerts)
+	a := Evaluate(Aircraft{Hex: "adeb2f", Squawk: "7700"}, db, alerts, nil)
 	if a == nil || !a.Emergency {
 		t.Fatal("want an emergency alert")
 	}
@@ -577,7 +703,7 @@ func TestConfigReloadHotSwapTakesEffect(t *testing.T) {
 	if err := reloadConfig(live, environ, nil); err != nil {
 		t.Fatal(err)
 	}
-	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, live.Get()); a == nil || a.Priority != 5 {
+	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, live.Get(), nil); a == nil || a.Priority != 5 {
 		t.Fatalf("reloaded alert = %+v, want priority 5", a)
 	}
 }
@@ -872,11 +998,19 @@ func TestRuleValidationNamesRule(t *testing.T) {
 		{"distance without coordinates", "rules:\n  - name: distance\n    max_distance_nm: 3\n"},
 		{"inverted altitude", "rules:\n  - name: altitude\n    min_altitude_ft: 100\n    max_altitude_ft: 100\n"},
 		{"bad priority", "rules:\n  - name: priority\n    listed: true\n    priority: 9\n"},
+		{"overhead without coordinates", "rules:\n  - name: overhead\n    passes_within_nm: 1\n"},
+		{"horizon without distance", "lat: 0\nlon: 0\nrules:\n  - name: overhead\n    listed: true\n    passes_within: 5m\n"},
+		{"zero horizon", "lat: 0\nlon: 0\nrules:\n  - name: overhead\n    passes_within_nm: 1\n    passes_within: 0s\n"},
+		{"non-finite overhead", "lat: 0\nlon: 0\nrules:\n  - name: overhead\n    passes_within_nm: .nan\n"},
 	} {
 		_, err := loadAlertsWith(t, tc.yaml)
 		if err == nil || !strings.Contains(err.Error(), "rule ") {
 			t.Errorf("%s: error = %v", tc.name, err)
 		}
+	}
+	// Motion keys are conditions in their own right.
+	if _, err := loadAlertsWith(t, "rules:\n  - name: orbit\n    circling: true\n"); err != nil {
+		t.Errorf("circling alone should be a valid rule: %v", err)
 	}
 }
 

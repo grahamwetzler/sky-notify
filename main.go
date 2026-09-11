@@ -181,9 +181,10 @@ func pollLoop(ctx context.Context, live *Live, src *Source, db *DB, state *State
 	interval := live.Get().Source.PollInterval.Std()
 	t := time.NewTicker(interval)
 	defer t.Stop()
+	tr := NewTracker()
 	for {
 		cfg := live.Get()
-		poll(ctx, cfg, src, db, state, q, h)
+		poll(ctx, cfg, src, db, state, q, h, tr)
 		if next := cfg.Source.PollInterval.Std(); next != interval {
 			interval = next
 			t.Reset(interval)
@@ -196,7 +197,7 @@ func pollLoop(ctx context.Context, live *Live, src *Source, db *DB, state *State
 	}
 }
 
-func poll(ctx context.Context, cfg *Alerts, src *Source, db *DB, state *State, q *queue, h *health) {
+func poll(ctx context.Context, cfg *Alerts, src *Source, db *DB, state *State, q *queue, h *health, tr *Tracker) {
 	f, err := src.Fetch(ctx, time.Now())
 	if err != nil {
 		if ctx.Err() == nil {
@@ -206,10 +207,11 @@ func poll(ctx context.Context, cfg *Alerts, src *Source, db *DB, state *State, q
 		return
 	}
 	h.setPollOK(len(f.Aircraft))
+	tr.Update(f)
 
 	cooldown := cfg.Cooldown.Std()
 	for _, ac := range f.Aircraft {
-		a := Evaluate(ac, db, cfg)
+		a := Evaluate(ac, db, cfg, tr.get(normalizeHex(ac.Hex)))
 		if a == nil {
 			continue
 		}

@@ -42,21 +42,24 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 func (d Duration) Std() time.Duration { return time.Duration(d) }
 
 type Rule struct {
-	Name          string   `yaml:"name"`
-	Priority      *int     `yaml:"priority"`
-	ICAO          []string `yaml:"icao"`
-	Reg           []string `yaml:"reg"`
-	ICAOType      []string `yaml:"icao_type"`
-	Squawk        []string `yaml:"squawk"`
-	Operator      []string `yaml:"operator"`
-	Type          []string `yaml:"type"`
-	CMPG          []string `yaml:"cmpg"`
-	Category      []string `yaml:"category"`
-	Tags          []string `yaml:"tags"`
-	Listed        *bool    `yaml:"listed"`
-	MinAltitudeFt *int     `yaml:"min_altitude_ft"`
-	MaxAltitudeFt *int     `yaml:"max_altitude_ft"`
-	MaxDistanceNM *float64 `yaml:"max_distance_nm"`
+	Name           string    `yaml:"name"`
+	Priority       *int      `yaml:"priority"`
+	ICAO           []string  `yaml:"icao"`
+	Reg            []string  `yaml:"reg"`
+	ICAOType       []string  `yaml:"icao_type"`
+	Squawk         []string  `yaml:"squawk"`
+	Operator       []string  `yaml:"operator"`
+	Type           []string  `yaml:"type"`
+	CMPG           []string  `yaml:"cmpg"`
+	Category       []string  `yaml:"category"`
+	Tags           []string  `yaml:"tags"`
+	Listed         *bool     `yaml:"listed"`
+	MinAltitudeFt  *int      `yaml:"min_altitude_ft"`
+	MaxAltitudeFt  *int      `yaml:"max_altitude_ft"`
+	MaxDistanceNM  *float64  `yaml:"max_distance_nm"`
+	Circling       *bool     `yaml:"circling"`
+	PassesWithinNM *float64  `yaml:"passes_within_nm"`
+	PassesWithin   *Duration `yaml:"passes_within"`
 }
 
 type Config struct {
@@ -554,7 +557,7 @@ func (a *Alerts) validate() error {
 		if rule.Priority != nil && (*rule.Priority < 0 || *rule.Priority > 5) {
 			return fmt.Errorf("rule %d (%q): priority must be 0..5, got %d", i, rule.Name, *rule.Priority)
 		}
-		if len(rule.ICAO)+len(rule.Reg)+len(rule.ICAOType)+len(rule.Squawk)+len(rule.Operator)+len(rule.Type)+len(rule.CMPG)+len(rule.Category)+len(rule.Tags) == 0 && rule.Listed == nil && rule.MinAltitudeFt == nil && rule.MaxAltitudeFt == nil && rule.MaxDistanceNM == nil {
+		if len(rule.ICAO)+len(rule.Reg)+len(rule.ICAOType)+len(rule.Squawk)+len(rule.Operator)+len(rule.Type)+len(rule.CMPG)+len(rule.Category)+len(rule.Tags) == 0 && rule.Listed == nil && rule.MinAltitudeFt == nil && rule.MaxAltitudeFt == nil && rule.MaxDistanceNM == nil && rule.Circling == nil && rule.PassesWithinNM == nil {
 			return fmt.Errorf("rule %d (%q): at least one condition is required", i, rule.Name)
 		}
 		if (rule.MinAltitudeFt != nil && *rule.MinAltitudeFt < 0) || (rule.MaxAltitudeFt != nil && *rule.MaxAltitudeFt < 0) {
@@ -563,12 +566,26 @@ func (a *Alerts) validate() error {
 		if rule.MinAltitudeFt != nil && rule.MaxAltitudeFt != nil && *rule.MaxAltitudeFt <= *rule.MinAltitudeFt {
 			return fmt.Errorf("rule %d (%q): max_altitude_ft must exceed min_altitude_ft", i, rule.Name)
 		}
-		if rule.MaxDistanceNM != nil {
-			if math.IsNaN(*rule.MaxDistanceNM) || math.IsInf(*rule.MaxDistanceNM, 0) || *rule.MaxDistanceNM <= 0 {
-				return fmt.Errorf("rule %d (%q): max_distance_nm must be a finite number > 0", i, rule.Name)
+		for _, lim := range []struct {
+			name string
+			val  *float64
+		}{{"max_distance_nm", rule.MaxDistanceNM}, {"passes_within_nm", rule.PassesWithinNM}} {
+			if lim.val == nil {
+				continue
+			}
+			if math.IsNaN(*lim.val) || math.IsInf(*lim.val, 0) || *lim.val <= 0 {
+				return fmt.Errorf("rule %d (%q): %s must be a finite number > 0", i, rule.Name, lim.name)
 			}
 			if a.Lat == nil || a.Lon == nil {
-				return fmt.Errorf("rule %d (%q): max_distance_nm requires top-level lat and lon in alerts.yaml", i, rule.Name)
+				return fmt.Errorf("rule %d (%q): %s requires top-level lat and lon in alerts.yaml", i, rule.Name, lim.name)
+			}
+		}
+		if rule.PassesWithin != nil {
+			if rule.PassesWithinNM == nil {
+				return fmt.Errorf("rule %d (%q): passes_within requires passes_within_nm", i, rule.Name)
+			}
+			if rule.PassesWithin.Std() <= 0 {
+				return fmt.Errorf("rule %d (%q): passes_within must be > 0", i, rule.Name)
 			}
 		}
 	}

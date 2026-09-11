@@ -30,4 +30,15 @@ rules:
     max_altitude_ft: 2000
     max_distance_nm: 3
 
+  # Predicted from current ground track and speed: will come within 1 NM in the next 5 minutes.
+  - name: Overflights
+    passes_within_nm: 1
+    passes_within: 5m      # the default
+    max_altitude_ft: 10000
+
+  # A full turn inside 2 NM during the last 10 minutes: news and police helicopters.
+  - name: Orbiting aircraft
+    circling: true
+    max_distance_nm: 10
+
 log_level: info
