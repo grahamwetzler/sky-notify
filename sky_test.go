@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -112,15 +113,17 @@ func TestParseCSVSkipsUnusableICAOs(t *testing.T) {
 func TestNonICAOAddressDoesNotMatchDatabase(t *testing.T) {
 	cfg := testConfig(t)
 	alerts := defaultAlerts()
+	listed := true
+	alerts.Rules = []Rule{{Name: "listed", Listed: &listed}}
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
 
-	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts); a == nil {
+	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts, nil); a == nil {
 		t.Fatal("plain hex should match the database")
 	}
-	if a := Evaluate(Aircraft{Hex: "~adeb2f"}, db, alerts); a != nil {
+	if a := Evaluate(Aircraft{Hex: "~adeb2f"}, db, alerts, nil); a != nil {
 		t.Fatalf("tilde-prefixed address must not match the database, got %+v", a)
 	}
-	if a := Evaluate(Aircraft{Hex: "~ADEB2F"}, db, alerts); a != nil {
+	if a := Evaluate(Aircraft{Hex: "~ADEB2F"}, db, alerts, nil); a != nil {
 		t.Fatal("uppercase tilde-prefixed address must not match either")
 	}
 }
@@ -161,25 +164,26 @@ func TestAltitudeUnmarshal(t *testing.T) {
 	}
 }
 
-// ---------- filters ----------
+// ---------- rules ----------
 
 func TestFiltersFailClosedOnMissingData(t *testing.T) {
 	cfg := testConfig(t)
 	alerts := defaultAlerts()
 	lat, lon := 51.5, -0.12
-	alerts.Filters.Lat, alerts.Filters.Lon = &lat, &lon
-	alerts.Filters.MaxDistanceNM = 50
+	limit := 50.0
+	alerts.Lat, alerts.Lon = &lat, &lon
+	alerts.Rules = []Rule{{Name: "near", MaxDistanceNM: &limit}}
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
 
 	// An explicitly configured distance filter must not admit everything positionless.
-	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts); a != nil {
+	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts, nil); a != nil {
 		t.Error("positionless aircraft must be suppressed when a distance filter is on")
 	}
 	near, farLon := 51.6, 10.0
-	if a := Evaluate(Aircraft{Hex: "adeb2f", Lat: &near, Lon: &lon}, db, alerts); a == nil {
+	if a := Evaluate(Aircraft{Hex: "adeb2f", Lat: &near, Lon: &lon}, db, alerts, nil); a == nil {
 		t.Error("nearby aircraft should pass the distance filter")
 	}
-	if a := Evaluate(Aircraft{Hex: "adeb2f", Lat: &near, Lon: &farLon}, db, alerts); a != nil {
+	if a := Evaluate(Aircraft{Hex: "adeb2f", Lat: &near, Lon: &farLon}, db, alerts, nil); a != nil {
 		t.Error("distant aircraft should be suppressed")
 	}
 }
@@ -189,48 +193,41 @@ func TestFiltersFailClosedOnMissingData(t *testing.T) {
 func TestAltitudeFilterFailsClosedAndTreatsGroundAsZero(t *testing.T) {
 	cfg := testConfig(t)
 	alerts := defaultAlerts()
-	alerts.Filters.MinAltitudeFt = 1000
+	minimum := 1000
+	alerts.Rules = []Rule{{Name: "airborne", MinAltitudeFt: &minimum}}
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
 
-	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts); a != nil {
+	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts, nil); a != nil {
 		t.Error("missing alt_baro must be suppressed when an altitude filter is on")
 	}
 	ground := Aircraft{Hex: "adeb2f", AltBaro: Altitude{Present: true, Ground: true}}
-	if a := Evaluate(ground, db, alerts); a != nil {
+	if a := Evaluate(ground, db, alerts, nil); a != nil {
 		t.Error(`"ground" must read as 0 ft and fail a 1000ft floor`)
 	}
 	airborne := Aircraft{Hex: "adeb2f", AltBaro: Altitude{Present: true, Feet: 31000}}
-	if a := Evaluate(airborne, db, alerts); a == nil {
+	if a := Evaluate(airborne, db, alerts, nil); a == nil {
 		t.Error("airborne aircraft should pass the floor")
 	}
 }
 
-func TestEmergencyBypassesFilters(t *testing.T) {
+func TestSilenceIsTheDefault(t *testing.T) {
 	cfg := testConfig(t)
 	alerts := defaultAlerts()
-	lat, lon := 51.5, -0.12
-	alerts.Filters.Lat, alerts.Filters.Lon = &lat, &lon
-	alerts.Filters.MaxDistanceNM = 1
-	alerts.Filters.MinAltitudeFt = 30000
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
-
-	// No position, no altitude, not in the database: still worth a notification.
-	a := Evaluate(Aircraft{Hex: "ffffff", Squawk: "7700"}, db, alerts)
-	if a == nil || !a.Emergency {
-		t.Fatal("a 7700 must bypass every filter")
-	}
-	if a.Plane != nil {
-		t.Error("unlisted aircraft should carry no plane metadata")
+	for _, ac := range []Aircraft{{Hex: "adeb2f"}, {Hex: "ffffff"}, {Hex: "ffffff", Squawk: "7700"}} {
+		if a := Evaluate(ac, db, alerts, nil); a != nil {
+			t.Fatalf("empty rules must be silent, got %+v", a)
+		}
 	}
 }
 
-func TestEmergencyCanBeDisabled(t *testing.T) {
+func TestEmergencyRequiresAndUsesRule(t *testing.T) {
 	cfg := testConfig(t)
 	alerts := defaultAlerts()
-	alerts.AlertOnEmergencySquawk = false
+	alerts.Rules = []Rule{{Name: "emergency", Squawk: []string{"7500", "7600", "7700"}}}
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
-	if a := Evaluate(Aircraft{Hex: "ffffff", Squawk: "7700"}, db, alerts); a != nil {
-		t.Error("emergency trigger should be off when disabled")
+	if a := Evaluate(Aircraft{Hex: "ffffff", Squawk: "7700"}, db, alerts, nil); a == nil || !a.Emergency || a.Trigger != "emergency" {
+		t.Fatalf("squawk rule should produce framed emergency, got %+v", a)
 	}
 }
 
@@ -238,6 +235,8 @@ func intp(v int) *int { return &v }
 
 func TestRuleMatching(t *testing.T) {
 	p := &Plane{ICAO: "adeb2f", Reg: "N12345", Operator: "US Air Force", Type: "Tupolev Tu-154 B-2", ICAOType: "C17", CMPG: "Mil", Category: "Zoomies", Tags: []string{"Cargo", "Heavy"}}
+	ac := Aircraft{Hex: p.ICAO}
+	a := &Alert{}
 	for _, tc := range []struct {
 		name      string
 		rules     []Rule
@@ -250,7 +249,7 @@ func TestRuleMatching(t *testing.T) {
 		{"case insensitive tag", []Rule{{Tags: []string{" heavy "}, Priority: intp(3)}}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, got := firstMatch(tc.rules, p)
+			got := firstMatch(tc.rules, ac, p, a)
 			if (got != nil) != tc.wantMatch {
 				t.Errorf("match = %v, want %v", got != nil, tc.wantMatch)
 			}
@@ -263,29 +262,22 @@ func TestPriorityRulesAndSquawks(t *testing.T) {
 		name      string
 		rules     []Rule
 		squawk    string
-		squawkPri map[string]int
 		wantAlert bool
 		wantPri   int
 	}{
-		{"first match wins", []Rule{{ICAO: []string{"adeb2f"}, Priority: intp(2)}, {ICAO: []string{"adeb2f"}, Priority: intp(4)}}, "", nil, true, 2},
-		{"rules exclude unmatched aircraft", []Rule{{ICAO: []string{"ffffff"}, Priority: intp(2)}}, "", nil, false, 0},
-		{"later matching rule alerts", []Rule{{ICAO: []string{"ffffff"}, Priority: intp(2)}, {ICAO: []string{"adeb2f"}, Priority: intp(4)}}, "", nil, true, 4},
-		{"rule mutes db alert", []Rule{{ICAO: []string{"adeb2f"}, Priority: intp(0)}}, "", nil, false, 0},
-		{"emergency bypasses mute", []Rule{{ICAO: []string{"adeb2f"}, Priority: intp(0)}}, "7700", map[string]int{"7700": 4}, true, 4},
-		{"emergency bypasses allowlist", []Rule{{ICAO: []string{"ffffff"}, Priority: intp(2)}}, "7700", map[string]int{"7700": 4}, true, 4},
-		{"squawk priority zero mutes", nil, "7600", map[string]int{"7600": 0}, false, 0},
-		{"other squawk keeps default", nil, "7700", map[string]int{"7600": 0}, true, 5},
-		{"no rules uses ntfy priority", nil, "", nil, true, 3},
+		{"first match wins", []Rule{{Name: "first", ICAO: []string{"adeb2f"}, Priority: intp(2)}, {Name: "second", ICAO: []string{"adeb2f"}, Priority: intp(4)}}, "", true, 2},
+		{"rules exclude unmatched aircraft", []Rule{{Name: "other", ICAO: []string{"ffffff"}, Priority: intp(2)}}, "", false, 0},
+		{"later matching rule alerts", []Rule{{Name: "other", ICAO: []string{"ffffff"}, Priority: intp(2)}, {Name: "match", ICAO: []string{"adeb2f"}, Priority: intp(4)}}, "", true, 4},
+		{"first match mutes and stops", []Rule{{Name: "mute", ICAO: []string{"adeb2f"}, Priority: intp(0)}, {Name: "broad", Listed: boolp(true)}}, "", false, 0},
+		{"squawk rule alerts", []Rule{{Name: "emergency", Squawk: []string{"7700"}, Priority: intp(4)}}, "7700", true, 4},
+		{"no rules is silent", nil, "7700", false, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testConfig(t)
 			alerts := defaultAlerts()
 			alerts.Rules = tc.rules
-			for code, priority := range tc.squawkPri {
-				alerts.SquawkPriority[code] = priority
-			}
 			db := dbWith(t, cfg, mustParse(t, sampleCSV))
-			a := Evaluate(Aircraft{Hex: "adeb2f", Squawk: tc.squawk}, db, alerts)
+			a := Evaluate(Aircraft{Hex: "adeb2f", Squawk: tc.squawk}, db, alerts, nil)
 			if (a != nil) != tc.wantAlert {
 				t.Fatalf("alert = %+v, want alert %v", a, tc.wantAlert)
 			}
@@ -293,6 +285,88 @@ func TestPriorityRulesAndSquawks(t *testing.T) {
 				t.Errorf("priority = %d, want %d", a.Priority, tc.wantPri)
 			}
 		})
+	}
+}
+
+func boolp(v bool) *bool { return &v }
+
+func TestListedAndFeedOnlyRules(t *testing.T) {
+	cfg := testConfig(t)
+	db := dbWith(t, cfg, mustParse(t, sampleCSV))
+	for _, tc := range []struct {
+		listed *bool
+		hex    string
+		want   bool
+	}{{boolp(true), "adeb2f", true}, {boolp(true), "ffffff", false}, {boolp(false), "ffffff", true}, {nil, "ffffff", true}} {
+		a := defaultAlerts()
+		a.Rules = []Rule{{Name: "rule", Listed: tc.listed, ICAO: []string{tc.hex}}}
+		if got := Evaluate(Aircraft{Hex: tc.hex}, db, a, nil); (got != nil) != tc.want {
+			t.Errorf("listed=%v hex=%s alert=%+v", tc.listed, tc.hex, got)
+		}
+	}
+}
+
+func TestUnlistedAircraftMatchesFeedFieldsAndLimits(t *testing.T) {
+	cfg := testConfig(t)
+	db := dbWith(t, cfg, nil)
+	lat, lon, maxDistance := 32.0, -96.0, 3.0
+	minAltitude, maxAltitude := 0, 2000
+	alerts := defaultAlerts()
+	alerts.Lat, alerts.Lon = &lat, &lon
+	alerts.Rules = []Rule{{Name: "low flyer", Reg: []string{"N1"}, ICAOType: []string{"C172"}, MinAltitudeFt: &minAltitude, MaxAltitudeFt: &maxAltitude, MaxDistanceNM: &maxDistance}}
+	ac := Aircraft{Hex: "ffffff", Reg: "n1", Type: "c172", Lat: &lat, Lon: &lon, AltBaro: Altitude{Present: true, Feet: 1000}}
+	if got := Evaluate(ac, db, alerts, nil); got == nil || got.Plane != nil {
+		t.Fatalf("feed-only rule should match unlisted aircraft, got %+v", got)
+	}
+}
+
+// reg and icao_type exist in both the database and the feed and routinely disagree;
+// either source satisfying the rule has to count, or a rule written from the database
+// silently stops matching the moment the aircraft broadcasts something different.
+func TestRegAndICAOTypeMatchFromEitherSource(t *testing.T) {
+	cfg := testConfig(t)
+	db := dbWith(t, cfg, mustParse(t, sampleCSV))
+	listed := Aircraft{Hex: "adeb2f", Reg: "OTHER", Type: "OTHER"}
+
+	alerts := defaultAlerts()
+	alerts.Rules = []Rule{{Name: "by database reg", Reg: []string{"N12345"}}}
+	if got := Evaluate(listed, db, alerts, nil); got == nil {
+		t.Error("the database registration should match even when the feed disagrees")
+	}
+	alerts.Rules = []Rule{{Name: "by feed reg", Reg: []string{"other"}}}
+	if got := Evaluate(listed, db, alerts, nil); got == nil {
+		t.Error("the feed registration should match even when the database disagrees")
+	}
+	alerts.Rules = []Rule{{Name: "by database type", ICAOType: []string{"C17"}}}
+	if got := Evaluate(listed, db, alerts, nil); got == nil {
+		t.Error("the database ICAO type should match even when the feed disagrees")
+	}
+}
+
+func TestPerRuleLimitsSelectLaterRule(t *testing.T) {
+	cfg := testConfig(t)
+	db := dbWith(t, cfg, nil)
+	low, high, ceiling := 0, 3000, 10000
+	alerts := defaultAlerts()
+	alerts.Rules = []Rule{
+		{Name: "low", ICAO: []string{"ffffff"}, MaxAltitudeFt: &low, Priority: intp(2)},
+		{Name: "high", ICAO: []string{"ffffff"}, MinAltitudeFt: &high, MaxAltitudeFt: &ceiling, Priority: intp(4)},
+	}
+	got := Evaluate(Aircraft{Hex: "ffffff", AltBaro: Altitude{Present: true, Feet: 5000}}, db, alerts, nil)
+	if got == nil || got.Trigger != "high" || got.Priority != 4 {
+		t.Fatalf("later altitude rule should win, got %+v", got)
+	}
+}
+
+func TestDistanceLimitFailsClosedThenEvaluationContinues(t *testing.T) {
+	cfg := testConfig(t)
+	db := dbWith(t, cfg, nil)
+	limit := 3.0
+	alerts := defaultAlerts()
+	alerts.Rules = []Rule{{Name: "near", ICAO: []string{"ffffff"}, MaxDistanceNM: &limit}, {Name: "anywhere", ICAO: []string{"ffffff"}}}
+	got := Evaluate(Aircraft{Hex: "ffffff"}, db, alerts, nil)
+	if got == nil || got.Trigger != "anywhere" {
+		t.Fatalf("missing position should fail only the limited rule, got %+v", got)
 	}
 }
 
@@ -309,6 +383,141 @@ func TestHaversine(t *testing.T) {
 
 // ---------- cooldown ----------
 
+// ---------- motion ----------
+
+func TestClosestApproach(t *testing.T) {
+	lat, lon := 51.5, -0.12
+	south := lat - 10.0/60 // 10 NM south
+	for _, tc := range []struct {
+		name    string
+		heading float64
+		age     time.Duration
+		horizon time.Duration
+		wantNM  float64
+		wantIn  time.Duration
+	}{
+		{"heading straight over", 0, 0, 5 * time.Minute, 0, 5 * time.Minute},
+		{"crossing", 90, 0, 5 * time.Minute, 10, 0},
+		{"receding", 180, 0, 5 * time.Minute, 10, 0},
+		{"clamped to horizon", 0, 0, 2 * time.Minute, 6, 2 * time.Minute},
+		{"old position counts from now", 0, 2 * time.Minute, 5 * time.Minute, 0, 3 * time.Minute},
+		// Reported inbound 6 minutes ago: it has since passed and is 2 NM beyond.
+		{"already passed since last position", 0, 6 * time.Minute, 5 * time.Minute, 2, 0},
+	} {
+		nm, in := closestApproach(lat, lon, south, lon, 120, tc.heading, tc.age, tc.horizon)
+		if math.Abs(nm-tc.wantNM) > 0.1 || (in-tc.wantIn).Abs() > 5*time.Second {
+			t.Errorf("%s: got %.2f NM in %s, want %.0f NM in %s", tc.name, nm, in, tc.wantNM, tc.wantIn)
+		}
+	}
+}
+
+// fly integrates 15s steps at gs knots; turns[i] is the heading change before step i.
+func fly(gs float64, turns []float64) *track {
+	lat, lon, hdg := 51.5, -0.12, 0.0
+	tk := &track{}
+	for i, turn := range turns {
+		hdg = math.Mod(hdg+turn+360, 360)
+		d := gs * 15 / 3600
+		lat += d * math.Cos(hdg*math.Pi/180) / 60
+		lon += d * math.Sin(hdg*math.Pi/180) / (60 * math.Cos(lat*math.Pi/180))
+		tk.samples = append(tk.samples, sample{time.Unix(int64(i*15), 0), lat, lon, hdg})
+	}
+	return tk
+}
+
+func repeat(n int, v float64) []float64 {
+	out := make([]float64, n)
+	for i := range out {
+		out[i] = v
+	}
+	return out
+}
+
+func TestCirclingDetection(t *testing.T) {
+	// A holding pattern turns a full circle too, but over miles: two 6 NM legs.
+	var hold []float64
+	for range 2 {
+		hold = append(hold, repeat(8, 0)...)
+		hold = append(hold, repeat(6, 30)...)
+	}
+	gapped := fly(60, repeat(20, 30))
+	for i := 10; i < len(gapped.samples); i++ {
+		gapped.samples[i].t = gapped.samples[i].t.Add(2 * time.Minute)
+	}
+	// The same orbit moved onto the antimeridian, so its longitudes straddle ±180.
+	dateline := fly(60, repeat(20, 30))
+	for i := range dateline.samples {
+		dateline.samples[i].lon = wrap180(dateline.samples[i].lon + 180.12)
+	}
+	for _, tc := range []struct {
+		name string
+		tk   *track
+		want bool
+	}{
+		{"half-mile orbit", fly(60, repeat(20, 30)), true},
+		{"left-hand orbit", fly(60, repeat(20, -30)), true},
+		{"straight line", fly(120, repeat(20, 0)), false},
+		{"holding pattern", fly(180, hold), false},
+		{"gap splits the orbit", gapped, false},
+		{"orbit across the antimeridian", dateline, true},
+		{"no history", nil, false},
+	} {
+		if got := tc.tk.circling(); got != tc.want {
+			t.Errorf("%s: circling = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestTrackerRecordsNewPositionsAndForgets(t *testing.T) {
+	lat, lon, hdg := 51.5, -0.12, 90.0
+	tr := NewTracker()
+	at := func(now, seenPos float64) *feed {
+		return &feed{Now: now, Aircraft: []Aircraft{{Hex: "ABCDEF", Lat: &lat, Lon: &lon, Track: &hdg, SeenPos: seenPos}}}
+	}
+	tr.Update(at(1000, 0))
+	tr.Update(at(1000, 0))
+	tr.Update(at(1015, 15)) // readsb repeating the same position
+	if n := len(tr.get("abcdef").samples); n != 1 {
+		t.Fatalf("repeated positions must be one sample, got %d", n)
+	}
+	tr.Update(at(1030, 0))
+	if n := len(tr.get("abcdef").samples); n != 2 {
+		t.Fatalf("a new position must be recorded, got %d samples", n)
+	}
+	tr.Update(&feed{Now: 1030 + circleWindow.Seconds() + 1})
+	if tr.get("abcdef") != nil {
+		t.Fatal("a track with nothing left in the window must be forgotten")
+	}
+}
+
+func TestMotionRulesFailClosedAndRecordPrediction(t *testing.T) {
+	cfg := testConfig(t)
+	db := dbWith(t, cfg, nil)
+	lat, lon, within := 51.5, -0.12, 1.0
+	alerts := defaultAlerts()
+	alerts.Lat, alerts.Lon = &lat, &lon
+	alerts.Rules = []Rule{{Name: "overhead", PassesWithinNM: &within}}
+
+	south, north := lat-10.0/60, 0.0
+	moving := Aircraft{Hex: "ffffff", Lat: &south, Lon: &lon, GS: 120}
+	if a := Evaluate(moving, db, alerts, nil); a != nil {
+		t.Error("a moving aircraft without a ground track must fail closed")
+	}
+	moving.Track = &north
+	a := Evaluate(moving, db, alerts, nil)
+	if a == nil || !a.HasPass || a.PassNM > 0.1 || a.PassIn < 4*time.Minute {
+		t.Fatalf("inbound aircraft should match with its prediction recorded, got %+v", a)
+	}
+
+	alerts.Rules = []Rule{{Name: "orbit", Circling: boolp(true)}}
+	if a := Evaluate(moving, db, alerts, nil); a != nil {
+		t.Error("no history must not read as circling")
+	}
+	if a := Evaluate(moving, db, alerts, fly(60, repeat(20, 30))); a == nil || !a.Circling || a.HasPass {
+		t.Errorf("orbiting aircraft should match the circling rule alone, got %+v", a)
+	}
+}
+
 func TestCooldownStateMachine(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -316,11 +525,11 @@ func TestCooldownStateMachine(t *testing.T) {
 	s.Now = func() time.Time { return now }
 	cooldown := 24 * time.Hour
 
-	key := cooldownKey("adeb2f", triggerDB)
+	key := cooldownKey("adeb2f", "listed")
 	if !s.Eligible(key, cooldown) {
 		t.Fatal("first sighting should be eligible")
 	}
-	s.Record([]string{key}, cooldown)
+	s.Record(key, cooldown)
 	if s.Eligible(key, cooldown) {
 		t.Fatal("should be suppressed inside the cooldown window")
 	}
@@ -334,53 +543,60 @@ func TestCooldownStateMachine(t *testing.T) {
 	}
 }
 
-// A routine interesting-aircraft alert must never mute an emergency from the same airframe.
-func TestDBAlertDoesNotSuppressEmergency(t *testing.T) {
-	s := NewState(t.TempDir())
-	cooldown := 24 * time.Hour
-	s.Record([]string{cooldownKey("adeb2f", triggerDB)}, cooldown)
-
-	if !s.Eligible(cooldownKey("adeb2f", "emergency:7700"), cooldown) {
-		t.Fatal("a db alert must not suppress a subsequent emergency")
-	}
-}
-
-// Keying emergencies on the bare word would let a 7600 mute a later 7700.
-func TestOneEmergencyDoesNotSuppressADifferentOne(t *testing.T) {
-	s := NewState(t.TempDir())
-	cooldown := 24 * time.Hour
-	s.Record([]string{cooldownKey("adeb2f", "emergency:7600")}, cooldown)
-
-	if !s.Eligible(cooldownKey("adeb2f", "emergency:7700"), cooldown) {
-		t.Fatal("a 7600 must not suppress a later 7700")
-	}
-	if s.Eligible(cooldownKey("adeb2f", "emergency:7600"), cooldown) {
-		t.Fatal("the same squawk should still be suppressed")
-	}
-}
-
-// A listed aircraft squawking 7700 gets one notification, and it advances both cooldowns
-// so the routine alert does not follow it.
-func TestListedAircraftInEmergencyProducesOneAlertAndAdvancesBothCooldowns(t *testing.T) {
+// The rule name is the cooldown key, so a routine sighting must not mute the emergency
+// rule that catches the same airframe an hour later.
+func TestCooldownsAreIndependentPerRule(t *testing.T) {
 	cfg := testConfig(t)
 	alerts := defaultAlerts()
+	alerts.Rules = []Rule{
+		{Name: "emergency", Squawk: []string{"7700"}},
+		{Name: "listed", Listed: boolp(true)},
+	}
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
 	s := NewState(t.TempDir())
 	cooldown := alerts.Cooldown.Std()
 
-	a := Evaluate(Aircraft{Hex: "adeb2f", Squawk: "7700"}, db, alerts)
+	// A quiet pass matches the second rule; only that rule's cooldown advances.
+	routine := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts, nil)
+	if routine == nil || routine.Trigger != "listed" {
+		t.Fatalf("want the listed rule, got %+v", routine)
+	}
+	s.Record(cooldownKey(routine.Hex, routine.Trigger), cooldown)
+
+	// The same airframe squawking 7700 now matches the first rule, on its own key.
+	emergency := Evaluate(Aircraft{Hex: "adeb2f", Squawk: "7700"}, db, alerts, nil)
+	if emergency == nil || emergency.Trigger != "emergency" {
+		t.Fatalf("want the emergency rule, got %+v", emergency)
+	}
+	if !s.Eligible(cooldownKey(emergency.Hex, emergency.Trigger), cooldown) {
+		t.Error("a routine alert must not suppress a different rule's alert")
+	}
+	if s.Eligible(cooldownKey(routine.Hex, routine.Trigger), cooldown) {
+		t.Error("the routine rule should still be in its own cooldown")
+	}
+}
+
+// One notification, not two: first match wins, and the alert still carries the database
+// metadata that makes the message worth reading.
+func TestListedAircraftInEmergencyProducesOneAlert(t *testing.T) {
+	cfg := testConfig(t)
+	alerts := defaultAlerts()
+	alerts.Rules = []Rule{{Name: "emergency", Squawk: []string{"7700"}}}
+	db := dbWith(t, cfg, mustParse(t, sampleCSV))
+	s := NewState(t.TempDir())
+	cooldown := alerts.Cooldown.Std()
+
+	a := Evaluate(Aircraft{Hex: "adeb2f", Squawk: "7700"}, db, alerts, nil)
 	if a == nil || !a.Emergency {
 		t.Fatal("want an emergency alert")
 	}
 	if a.Plane == nil {
 		t.Fatal("emergency alert on a listed aircraft should still carry its metadata")
 	}
-	if len(a.Keys()) != 2 {
-		t.Fatalf("want both cooldown keys advanced, got %v", a.Keys())
-	}
-	s.Record(a.Keys(), cooldown)
-	if s.Eligible(cooldownKey("adeb2f", triggerDB), cooldown) {
-		t.Error("the db cooldown should have been advanced by the emergency")
+	key := cooldownKey(a.Hex, a.Trigger)
+	s.Record(key, cooldown)
+	if s.Eligible(key, cooldown) {
+		t.Error("the matching rule cooldown should have been advanced")
 	}
 }
 
@@ -388,11 +604,11 @@ func TestStatePersistsAcrossRestart(t *testing.T) {
 	dir := t.TempDir()
 	cooldown := 24 * time.Hour
 	s1 := NewState(dir)
-	s1.Record([]string{cooldownKey("adeb2f", triggerDB)}, cooldown)
+	s1.Record(cooldownKey("adeb2f", "listed"), cooldown)
 
 	s2 := NewState(dir)
 	s2.Load(cooldown)
-	if s2.Eligible(cooldownKey("adeb2f", triggerDB), cooldown) {
+	if s2.Eligible(cooldownKey("adeb2f", "listed"), cooldown) {
 		t.Fatal("cooldown should survive a restart")
 	}
 }
@@ -402,7 +618,7 @@ func TestCorruptStateIsNotFatal(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "state.json"), []byte("{not json"), 0o644)
 	s := NewState(dir)
 	s.Load(24 * time.Hour)
-	if !s.Eligible(cooldownKey("adeb2f", triggerDB), 24*time.Hour) {
+	if !s.Eligible(cooldownKey("adeb2f", "listed"), 24*time.Hour) {
 		t.Fatal("corrupt state should degrade to an empty ledger, not a failure")
 	}
 }
@@ -417,9 +633,9 @@ func TestStateWriteFailureStillAdvancesInMemoryCooldown(t *testing.T) {
 	}
 	s := NewState(filepath.Join(blocked, "sub")) // MkdirAll under a regular file fails
 	cooldown := 24 * time.Hour
-	key := cooldownKey("adeb2f", triggerDB)
+	key := cooldownKey("adeb2f", "listed")
 
-	s.Record([]string{key}, cooldown)
+	s.Record(key, cooldown)
 	if s.Eligible(key, cooldown) {
 		t.Fatal("in-memory cooldown must advance even when persistence fails")
 	}
@@ -480,7 +696,7 @@ func TestConfigReloadHotSwapTakesEffect(t *testing.T) {
 	environ := []string{"SKY_CONFIG=" + filepath.Join(dir, "config.yaml"), "SKY_ALERTS_CONFIG=" + path, "SKY_NTFY_TOPIC=test-topic"}
 	write := func(priority int) {
 		t.Helper()
-		yaml := fmt.Sprintf("rules:\n  - icao: [adeb2f]\n    priority: %d\n", priority)
+		yaml := fmt.Sprintf("rules:\n  - name: test\n    icao: [adeb2f]\n    priority: %d\n", priority)
 		if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -497,7 +713,7 @@ func TestConfigReloadHotSwapTakesEffect(t *testing.T) {
 	if err := reloadConfig(live, environ, nil); err != nil {
 		t.Fatal(err)
 	}
-	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, live.Get()); a == nil || a.Priority != 5 {
+	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, live.Get(), nil); a == nil || a.Priority != 5 {
 		t.Fatalf("reloaded alert = %+v, want priority 5", a)
 	}
 }
@@ -633,10 +849,10 @@ func TestEmptyConfigFilesUseDefaults(t *testing.T) {
 }
 
 func TestExampleFilesRespectConfigSplit(t *testing.T) {
-	if err := loadYAML("config.example.yaml", defaultConfig(), configMisplaced, "alerts.example.yaml", "hot-reloaded"); err != nil {
+	if err := loadYAML("config.example.yaml", defaultConfig(), configMisplaced, "alerts.example.yaml", "hot-reloaded", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := loadYAML("alerts.example.yaml", defaultAlerts(), alertsMisplaced, "config.example.yaml", "startup-only"); err != nil {
+	if err := loadYAML("alerts.example.yaml", defaultAlerts(), alertsMisplaced, "config.example.yaml", "startup-only", alertsRemoved); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -645,11 +861,11 @@ func TestMisplacedConfigKeysNameAlertsFile(t *testing.T) {
 	dir := t.TempDir()
 	config := filepath.Join(dir, "config.yaml")
 	alerts := filepath.Join(dir, "alerts.yaml")
-	if err := os.WriteFile(config, []byte("rules: []\nfilters: {}\nsource:\n  poll_interval: 1s\n"), 0o644); err != nil {
+	if err := os.WriteFile(config, []byte("rules: []\nlat: 0\nsource:\n  poll_interval: 1s\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, err := LoadConfig([]string{"SKY_CONFIG=" + config, "SKY_ALERTS_CONFIG=" + alerts})
-	if err == nil || !strings.Contains(err.Error(), "move rules, filters, source.poll_interval to "+alerts+" (hot-reloaded)") {
+	if err == nil || !strings.Contains(err.Error(), "move rules, lat, source.poll_interval to "+alerts+" (hot-reloaded)") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -758,53 +974,64 @@ func TestConfigValidation(t *testing.T) {
 	}
 }
 
-func TestPartialSquawkPriorityMergesDefaults(t *testing.T) {
-	cfg, err := loadAlertsWith(t, "squawk_priority:\n  '7600': 4\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.SquawkPriority["7600"] != 4 || cfg.SquawkPriority["7700"] != 5 {
-		t.Fatalf("got %v", cfg.SquawkPriority)
-	}
-}
-
-func TestNullSquawkPriorityKeepsDefaults(t *testing.T) {
-	cfg, err := loadAlertsWith(t, "squawk_priority:\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, squawk := range []string{"7500", "7600", "7700"} {
-		if cfg.SquawkPriority[squawk] != 5 {
-			t.Errorf("%s priority = %d, want 5", squawk, cfg.SquawkPriority[squawk])
-		}
-	}
-	db := dbWith(t, testConfig(t), nil)
-	if a := Evaluate(Aircraft{Hex: "ffffff", Squawk: "7700"}, db, cfg); a == nil || a.Priority != 5 {
-		t.Fatalf("7700 alert = %+v, want priority 5", a)
-	}
-}
-
 // NaN slips past every `> 0` check and would silently disable the filter the operator
 // just asked for.
 func TestNonFiniteFilterValuesRejected(t *testing.T) {
-	for _, env := range [][]string{
-		{"SKY_NTFY_TOPIC=t", "SKY_FILTERS_MAX_DISTANCE_NM=NaN"},
-		{"SKY_NTFY_TOPIC=t", "SKY_FILTERS_MAX_DISTANCE_NM=Inf"},
-		{"SKY_NTFY_TOPIC=t", "SKY_FILTERS_MAX_DISTANCE_NM=50", "SKY_FILTERS_LAT=NaN", "SKY_FILTERS_LON=0"},
-	} {
-		if _, err := loadAlertsWith(t, "", env...); err == nil {
-			t.Errorf("%v: want a validation error", env)
+	for _, value := range []string{".nan", ".inf"} {
+		yaml := "lat: 0\nlon: 0\nrules:\n  - name: distance\n    max_distance_nm: " + value + "\n"
+		if _, err := loadAlertsWith(t, yaml); err == nil {
+			t.Errorf("%s: want a validation error", value)
 		}
+	}
+}
+
+func TestMigrationErrors(t *testing.T) {
+	for _, tc := range []struct {
+		yaml string
+		env  []string
+		want string
+	}{{"filters: {}\n", nil, "filters moved onto each rule"}, {"", []string{"SKY_FILTERS_MAX_DISTANCE_NM=50"}, "now a per-rule key in alerts.yaml"}} {
+		_, err := loadAlertsWith(t, tc.yaml, tc.env...)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("error = %v, want %q", err, tc.want)
+		}
+	}
+}
+
+func TestRuleValidationNamesRule(t *testing.T) {
+	for _, tc := range []struct {
+		name, yaml string
+	}{
+		{"missing name", "rules:\n  - listed: true\n"},
+		{"duplicate name", "rules:\n  - name: same\n    listed: true\n  - name: same\n    listed: false\n"},
+		{"no conditions", "rules:\n  - name: empty\n"},
+		{"distance without coordinates", "rules:\n  - name: distance\n    max_distance_nm: 3\n"},
+		{"inverted altitude", "rules:\n  - name: altitude\n    min_altitude_ft: 100\n    max_altitude_ft: 100\n"},
+		{"bad priority", "rules:\n  - name: priority\n    listed: true\n    priority: 9\n"},
+		{"overhead without coordinates", "rules:\n  - name: overhead\n    passes_within_nm: 1\n"},
+		{"horizon without distance", "lat: 0\nlon: 0\nrules:\n  - name: overhead\n    listed: true\n    passes_within: 5m\n"},
+		{"zero horizon", "lat: 0\nlon: 0\nrules:\n  - name: overhead\n    passes_within_nm: 1\n    passes_within: 0s\n"},
+		{"non-finite overhead", "lat: 0\nlon: 0\nrules:\n  - name: overhead\n    passes_within_nm: .nan\n"},
+		{"circling with slow polls", "source:\n  poll_interval: 45s\nrules:\n  - name: orbit\n    circling: true\n"},
+	} {
+		_, err := loadAlertsWith(t, tc.yaml)
+		if err == nil || !strings.Contains(err.Error(), "rule ") {
+			t.Errorf("%s: error = %v", tc.name, err)
+		}
+	}
+	// Motion keys are conditions in their own right.
+	if _, err := loadAlertsWith(t, "rules:\n  - name: orbit\n    circling: true\n"); err != nil {
+		t.Errorf("circling alone should be a valid rule: %v", err)
 	}
 }
 
 // A receiver at 0,0 is a valid receiver — the position must be optional, not zero-tested.
 func TestZeroCoordinatesAreValid(t *testing.T) {
-	cfg, err := loadAlertsWith(t, "filters:\n  max_distance_nm: 50\n  lat: 0.0\n  lon: 0.0\n")
+	cfg, err := loadAlertsWith(t, "lat: 0.0\nlon: 0.0\n")
 	if err != nil {
 		t.Fatalf("0,0 should be a valid receiver position: %v", err)
 	}
-	if cfg.Filters.Lat == nil || *cfg.Filters.Lat != 0 {
+	if cfg.Lat == nil || *cfg.Lat != 0 {
 		t.Error("lat 0.0 should be set, not nil")
 	}
 }
@@ -1163,7 +1390,7 @@ func (n *ntfyServer) start(t *testing.T, cfg *Config) *Notifier {
 func testAlert() *Alert {
 	return &Alert{
 		Hex:      "adeb2f",
-		Trigger:  triggerDB,
+		Trigger:  "listed",
 		Priority: 2,
 		Plane:    &Plane{ICAO: "adeb2f", Reg: "N12345", Operator: "US Air Force", Type: "C-17", Link: "ftp://evil.invalid/x"},
 		AC:       Aircraft{Hex: "adeb2f", Flight: "RCH123 ", AltBaro: Altitude{Present: true, Feet: 31000}},
@@ -1354,7 +1581,7 @@ func alertFor(hex, trigger string, emergency bool) *Alert {
 
 func TestQueueDeduplicatesInFlightKey(t *testing.T) {
 	q := newQueue(10)
-	a := alertFor("adeb2f", triggerDB, false)
+	a := alertFor("adeb2f", "listed", false)
 	q.add(a)
 
 	got := q.take()
@@ -1362,14 +1589,14 @@ func TestQueueDeduplicatesInFlightKey(t *testing.T) {
 		t.Fatal("want an alert")
 	}
 	// The poll loop runs again while delivery is in flight.
-	q.add(alertFor("adeb2f", triggerDB, false))
+	q.add(alertFor("adeb2f", "listed", false))
 	if q.depth() != 1 {
 		t.Fatalf("an in-flight key must not be re-enqueued, depth=%d", q.depth())
 	}
 	if q.take() != nil {
 		t.Fatal("an in-flight entry must not be handed out twice")
 	}
-	q.done(cooldownKey("adeb2f", triggerDB))
+	q.done(cooldownKey("adeb2f", "listed"))
 	if q.depth() != 0 {
 		t.Fatal("done should remove the entry")
 	}
@@ -1380,14 +1607,14 @@ func TestQueueDeduplicatesInFlightKey(t *testing.T) {
 func TestQueuePrioritisesAndProtectsEmergencies(t *testing.T) {
 	q := newQueue(3)
 	for i := 0; i < 3; i++ {
-		q.add(alertFor(fmt.Sprintf("00000%d", i), triggerDB, false))
+		q.add(alertFor(fmt.Sprintf("00000%d", i), "listed", false))
 	}
 	if q.depth() != 3 {
 		t.Fatalf("want a full queue, got %d", q.depth())
 	}
 
 	// Full queue: an ordinary alert is dropped, an emergency evicts one instead.
-	q.add(alertFor("aaaaaa", triggerDB, false))
+	q.add(alertFor("aaaaaa", "listed", false))
 	if q.depth() != 3 {
 		t.Errorf("ordinary alert should have been dropped, depth=%d", q.depth())
 	}
@@ -1404,7 +1631,7 @@ func TestQueuePrioritisesAndProtectsEmergencies(t *testing.T) {
 
 func TestQueueDoesNotEvictInflightOrOtherEmergencies(t *testing.T) {
 	q := newQueue(2)
-	q.add(alertFor("000001", triggerDB, false))
+	q.add(alertFor("000001", "listed", false))
 	inflight := q.take() // marks 000001 in flight
 	if inflight == nil {
 		t.Fatal("want an alert")

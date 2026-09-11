@@ -1,39 +1,44 @@
-# sky-notify alert configuration — every key is optional and hot-reloaded.
-# Startup-only settings live in config.yaml. Mount beside it or point SKY_ALERTS_CONFIG here.
+# Nothing alerts unless a rule says so. Every key is optional and hot-reloaded.
+# Startup-only settings live in config.yaml. Mount beside it or set SKY_ALERTS_CONFIG.
 
 source:
   poll_interval: 15s
-
 ntfy:
-  priority: 3          # 1-5. Used for database alerts when rules is empty.
-
+  priority: 3          # default for rules that omit priority
 db:
   refresh_interval: 24h
-
-# How long to stay quiet after alerting. Routine and emergency triggers are tracked separately.
 cooldown: 24h
 
-filters:
-  # Filters are off by default and fail closed when aircraft data is missing.
-  # Emergencies bypass all filters.
-  min_altitude_ft: 0
-  max_altitude_ft: 0
-  max_distance_nm: 0
-  lat: null            # receiver location, required only for max_distance_nm
-  lon: null
+# Your receiver. Required by any rule that sets max_distance_nm.
+lat: 51.5007
+lon: -0.1246
 
-alert_on_emergency_squawk: true
+# Every rule is one thing you asked to hear about. Names must be unique: the name is the
+# cooldown key, so two rules matching one aircraft stay quiet independently of each other.
+# Conditions within a rule are ANDed; values within one field are ORed. First match wins.
+rules:
+  - name: Emergency squawks
+    squawk: ["7500", "7600", "7700"]
+    priority: 5
 
-# Omitted emergency codes remain at priority 5; 0 mutes one.
-# squawk_priority:
-#   "7700": 5
-#   "7600": 4
-#   "7500": 5
+  - name: Listed aircraft nearby
+    listed: true
+    max_distance_nm: 50
 
-# A non-empty rules list allows only matching database aircraft; priority 0 mutes.
-# rules:
-#   - name: Air Force One
-#     tags: [Air Force One]
-#     priority: 5
+  - name: Unlisted low flyers
+    listed: false
+    max_altitude_ft: 2000
+    max_distance_nm: 3
+
+  # Predicted from current ground track and speed: will come within 1 NM in the next 5 minutes.
+  - name: Overflights
+    passes_within_nm: 1
+    passes_within: 5m      # the default
+    max_altitude_ft: 10000
+
+  # A full turn inside 2 NM during the last 10 minutes: news and police helicopters.
+  - name: Orbiting aircraft
+    circling: true
+    max_distance_nm: 10
 
 log_level: info

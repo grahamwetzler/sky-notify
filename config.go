@@ -42,16 +42,24 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 func (d Duration) Std() time.Duration { return time.Duration(d) }
 
 type Rule struct {
-	Name     string   `yaml:"name"`
-	ICAO     []string `yaml:"icao"`
-	Reg      []string `yaml:"reg"`
-	Operator []string `yaml:"operator"`
-	Type     []string `yaml:"type"`
-	ICAOType []string `yaml:"icao_type"`
-	CMPG     []string `yaml:"cmpg"`
-	Category []string `yaml:"category"`
-	Tags     []string `yaml:"tags"`
-	Priority *int     `yaml:"priority"`
+	Name           string    `yaml:"name"`
+	Priority       *int      `yaml:"priority"`
+	ICAO           []string  `yaml:"icao"`
+	Reg            []string  `yaml:"reg"`
+	ICAOType       []string  `yaml:"icao_type"`
+	Squawk         []string  `yaml:"squawk"`
+	Operator       []string  `yaml:"operator"`
+	Type           []string  `yaml:"type"`
+	CMPG           []string  `yaml:"cmpg"`
+	Category       []string  `yaml:"category"`
+	Tags           []string  `yaml:"tags"`
+	Listed         *bool     `yaml:"listed"`
+	MinAltitudeFt  *int      `yaml:"min_altitude_ft"`
+	MaxAltitudeFt  *int      `yaml:"max_altitude_ft"`
+	MaxDistanceNM  *float64  `yaml:"max_distance_nm"`
+	Circling       *bool     `yaml:"circling"`
+	PassesWithinNM *float64  `yaml:"passes_within_nm"`
+	PassesWithin   *Duration `yaml:"passes_within"`
 }
 
 type Config struct {
@@ -89,21 +97,11 @@ type Alerts struct {
 		RefreshInterval Duration `yaml:"refresh_interval"`
 	} `yaml:"db"`
 	Cooldown Duration `yaml:"cooldown"`
-	Filters  struct {
-		MinAltitudeFt int      `yaml:"min_altitude_ft"`
-		MaxAltitudeFt int      `yaml:"max_altitude_ft"`
-		MaxDistanceNM float64  `yaml:"max_distance_nm"`
-		Lat           *float64 `yaml:"lat"`
-		Lon           *float64 `yaml:"lon"`
-	} `yaml:"filters"`
-
-	AlertOnEmergencySquawk bool           `yaml:"alert_on_emergency_squawk"`
-	Rules                  []Rule         `yaml:"rules"`
-	SquawkPriority         map[string]int `yaml:"squawk_priority"`
-	LogLevel               string         `yaml:"log_level"`
+	Lat      *float64 `yaml:"lat"`
+	Lon      *float64 `yaml:"lon"`
+	Rules    []Rule   `yaml:"rules"`
+	LogLevel string   `yaml:"log_level"`
 }
-
-var defaultSquawkPriority = map[string]int{"7500": 5, "7600": 5, "7700": 5}
 
 const configPollInterval = 5 * time.Second
 
@@ -136,12 +134,7 @@ func defaultAlerts() *Alerts {
 	a.Ntfy.Priority = 3
 	a.DB.RefreshInterval = Duration(24 * time.Hour)
 	a.Cooldown = Duration(24 * time.Hour)
-	a.AlertOnEmergencySquawk = true
 	a.LogLevel = "info"
-	a.SquawkPriority = map[string]int{}
-	for squawk, priority := range defaultSquawkPriority {
-		a.SquawkPriority[squawk] = priority
-	}
 	return a
 }
 
@@ -189,12 +182,8 @@ func alertEnvBindings() []alertEnvBinding {
 		{"SKY_NTFY_PRIORITY", func(a *Alerts, v string) error { return setInt(&a.Ntfy.Priority, v) }},
 		{"SKY_DB_REFRESH_INTERVAL", func(a *Alerts, v string) error { return setDur(&a.DB.RefreshInterval, v) }},
 		{"SKY_COOLDOWN", func(a *Alerts, v string) error { return setDur(&a.Cooldown, v) }},
-		{"SKY_FILTERS_MIN_ALTITUDE_FT", func(a *Alerts, v string) error { return setInt(&a.Filters.MinAltitudeFt, v) }},
-		{"SKY_FILTERS_MAX_ALTITUDE_FT", func(a *Alerts, v string) error { return setInt(&a.Filters.MaxAltitudeFt, v) }},
-		{"SKY_FILTERS_MAX_DISTANCE_NM", func(a *Alerts, v string) error { return setFloat(&a.Filters.MaxDistanceNM, v) }},
-		{"SKY_FILTERS_LAT", func(a *Alerts, v string) error { return setFloatPtr(&a.Filters.Lat, v) }},
-		{"SKY_FILTERS_LON", func(a *Alerts, v string) error { return setFloatPtr(&a.Filters.Lon, v) }},
-		{"SKY_ALERT_ON_EMERGENCY_SQUAWK", func(a *Alerts, v string) error { return setBool(&a.AlertOnEmergencySquawk, v) }},
+		{"SKY_LAT", func(a *Alerts, v string) error { return setFloatPtr(&a.Lat, v) }},
+		{"SKY_LON", func(a *Alerts, v string) error { return setFloatPtr(&a.Lon, v) }},
 		{"SKY_LOG_LEVEL", func(a *Alerts, v string) error { a.LogLevel = v; return nil }},
 	}
 }
@@ -217,30 +206,12 @@ func setInt(i *int, v string) error {
 	return nil
 }
 
-func setFloat(f *float64, v string) error {
-	p, err := strconv.ParseFloat(v, 64)
-	if err != nil {
-		return err
-	}
-	*f = p
-	return nil
-}
-
 func setFloatPtr(f **float64, v string) error {
 	p, err := strconv.ParseFloat(v, 64)
 	if err != nil {
 		return err
 	}
 	*f = &p
-	return nil
-}
-
-func setBool(b *bool, v string) error {
-	p, err := strconv.ParseBool(v)
-	if err != nil {
-		return err
-	}
-	*b = p
 	return nil
 }
 
@@ -260,7 +231,7 @@ func LoadConfig(environ []string) (*Config, error) {
 	env := environMap(environ)
 	cfg := defaultConfig()
 	path := configPath(env)
-	if err := loadYAML(path, cfg, configMisplaced, alertsPath(env), "hot-reloaded"); err != nil {
+	if err := loadYAML(path, cfg, configMisplaced, alertsPath(env), "hot-reloaded", nil); err != nil {
 		return nil, err
 	}
 	if err := checkEnv(env); err != nil {
@@ -283,16 +254,8 @@ func LoadConfig(environ []string) (*Config, error) {
 func LoadAlerts(environ []string) (*Alerts, error) {
 	env := environMap(environ)
 	alerts := defaultAlerts()
-	if err := loadYAML(alertsPath(env), alerts, alertsMisplaced, configPath(env), "startup-only"); err != nil {
+	if err := loadYAML(alertsPath(env), alerts, alertsMisplaced, configPath(env), "startup-only", alertsRemoved); err != nil {
 		return nil, err
-	}
-	if alerts.SquawkPriority == nil {
-		alerts.SquawkPriority = map[string]int{}
-	}
-	for squawk, priority := range defaultSquawkPriority {
-		if _, ok := alerts.SquawkPriority[squawk]; !ok {
-			alerts.SquawkPriority[squawk] = priority
-		}
 	}
 	if err := checkEnv(env); err != nil {
 		return nil, err
@@ -315,10 +278,29 @@ func LoadAlerts(environ []string) (*Alerts, error) {
 // Each list mirrors the other file's keys, and must be extended whenever a key is added
 // to the other struct: a key missing here still fails, but with KnownFields' "field rules
 // not found in type main.Config" instead of a message naming the file it belongs in.
-var configMisplaced = []string{"rules", "filters", "cooldown", "alert_on_emergency_squawk", "squawk_priority", "log_level", "source.poll_interval", "ntfy.priority", "db.refresh_interval"}
+var configMisplaced = []string{"rules", "cooldown", "lat", "lon", "log_level", "source.poll_interval", "ntfy.priority", "db.refresh_interval"}
 var alertsMisplaced = []string{"source.url", "source.max_age", "ntfy.url", "ntfy.topic", "ntfy.token", "ntfy.user", "ntfy.password", "tar1090_url", "db.files", "db.base_url", "cache_dir", "listen"}
 
-func loadYAML(path string, dst any, misplaced []string, belongs, label string) error {
+// A key or variable deleted by the rules-only rewrite gets an explanation of where its
+// job went. Without these, KnownFields says "field filters not found in type main.Alerts"
+// and nearestName offers a spelling correction for a name that is not misspelled — both
+// of which read as "you typo'd" when the truth is "this setting moved".
+var alertsRemoved = map[string]string{
+	"filters":                   "filters moved onto each rule: min_altitude_ft, max_altitude_ft and max_distance_nm are now per-rule keys, and lat/lon are top-level in this file",
+	"alert_on_emergency_squawk": `emergency squawks are now ordinary rules: write a rule with squawk: ["7500", "7600", "7700"]`,
+	"squawk_priority":           "squawk priority is now the priority of the rule that matches the squawk",
+}
+
+var removedEnv = map[string]string{
+	"SKY_FILTERS_MIN_ALTITUDE_FT":   "now a per-rule key in alerts.yaml",
+	"SKY_FILTERS_MAX_ALTITUDE_FT":   "now a per-rule key in alerts.yaml",
+	"SKY_FILTERS_MAX_DISTANCE_NM":   "now a per-rule key in alerts.yaml",
+	"SKY_ALERT_ON_EMERGENCY_SQUAWK": "write a squawk rule instead",
+	"SKY_FILTERS_LAT":               "use SKY_LAT instead",
+	"SKY_FILTERS_LON":               "use SKY_LON instead",
+}
+
+func loadYAML(path string, dst any, misplaced []string, belongs, label string, removed map[string]string) error {
 	// A missing config file is not an error; a malformed one is.
 	b, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -331,6 +313,17 @@ func loadYAML(path string, dst any, misplaced []string, belongs, label string) e
 	var raw map[string]any
 	if err := yaml.Unmarshal(b, &raw); err != nil {
 		return fmt.Errorf("config %s: %w", path, err)
+	}
+	// Sorted, so a file carrying two removed keys always names the same one first.
+	gone := make([]string, 0, len(removed))
+	for key := range removed {
+		if _, ok := raw[key]; ok {
+			gone = append(gone, key)
+		}
+	}
+	if len(gone) > 0 {
+		sort.Strings(gone)
+		return fmt.Errorf("config %s: %s: %s", path, gone[0], removed[gone[0]])
 	}
 	var found []string
 	for _, key := range misplaced {
@@ -375,7 +368,11 @@ func checkEnv(env map[string]string) error {
 	sort.Strings(unknown)
 	msgs := make([]string, 0, len(unknown))
 	for _, u := range unknown {
-		msgs = append(msgs, fmt.Sprintf("%s (did you mean %s?)", u, nearestName(u, known)))
+		if message, ok := removedEnv[u]; ok {
+			msgs = append(msgs, fmt.Sprintf("%s (%s)", u, message))
+		} else {
+			msgs = append(msgs, fmt.Sprintf("%s (did you mean %s?)", u, nearestName(u, known)))
+		}
 	}
 	return fmt.Errorf("unknown environment variable(s): %s", strings.Join(msgs, ", "))
 }
@@ -548,23 +545,54 @@ func (a *Alerts) validate() error {
 	if a.Ntfy.Priority < 1 || a.Ntfy.Priority > 5 {
 		return fmt.Errorf("ntfy.priority must be 1..5, got %d", a.Ntfy.Priority)
 	}
-	for squawk, priority := range a.SquawkPriority {
-		if _, ok := emergencySquawks[squawk]; !ok {
-			return fmt.Errorf("squawk_priority: unknown squawk %q", squawk)
-		}
-		if priority < 0 || priority > 5 {
-			return fmt.Errorf("squawk_priority.%s must be 0..5, got %d", squawk, priority)
-		}
-	}
+	seen := map[string]bool{}
 	for i, rule := range a.Rules {
-		if rule.Priority == nil {
-			return fmt.Errorf("rule %d (%q): priority is required", i, rule.Name)
+		if rule.Name == "" {
+			return fmt.Errorf("rule %d (%q): name is required", i, rule.Name)
 		}
-		if *rule.Priority < 0 || *rule.Priority > 5 {
+		if seen[rule.Name] {
+			return fmt.Errorf("rule %d (%q): name must be unique", i, rule.Name)
+		}
+		seen[rule.Name] = true
+		if rule.Priority != nil && (*rule.Priority < 0 || *rule.Priority > 5) {
 			return fmt.Errorf("rule %d (%q): priority must be 0..5, got %d", i, rule.Name, *rule.Priority)
 		}
-		if len(rule.ICAO)+len(rule.Reg)+len(rule.Operator)+len(rule.Type)+len(rule.ICAOType)+len(rule.CMPG)+len(rule.Category)+len(rule.Tags) == 0 {
-			return fmt.Errorf("rule %d (%q): at least one match field is required", i, rule.Name)
+		if len(rule.ICAO)+len(rule.Reg)+len(rule.ICAOType)+len(rule.Squawk)+len(rule.Operator)+len(rule.Type)+len(rule.CMPG)+len(rule.Category)+len(rule.Tags) == 0 && rule.Listed == nil && rule.MinAltitudeFt == nil && rule.MaxAltitudeFt == nil && rule.MaxDistanceNM == nil && rule.Circling == nil && rule.PassesWithinNM == nil {
+			return fmt.Errorf("rule %d (%q): at least one condition is required", i, rule.Name)
+		}
+		if (rule.MinAltitudeFt != nil && *rule.MinAltitudeFt < 0) || (rule.MaxAltitudeFt != nil && *rule.MaxAltitudeFt < 0) {
+			return fmt.Errorf("rule %d (%q): altitude limits must not be negative", i, rule.Name)
+		}
+		if rule.MinAltitudeFt != nil && rule.MaxAltitudeFt != nil && *rule.MaxAltitudeFt <= *rule.MinAltitudeFt {
+			return fmt.Errorf("rule %d (%q): max_altitude_ft must exceed min_altitude_ft", i, rule.Name)
+		}
+		for _, lim := range []struct {
+			name string
+			val  *float64
+		}{{"max_distance_nm", rule.MaxDistanceNM}, {"passes_within_nm", rule.PassesWithinNM}} {
+			if lim.val == nil {
+				continue
+			}
+			if math.IsNaN(*lim.val) || math.IsInf(*lim.val, 0) || *lim.val <= 0 {
+				return fmt.Errorf("rule %d (%q): %s must be a finite number > 0", i, rule.Name, lim.name)
+			}
+			if a.Lat == nil || a.Lon == nil {
+				return fmt.Errorf("rule %d (%q): %s requires top-level lat and lon in alerts.yaml", i, rule.Name, lim.name)
+			}
+		}
+		if rule.PassesWithin != nil {
+			if rule.PassesWithinNM == nil {
+				return fmt.Errorf("rule %d (%q): passes_within requires passes_within_nm", i, rule.Name)
+			}
+			if rule.PassesWithin.Std() <= 0 {
+				return fmt.Errorf("rule %d (%q): passes_within must be > 0", i, rule.Name)
+			}
+		}
+		// Samples further apart than maxSampleGap break the orbit, so slower polling would
+		// leave a circling rule valid but unable ever to match. Half the gap leaves room
+		// for one missed poll.
+		if rule.Circling != nil && *rule.Circling && a.Source.PollInterval.Std() > maxSampleGap/2 {
+			return fmt.Errorf("rule %d (%q): circling needs source.poll_interval of at most %s", i, rule.Name, maxSampleGap/2)
 		}
 	}
 	for _, d := range []struct {
@@ -579,28 +607,12 @@ func (a *Alerts) validate() error {
 			return fmt.Errorf("%s must be > 0", d.name)
 		}
 	}
-	// NaN and negative values would slip past every `> 0` check and silently disable
-	// the filter the operator just asked for.
-	if math.IsNaN(a.Filters.MaxDistanceNM) || math.IsInf(a.Filters.MaxDistanceNM, 0) || a.Filters.MaxDistanceNM < 0 {
-		return fmt.Errorf("filters.max_distance_nm must be a non-negative number")
-	}
-	if a.Filters.MaxDistanceNM > 0 {
-		if a.Filters.Lat == nil || a.Filters.Lon == nil {
-			return fmt.Errorf("filters.max_distance_nm requires filters.lat and filters.lon")
-		}
-	}
 	// Validate coordinates whenever they are set, not only when the filter is on.
-	if a.Filters.Lat != nil && !(*a.Filters.Lat >= -90 && *a.Filters.Lat <= 90) {
-		return fmt.Errorf("filters.lat must be in [-90,90]")
+	if a.Lat != nil && !(*a.Lat >= -90 && *a.Lat <= 90) {
+		return fmt.Errorf("lat must be in [-90,90]")
 	}
-	if a.Filters.Lon != nil && !(*a.Filters.Lon >= -180 && *a.Filters.Lon <= 180) {
-		return fmt.Errorf("filters.lon must be in [-180,180]")
-	}
-	if a.Filters.MinAltitudeFt < 0 || a.Filters.MaxAltitudeFt < 0 {
-		return fmt.Errorf("filters altitudes must not be negative")
-	}
-	if a.Filters.MaxAltitudeFt > 0 && a.Filters.MaxAltitudeFt <= a.Filters.MinAltitudeFt {
-		return fmt.Errorf("filters.max_altitude_ft must exceed filters.min_altitude_ft")
+	if a.Lon != nil && !(*a.Lon >= -180 && *a.Lon <= 180) {
+		return fmt.Errorf("lon must be in [-180,180]")
 	}
 	return nil
 }

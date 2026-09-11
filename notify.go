@@ -228,6 +228,16 @@ func (n *Notifier) render(a *Alert) ntfyMessage {
 	if a.HasDistance {
 		line("Distance", fmt.Sprintf("%.1f NM", a.DistanceNM))
 	}
+	if a.HasPass {
+		when := "now"
+		if a.PassIn >= time.Second {
+			when = "in " + a.PassIn.Round(time.Second).String()
+		}
+		line("Overhead", fmt.Sprintf("closest %.1f NM %s", a.PassNM, when))
+	}
+	if a.Circling {
+		line("Circling", "yes")
+	}
 	if flags := describeDBFlags(a.AC.DBFlags); flags != "" {
 		line("Feeder flags", flags)
 	}
