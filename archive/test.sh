@@ -4,8 +4,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 img=${1:-sky-archive}
-lake=$(mktemp -d)
-trap 'rm -rf "$lake"' EXIT
+# A named volume, not a host directory: the container writes as root, and the host user
+# could not delete what it wrote.
+lake=sky-archive-test-$$
+docker volume create "$lake" >/dev/null
+trap 'docker volume rm -f "$lake" >/dev/null' EXIT
 
 run() {
     docker run --rm -v "$PWD/testdata:/testdata:ro" -v "$PWD/testdata/globe_history:/globe_history:ro" -v "$lake:/lake" \
