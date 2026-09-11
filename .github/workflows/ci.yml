@@ -21,10 +21,17 @@ jobs:
       - run: go vet ./...
       - run: go test ./...
 
+  archive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -t sky-archive archive/
+      - run: archive/test.sh sky-archive
+
   publish:
     # Pull requests build nothing: they come from forks with a read-only token.
     if: github.event_name == 'push'
-    needs: test
+    needs: [test, archive]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -58,3 +65,23 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # The archive image downloads prebuilt binaries in a build-host stage, so no QEMU either.
+      - id: archive-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/sky-archive
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+      - uses: docker/build-push-action@v6
+        with:
+          context: archive
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.archive-meta.outputs.tags }}
+          labels: ${{ steps.archive-meta.outputs.labels }}
+          cache-from: type=gha,scope=archive
+          cache-to: type=gha,mode=max,scope=archive

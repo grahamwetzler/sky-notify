@@ -132,12 +132,128 @@ dead feeder is caught), if notifications are failing, or if the cooldown ledger 
 written. Docker restart policies do *not* restart a container for being unhealthy, so
 treat this as observability — or wire it to something that does act on it.
 
+## History and replay
+
+sky-notify forgets an aircraft minutes after it leaves. To keep every aircraft's flight path,
+so you can go back to an aircraft you missed or replay a flight that turns out to matter,
+run the optional **sky-archive** container next to it. It does not change sky-notify.
+
+- **readsb records every flight path.** With `READSB_ENABLE_TRACES=true`, ultrafeeder
+  writes one gzipped trace per aircraft per UTC day to `/var/globe_history`, and tar1090
+  can replay any of them for `MAX_GLOBE_HISTORY` days. A trace gets a point at least every
+  15 seconds, and more often in turns, climbs, descents and at takeoff or landing.
+- **sky-archive keeps them for good.** Every 6 hours it loads each completed UTC day into
+  a [DuckLake](https://ducklake.select/): Parquet files partitioned by day, with a SQLite
+  catalog, all on the `/lake` volume.
+
+The archive is a star schema. It covers every aircraft readsb hears, not only listed ones:
+
+| Table | Grain | Contents |
+|---|---|---|
+| `dim_plane` | one row per airframe, keyed by `icao` | readsb's aircraft database (registration, type, description, owner, year, military/interesting/PIA/LADD), plus plane-alert-db's columns (`alert_*`) and `listed`. The latest values win; `details_since` is the day readsb's details last changed. Listed aircraft that were never heard are included. |
+| `fact_position` | one row per trace point | `day`, `icao`, `ts`, position, altitude, speed, track, climb rate, readsb `flags`, callsign |
+| `fact_visit` | one row per pass (a 10-minute gap starts a new one) | `day`, `icao`, callsign, first and last seen, altitude range, points, tar1090 `replay_url` |
+| `interesting` (view) | | `fact_visit` joined to `dim_plane`, listed aircraft only |
+
+Enable both in [`docker-compose.yml`](docker-compose.yml): the two ultrafeeder settings
+and the `sky-archive` service share the `globe-history` volume.
+
+### Storage
+
+These are estimates for one feeder. Check yours with `du -sh` on a day directory.
+
+| Store | Per day | Kept | Total |
+|---|---|---|---|
+| readsb traces and heatmap | 20–50 MB, a few thousand files | `MAX_GLOBE_HISTORY` (90 days) | 2–4.5 GB |
+| sky-archive positions (zstd Parquet) | 5–15 MB, one file | forever | 2–5 GB a year |
+
+**The archive does not create many small files.** A table's inserts below its inlining limit
+(50,000 rows for the fact tables) go into the catalog, not into Parquet. Each pass
+ends with `CHECKPOINT`, which writes them out as one file per day. A full day of positions
+is larger than the limit, so it is written as one file directly. The `loaded_days` marker
+table is never written out. `CHECKPOINT` also expires snapshots after 7 days and deletes
+files a day after nothing uses them. Until then you can query the lake as it was, for
+example to look past a bad load. If the catalog grows too large or too many files appear,
+change the limits in [`archive/setup.sql`](archive/setup.sql).
+
+**A day is loaded once, after it is complete.** sky-archive waits `SETTLE_HOURS` (default 2)
+after UTC midnight, then loads the day and records it in `loaded_days` in the same
+transaction. A day that fails to load is logged and tried again on the next pass. The raw
+traces stay available for `MAX_GLOBE_HISTORY` days, so there is time to fix the cause.
+
+### Queries
+
+```sh
+docker compose exec sky-archive duckdb -init /archive/lake.sql
+```
+
+Interesting aircraft on a day, with links that open the flight in tar1090:
+
+```sql
+SELECT first_seen, icao, reg, alert_operator, alert_category, replay_url
+FROM interesting WHERE day = DATE '2026-09-10' ORDER BY first_seen;
+```
+
+Every military aircraft seen in the last week, listed or not:
+
+```sql
+SELECT p.icao, p.reg, p.type, p.owner_operator, count(*) AS visits, max(v.last_seen) AS last_seen
+FROM fact_visit v JOIN dim_plane p USING (icao)
+WHERE p.military AND v.day >= current_date - 7
+GROUP BY ALL ORDER BY last_seen DESC;
+```
+
+Aircraft that came within 2 NM of a point:
+
+```sql
+SET VARIABLE lat = 51.5007;
+SET VARIABLE lon = -0.1246;
+SELECT f.icao, p.reg, p.type, any_value(f.callsign) AS callsign, min(f.ts) AS first, max(f.ts) AS last
+FROM fact_position f JOIN dim_plane p USING (icao)
+WHERE f.day = DATE '2026-09-10'
+  AND 2 * 3440.065 * asin(sqrt(pow(sin(radians(f.lat - getvariable('lat')) / 2), 2)
+      + cos(radians(getvariable('lat'))) * cos(radians(f.lat)) * pow(sin(radians(f.lon - getvariable('lon')) / 2), 2))) < 2
+GROUP BY ALL;
+```
+
+Aircraft that circled, which is roughly the `circling` rule applied to a past day. It
+looks for a full turn in a 10-minute window, inside a box about 4 NM across:
+
+```sql
+WITH d AS (
+    SELECT icao, ts, lat, lon, time_bucket(INTERVAL 10 MINUTE, ts) AS w,
+           CASE WHEN ts - lag(ts) OVER p <= INTERVAL 60 SECOND
+                THEN (track - lag(track) OVER p + 540) % 360 - 180 END AS turn
+    FROM fact_position
+    WHERE day = DATE '2026-09-10' AND NOT on_ground
+    WINDOW p AS (PARTITION BY icao ORDER BY ts)
+)
+SELECT icao, w, round(sum(turn)) AS turned_deg
+FROM d GROUP BY icao, w
+HAVING abs(sum(turn)) >= 360
+   AND 60 * greatest(max(lat) - min(lat), (max(lon) - min(lon)) * cos(radians(avg(lat)))) <= 4
+ORDER BY w;
+```
+
+A flight as GeoJSON, for flights older than `MAX_GLOBE_HISTORY` that tar1090 can no longer
+replay:
+
+```sql
+SELECT json_object('type', 'LineString', 'coordinates', list([lon, lat] ORDER BY ts))
+FROM fact_position
+WHERE icao = 'abc123' AND ts BETWEEN '2026-09-10 08:00:00Z' AND '2026-09-10 08:30:00Z';
+```
+
+The trace format is readsb's own and may change between readsb releases. If it does, loading
+fails and the error is logged. sky-archive does not quietly store wrong data.
+
 ## Development
 
 ```sh
 go test -race ./...   # 70 tests, no framework
 go vet ./...
 docker build -t sky-notify .
+docker build -t sky-archive archive/ && archive/test.sh   # needs Docker
 ```
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs gofmt/vet/test on every
