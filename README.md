@@ -61,19 +61,25 @@ See [`docker-compose.yml`](docker-compose.yml) for a fuller example and
 ### Rules
 
 Nothing alerts unless a rule in `alerts.yaml` matches, including emergency squawks and
-aircraft in plane-alert-db. Rules can match feed fields (`icao`, `reg`, `icao_type`,
-`squawk`), database fields (`operator`, `type`, `cmpg`, `category`, `tags`), database
-membership (`listed`), and per-rule altitude or distance limits. `all: true` is the
-wildcard: it states no condition, so `all: true` with `listed: true` is "every
-interesting aircraft" and `all: true` alone is "everything I hear". Values within one field
-are ORed, fields and limits are ANDed, and the first matching rule wins. Matches ignore
-case and surrounding space but must be exact—not substrings. A rule without `priority`
-uses `ntfy.priority`; `priority: 0` mutes and stops evaluation. Put exceptions first.
+aircraft in plane-alert-db. Every condition is an optional filter of the same kind:
 
-Two conditions follow an aircraft's motion. `passes_within_nm` predicts the closest
-approach to your `lat`/`lon` along the aircraft's current ground track and speed, within
-`passes_within` (default `5m`), so `passes_within_nm: 1` means "will fly over me in the
-next five minutes". `circling: true` matches an aircraft that has turned a full circle
+| | |
+|---|---|
+| identity, from the feed | `icao`, `reg`, `icao_type`, `squawk` |
+| identity, from the database | `operator`, `type`, `cmpg`, `category`, `tags`, `listed` |
+| altitude and distance | `min_altitude_ft`, `max_altitude_ft`, `max_distance_nm` |
+| flight path | `circling`, `passes_within_nm`, `passes_within` |
+
+Values within one field are ORed, conditions are ANDed, and the first matching rule wins.
+A rule that states **no** condition is the wildcard — it matches every aircraft, so it
+goes last, and `listed: true` alone is "everything in plane-alert-db". Matches ignore case
+and surrounding space but must be exact—not substrings. A rule without `priority` uses
+`ntfy.priority`; `priority: 0` mutes and stops evaluation. Put exceptions first.
+
+The flight path conditions read the same recent motion. `passes_within_nm` predicts the
+closest approach to your `lat`/`lon` along the aircraft's current ground track and speed,
+within `passes_within` (default `5m`), so `passes_within_nm: 1` means "will fly over me in
+the next five minutes". `circling: true` matches an aircraft that has turned a full circle
 inside 2 NM during the last 10 minutes, which is how news and police helicopters fly. It
 needs several minutes of positions before it can match, and that history is held in
 memory only, so a restart starts it again. It needs `source.poll_interval` of 30s or less.
@@ -100,7 +106,7 @@ config path. Missing files are fine. See both example files for the exact split.
 | `SKY_COOLDOWN` | `24h` | how long to stay quiet about an aircraft after alerting |
 | `SKY_DB_REFRESH_INTERVAL` | `24h` | |
 | `SKY_TAR1090_URL` | — | makes notifications click through to your map |
-| `SKY_LAT` / `SKY_LON` | — | your receiver; needed by rules with `max_distance_nm` |
+| `SKY_LAT` / `SKY_LON` | — | your receiver; needed by rules with `max_distance_nm` or `passes_within_nm` |
 | `SKY_LOG_LEVEL` | `info` | |
 | `SKY_LISTEN` | `:8080` | serves `/healthz` |
 | `SKY_CONFIG` | `/config/config.yaml` | |
@@ -118,11 +124,11 @@ selects — a typo'd tag is otherwise silent, matching nothing and losing every 
 rule was meant to catch.
 
 The preview searches the database, so it answers which aircraft a rule *can* select, not
-which would alert this second. A rule's limits (`min_altitude_ft`, `max_altitude_ft`,
-`max_distance_nm`, `passes_within_nm`, `circling`) and its `squawk` describe where an
-aircraft is right now, which no database row can answer, so they do not narrow the count —
-the page says so on each condition that behaves this way. `squawk` offers the three
-emergency codes as quick selects, and takes any other code typed in.
+which would alert this second. The altitude, distance and flight path conditions describe
+where an aircraft is right now, and `squawk` comes off the live feed; no database row can
+answer any of them, so they do not narrow the count — the page says so on each condition
+that behaves this way. `squawk` offers the three emergency codes as quick selects, and
+takes any other code typed in.
 
 `reg`, `icao` and `icao_type` accept any value, whether or not the database has it —
 `reg` and `icao_type` are matched against the database *and* the live feed, so a type code
@@ -146,9 +152,11 @@ alert is published, so this holds the alert rather than dropping it: the next po
 re-evaluates the same aircraft, which is usually still overhead. Mode-S-only traffic that
 never broadcasts a position never alerts.
 
-**Per-rule limits fail closed.** A rule with an altitude limit does not match without
-`alt_baro`, and one with `passes_within_nm` does not match without a ground track when the
-aircraft is moving.
+**Conditions fail closed.** A rule stating an altitude does not match an aircraft without
+`alt_baro`, one stating `max_distance_nm` does not match without a position, and one with
+`passes_within_nm` does not match without a ground track when the aircraft is moving. So
+state one only when you mean it: `max_distance_nm` hides the Mode-S-only traffic that is
+often exactly what the rule was written for.
 
 **Delivery is at-least-once.** Publishing to ntfy and recording the cooldown can't be
 made atomic, so a crash in the gap between them re-alerts that aircraft on restart. The
