@@ -211,8 +211,10 @@ for (const c of conditions) c.keys = c.keys || [c.key];
 const byKey = Object.fromEntries(conditions.map(c => [c.key, c]));
 // A rule with none of these can still match an aircraft no database row describes.
 const databaseOnly = ['cmpg', 'category', 'tags', 'operator', 'type'];
-// And these can match a listed aircraft whose row disagrees with what it is broadcasting.
-const feedFields = ['reg', 'icao_type', 'squawk'];
+// And these can match a listed aircraft whose row disagrees with what it is broadcasting,
+// so they can be the reason for a zero without being the whole story. Squawk is not one
+// of them: the preview ignores it entirely, so it can never be why a count came back zero.
+const feedFields = ['reg', 'icao_type'];
 
 let data, locks = {}, vocab = {};
 
@@ -628,11 +630,11 @@ async function preview(el, offset = 0) {
       for (const cond of el.querySelectorAll('.cond')) cond.refresh?.();
     }
     // The preview can only search the database, and a zero count is inconclusive two
-    // different ways. A rule keyed on something the feed carries can match an aircraft
-    // whose database row says otherwise — reg and icao_type match either source, and
-    // squawk is not in the database at all — however listed or narrow the rest of it is.
-    // And unless a rule states a condition only a database row carries, it can match an
-    // aircraft with no row: a hex, a deliberate listed: false, or the bare wildcard.
+    // different ways. A rule narrowed by reg or icao_type can match an aircraft whose
+    // database row says otherwise, since both match either source — however listed the
+    // rest of it is. And unless a rule states a condition only a database row carries, it
+    // can match an aircraft with no row: a hex, a deliberate listed: false, a squawk, or
+    // the bare wildcard.
     const canMatchFeed = feedFields.some(k => rule[k]?.length)
       || (rule.listed !== true && !databaseOnly.some(k => rule[k]?.length));
     const shown = offset + x.aircraft.length;
