@@ -1,0 +1,4 @@
+$ICAO,$Registration,$Operator,$Type,$ICAO Type,#CMPG,$Tag 1,$#Tag 2,$#Tag 3,Category,$#Link
+ABC123,G-TEST,Test Operator,Test Aircraft,TEST,Civ,Tag One,Tag Two,Tag Three,Test Category,https://example.com/abc123
+DEF456,G-NEVR,Never Heard,Other Aircraft,OTHR,Mil,Tag One,,,Other Category,
+not-a-hex,X,X,X,X,X,X,X,X,X,X
