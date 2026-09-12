@@ -1,6 +1,7 @@
 # Nothing alerts unless a rule says so, and no alert is sent until the aircraft has
 # reported a position. Every key is optional and hot-reloaded.
 # Startup-only settings live in config.yaml. Mount beside it or set SKY_ALERTS_CONFIG.
+# This file can also be edited from the web UI at the configured listen address.
 
 source:
   poll_interval: 15s

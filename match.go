@@ -103,6 +103,15 @@ func firstMatch(rules []Rule, ac Aircraft, p *Plane, a *Alert) *Rule {
 // matches ANDs every condition the rule states. A field the rule leaves out is not a
 // condition at all, which is what makes an empty rules list silent rather than universal.
 func (r *Rule) matches(ac Aircraft, p *Plane, a *Alert) bool {
+	return r.matchesIdentity(ac, p, a) && r.withinLimits(ac, a)
+}
+
+// matchesIdentity is the half of matches that asks who the aircraft is, separated from
+// withinLimits, which asks where it is right now. The alerts UI previews a rule against
+// the database, where every row is an identity and nothing has an altitude or a
+// position; running the limits there would fail them closed and preview every
+// distance-limited rule as selecting nothing.
+func (r *Rule) matchesIdentity(ac Aircraft, p *Plane, a *Alert) bool {
 	// r.All needs no check here: it states no condition. It exists so that "match
 	// everything" is something an operator writes on purpose, rather than what a rule
 	// that forgot its conditions does by accident.
@@ -128,7 +137,19 @@ func (r *Rule) matches(ac Aircraft, p *Plane, a *Alert) bool {
 	if !matchesEither(r.Reg, db.Reg, ac.Reg) || !matchesEither(r.ICAOType, db.ICAOType, ac.Type) {
 		return false
 	}
-	return r.withinLimits(ac, a)
+	return true
+}
+
+// matchesPlane previews a rule against one database row. It applies only the conditions
+// a database row can answer: squawk comes from the live feed, and the limits below ask
+// where an aircraft is right now, so neither is knowable here and both fail closed if
+// asked. The preview therefore answers "which aircraft can this rule select", not "which
+// would alert this second" — the UI says so next to the count.
+func (r *Rule) matchesPlane(p *Plane) bool {
+	identity := *r
+	identity.Squawk = nil
+	ac := Aircraft{Hex: p.ICAO, Reg: p.Reg, Type: p.ICAOType}
+	return identity.matchesIdentity(ac, p, &Alert{Hex: p.ICAO})
 }
 
 func matchesEither(want []string, a, b string) bool {

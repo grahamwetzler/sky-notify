@@ -1,0 +1,863 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sky Notify</title>
+<style>
+/* One type scale, each step ~1.25x the last: 28 / 20.8 / 16 / 12.8px. */
+:root{color-scheme:light dark;font:16px/1.5 system-ui,sans-serif;color:var(--text);background:var(--canvas);
+  --small:.8rem;--canvas:#f3f5f7;--surface:#fff;--text:#18202a;--muted:#596572;
+  --border:#ccd3da;--border-strong:#aab4be;--border-soft:#dde2e7;--border-faint:#eef1f4;
+  --accent:#145da0;--link:#145da0;--secondary:#65717c;--selected:#e6edf4;--table-head:#f4f6f8;
+  --error-bg:#ffe7e2;--error-text:#84210e;--warning-bg:#fdf0d9;--warning-text:#7a4a05;
+  --success-bg:#dcf5e5;--success-text:#175b31;--lock:#8a3b12;--shadow:rgba(24,32,42,.14)}
+@media(prefers-color-scheme:dark){:root{
+  --canvas:#10171e;--surface:#18222c;--text:#edf3f7;--muted:#acbac6;
+  --border:#40505e;--border-strong:#667786;--border-soft:#34424e;--border-faint:#293640;
+  --accent:#2878b8;--link:#75b9ef;--secondary:#536575;--selected:#263b4d;--table-head:#202d38;
+  --error-bg:#3a2020;--error-text:#ffb4a8;--warning-bg:#392d19;--warning-text:#f4c77d;
+  --success-bg:#183a29;--success-text:#9be5b6;--lock:#f0a277;--shadow:rgba(0,0,0,.35)}}
+body{margin:0}
+main{max-width:820px;margin:auto;padding:1rem 1rem 5rem}
+h1{font-size:1.75rem;margin:.5rem 0 1.5rem}
+h2{font-size:1.3rem;margin:0}
+section{border:1px solid var(--border);border-radius:.5rem;background:var(--surface);margin:1rem 0;padding:1.25rem}
+label{display:grid;gap:.3rem;margin:.9rem 0}
+input,select,button{font:inherit;padding:.55rem;border:1px solid var(--border-strong);border-radius:.35rem;box-sizing:border-box;max-width:100%}
+input[type=checkbox]{width:1.15rem;height:1.15rem;padding:0}
+.check{display:flex;align-items:center;gap:.6rem;margin:.9rem 0}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 1.25rem}
+.hint{color:var(--muted);font-size:var(--small);line-height:1.55;margin:.35rem 0 0}
+section>.hint{margin:.5rem 0 1.25rem}
+.lock{color:var(--lock);font-size:var(--small)}
+button{cursor:pointer;background:var(--accent);color:white;border:0}
+button.secondary{background:var(--secondary)}
+button.link{background:none;color:var(--link);border:0;padding:.15rem;text-decoration:underline;font-size:var(--small)}
+/* Rules */
+.rule{border:1px solid var(--border-soft);border-radius:.4rem;padding:1rem;margin:0 0 1rem}
+.rule-head{display:flex;gap:1rem;align-items:flex-end}
+.rule-head label{flex:1;margin:0}
+.rule-head label.pri{flex:0 0 11rem}
+.cond{margin:1rem 0 0;padding-top:.75rem;border-top:1px dashed var(--border-soft)}
+.cond-head{display:flex;justify-content:space-between;align-items:baseline;gap:1rem}
+.cond-label{font-weight:600}
+.chips{display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0 0}
+.chip{display:inline-flex;align-items:center;gap:.4rem;background:var(--selected);border-radius:1rem;padding:.25rem .5rem .25rem .7rem;font-size:var(--small)}
+.chip.unknown{background:var(--error-bg);color:var(--error-text)}
+.chip.conflict{background:var(--warning-bg);color:var(--warning-text)}
+.chip.feedonly{border:1px dashed var(--border-strong)}
+.chip button{background:none;color:inherit;border:0;padding:0 .1rem;font-size:1rem;line-height:1;cursor:pointer}
+.cond input[type=text]{margin-top:.5rem;width:100%}
+.boxes{display:flex;flex-wrap:wrap;gap:.5rem 1.25rem;margin-top:.5rem}
+.boxes label{display:flex;align-items:center;gap:.45rem;margin:0;font-weight:400}
+.addcond{margin-top:1rem}
+.addcond select{max-width:16rem}
+.picker{position:relative;margin-top:.5rem}
+.picker input{width:100%}
+.options{position:absolute;z-index:20;left:0;right:0;top:100%;margin-top:.15rem;background:var(--surface);
+  border:1px solid var(--border-strong);border-radius:.35rem;max-height:min(60vh,26rem);overflow-y:auto;
+  box-shadow:0 .5rem 1rem var(--shadow)}
+.opt-table{width:100%;border-collapse:collapse;table-layout:fixed}
+.opt{cursor:pointer}
+.opt td{padding:.4rem .6rem;overflow-wrap:anywhere}
+.opt td.opt-count{width:6.5rem;text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
+.opt.active td{background:var(--selected)}
+.opt-note{padding:.45rem .6rem;color:var(--muted);font-size:var(--small);
+  border-bottom:1px solid var(--border-faint);position:sticky;top:0;background:var(--surface);z-index:1}
+.preview{margin-top:1rem;padding-top:.75rem;border-top:1px dashed var(--border-soft)}
+.preview-count{font-weight:600}
+.preview-count.none{color:var(--error-text)}
+.matches{margin:.5rem 0 0;max-height:18rem;overflow-y:auto;
+  border:1px solid var(--border-soft);border-radius:.35rem}
+.matches table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:var(--small)}
+.matches th,.matches td{padding:.4rem .6rem;text-align:left;vertical-align:top;overflow-wrap:anywhere}
+.matches th{position:sticky;top:0;z-index:1;background:var(--table-head);color:var(--muted);
+  border-bottom:1px solid var(--border-soft)}
+.matches tbody tr+tr td{border-top:1px solid var(--border-faint)}
+.matches td.m-id{font-weight:600}
+.matches td.m-tags{color:var(--muted)}
+.boxes.quick{margin-bottom:.5rem}
+.live-note{font-style:italic}
+.matches .more{display:block;width:calc(100% - 1.2rem);margin:.6rem}
+.limits{margin:1rem 0 0;border-top:1px solid var(--border-soft);padding-top:.25rem}
+.limits summary{font-weight:500;font-size:.95rem}
+.limits .grid{margin-top:.5rem}
+.rule-foot{margin-top:1rem;display:flex;justify-content:flex-end}
+.empty{color:var(--muted);font-style:italic;margin:0 0 1rem}
+/* Messaging + actions */
+.message{padding:.75rem;border-radius:.4rem;display:none;margin:1rem 0}
+.error{display:block;background:var(--error-bg);color:var(--error-text)}
+.success{display:block;background:var(--success-bg);color:var(--success-text)}
+.actions{position:sticky;bottom:0;background:var(--canvas);padding:.75rem 0;display:flex;gap:1rem;align-items:center}
+details{margin:1rem 0}
+summary{cursor:pointer;font-weight:600;padding:.5rem 0}
+@media(max-width:640px){
+  main{padding:.75rem .75rem 5rem}
+  .grid,.rule-head{grid-template-columns:1fr;display:block}
+  .rule-head label.pri{width:100%}
+  .actions button{flex:1}
+}
+</style>
+<main>
+<h1>Sky Notify</h1>
+<div id="message" class="message" role="alert" aria-live="polite"></div>
+<form id="form">
+
+<section>
+<h2>Rules — which aircraft alert you</h2>
+<p class="hint">Nothing alerts unless a rule matches it — emergency squawks included. An aircraft
+must match <strong>every</strong> condition in a rule, and the first rule that matches wins, so put
+a narrow exception above the broad rule it carves out of. Registrations and type codes are read
+from both the database and the live feed, so you can enter any tail number.</p>
+<div id="rules"></div>
+<button type="button" class="secondary" id="add">Add rule</button>
+</section>
+
+<section>
+<h2>Receiver location</h2>
+<p class="hint">Needed by any rule that limits distance or predicts a pass overhead. Leave both
+blank if no rule uses one.</p>
+<div class="grid">
+<label>Receiver latitude<input id="lat" type="number" min="-90" max="90" step="any"></label>
+<label>Receiver longitude<input id="lon" type="number" min="-180" max="180" step="any"></label>
+</div>
+</section>
+
+<section>
+<h2>Notifications</h2>
+<label>Stay quiet this long after alerting about the same aircraft<input id="cooldown" placeholder="24h"></label>
+<p class="hint">A duration like <code>30m</code>, <code>6h</code> or <code>24h</code>. Counted per
+rule, so an aircraft that has just alerted under one rule can still alert under another.</p>
+<label class="pri">Default priority<select id="ntfy.priority"></select></label>
+<p class="hint">Used by any rule that does not set its own priority.</p>
+</section>
+
+<details>
+<summary>Advanced</summary>
+<section>
+<div class="grid">
+<label>How often to check the feeder<input id="source.poll_interval" placeholder="15s"></label>
+<label>How often to refresh the aircraft database<input id="db.refresh_interval" placeholder="24h"></label>
+</div>
+<label>Log level<select id="log_level"><option>debug</option><option>info</option><option>warn</option><option>error</option></select></label>
+</section>
+</details>
+
+<div class="actions"><button type="submit">Save</button></div>
+</form>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+
+// Every scalar field, by the same dotted path the API and the YAML use.
+const fields = ['source.poll_interval', 'db.refresh_interval', 'cooldown', 'ntfy.priority',
+  'lat', 'lon', 'log_level'];
+
+// Rows built per batch as a long picker list is scrolled.
+const rowChunk = 150;
+
+const priorities = [[0, '0 — muted'], [1, '1 — lowest'], [2, '2 — low'], [3, '3 — normal'], [4, '4 — high'], [5, '5 — highest']];
+// A rule with no priority follows ntfy.priority, and has to keep following it: writing
+// today's default into the rule would freeze it there the next time that default moves.
+const inheritPriority = '';
+
+// The rule match fields, in the order they are offered. `options` means a fixed
+// checkbox set; `free` means there is no database vocabulary to suggest from.
+const conditions = [
+  {key: 'cmpg', label: 'Operator type', hint: 'Who operates the aircraft, as the database classifies it.',
+   options: [['Civ', 'Civilian'], ['Gov', 'Government'], ['Mil', 'Military'], ['Pol', 'Police']]},
+  {key: 'category', label: 'Category', hint: 'The database’s own interest lists — things like USAF, Head of State, Police Forces or Aerial Firefighter.'},
+  {key: 'tags', label: 'Tags', hint: 'Free-form labels the database attaches to an aircraft: squadron names, nicknames, notable owners and passengers.'},
+  {key: 'operator', label: 'Operator', hint: 'The airline, air force or owner on record.'},
+  {key: 'type', label: 'Aircraft type', hint: 'The full type name, e.g. A-10 Thunderbolt II.'},
+  {key: 'icao_type', label: 'ICAO type code', open: true,
+   hint: 'The four-character type code, e.g. A320 or C17. Matched against the database and the '
+     + 'live feed, so a code no database aircraft carries still alerts when one broadcasts it.'},
+  {key: 'reg', label: 'Registration', hint: 'Any tail number from the database or live feed, e.g. N12345. Type one and press Enter.', free: true},
+  {key: 'icao', label: 'ICAO hex address', hint: 'The 24-bit address, e.g. adfdf8. Type one and press Enter.', free: true},
+  {key: 'squawk', label: 'Squawk', hint: 'The transponder code the aircraft is broadcasting.', free: true, live: true,
+   quick: [['7700', 'General emergency (7700)'], ['7600', 'Radio failure (7600)'], ['7500', 'Hijack (7500)']]},
+];
+const byKey = Object.fromEntries(conditions.map(c => [c.key, c]));
+
+let data, locks = {}, vocab = {};
+
+const at = (o, path) => path.split('.').reduce((v, k) => v[k], o);
+const set = (o, path, v) => { const p = path.split('.'), k = p.pop(); p.reduce((x, n) => x[n], o)[k] = v; };
+const option = (value, label) => { const o = document.createElement('option'); o.value = value; o.textContent = label; return o; };
+
+function lock(el, key) {
+  const env = locks[key];
+  el.disabled = Boolean(env);
+  if (!env) return;
+  const note = document.createElement('span');
+  note.className = 'lock';
+  note.textContent = `Set by ${env}; the environment overrides this file.`;
+  el.parentNode.append(note);
+}
+
+// One condition row: a set of chips plus a way to add another value. Values are held
+// on the row itself so reading a rule back never has to parse what is on screen.
+function condRow(key, values) {
+  const spec = byKey[key];
+  const row = document.createElement('div');
+  row.className = 'cond';
+  row.dataset.key = key;
+  row.values = [...values];
+
+  const head = document.createElement('div');
+  head.className = 'cond-head';
+  const label = document.createElement('span');
+  label.className = 'cond-label';
+  label.textContent = spec.label;
+  const drop = document.createElement('button');
+  drop.type = 'button';
+  drop.className = 'link';
+  drop.textContent = 'Remove condition';
+  drop.onclick = () => { const rule = row.closest('.rule'); row.remove(); refreshAddCond(rule); schedulePreview(rule); };
+  head.append(label, drop);
+
+  const hint = document.createElement('p');
+  hint.className = 'hint';
+  hint.textContent = spec.hint;
+  row.append(head, hint);
+  // A condition read from the live feed has nothing to match in the database, so the
+  // preview below cannot answer it. Saying that here is the difference between a rule
+  // that looks broken and one you can see is simply not previewable.
+  if (spec.live) {
+    const note = document.createElement('p');
+    note.className = 'hint live-note';
+    note.textContent = 'Comes from the live feed, not the database, so it does not change the preview below.';
+    row.append(note);
+  }
+
+  if (spec.options) {
+    const boxes = document.createElement('div');
+    boxes.className = 'boxes';
+    for (const [value, text] of spec.options) {
+      const wrap = document.createElement('label');
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.value = value;
+      box.checked = row.values.some(v => v.toLowerCase() === value.toLowerCase());
+      box.onchange = () => {
+        row.values = [...boxes.querySelectorAll('input:checked')].map(b => b.value);
+        schedulePreview(row.closest('.rule'));
+      };
+      wrap.append(box, document.createTextNode(text));
+      boxes.append(wrap);
+    }
+    row.append(boxes);
+    return row;
+  }
+
+  const chips = document.createElement('div');
+  chips.className = 'chips';
+  const picker = document.createElement('div');
+  picker.className = 'picker';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.autocomplete = 'off';
+  input.placeholder = spec.quick ? 'Or type another code and press Enter'
+    : spec.free ? 'Type a value and press Enter'
+    : spec.open ? `Search ${spec.label.toLowerCase()}, or type any code and press Enter`
+    : `Search ${spec.label.toLowerCase()}…`;
+  const menu = document.createElement('div');
+  menu.className = 'options';
+  menu.hidden = true;
+  picker.append(input, menu);
+
+  const known = new Set((vocab[key] || []).map(v => v.value.toLowerCase()));
+  // Built after draw() is defined, so draw() keeps it in step rather than owning it:
+  // a value can arrive as a tick, as a typed chip, or from the saved file, and all
+  // three have to agree about what is selected.
+  let quickBoxes = null;
+  const quickValues = new Set((spec.quick || []).map(([v]) => v.toLowerCase()));
+  function draw() {
+    const reachable = new Set(pool().map(v => v.value.toLowerCase()));
+    // A value with a quick select of its own is shown by its tick; a chip beside it
+    // would be the same value said twice, with two ways to remove it.
+    chips.replaceChildren(...row.values.filter(v => !quickValues.has(v.toLowerCase())).map(value => {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      const lower = value.toLowerCase();
+      // Two different ways a chip can cost you every alert it was meant to catch:
+      // a value the database has never heard of, and a real value that no aircraft
+      // matching this rule's OTHER conditions carries. Both look fine in the YAML.
+      // On a closed field the database is the whole world, so a value it has never heard
+      // of can only be a typo. On an open field the live feed is the other half of that
+      // world: the same value is unremarkable, and flagging it red would be a lie.
+      if (spec.free) {
+        // nothing to check it against
+      } else if (!known.has(lower)) {
+        chip.classList.add(spec.open ? 'feedonly' : 'unknown');
+        chip.title = spec.open
+          ? 'No database aircraft carries this code. It still alerts on any aircraft '
+            + 'broadcasting it on the live feed.'
+          : 'Not found in the aircraft database — this will never match.';
+      } else if (row.closest('.rule')?.facets && !reachable.has(lower)) {
+        chip.classList.add('conflict');
+        chip.title = spec.open
+          ? "No aircraft matching this rule's other conditions has this value in the "
+            + 'database, so only live-feed matches can satisfy this rule.'
+          : "No aircraft matching this rule's other conditions has this value, "
+            + 'so the rule matches nothing. Remove this or the condition that clashes with it.';
+      }
+      const x = document.createElement('button');
+      x.type = 'button';
+      x.textContent = '×';
+      x.setAttribute('aria-label', 'Remove ' + value);
+      x.onclick = () => { row.values = row.values.filter(v => v !== value); draw(); schedulePreview(row.closest('.rule')); };
+      chip.append(document.createTextNode(value), x);
+      return chip;
+    }));
+    if (quickBoxes) {
+      for (const box of quickBoxes.querySelectorAll('input')) {
+        box.checked = row.values.some(v => v.toLowerCase() === box.value.toLowerCase());
+      }
+    }
+  }
+  function commit(value) {
+    value = value.trim();
+    if (value && !row.values.includes(value)) row.values.push(value);
+    input.value = '';
+    draw();
+    schedulePreview(row.closest('.rule'));
+    if (!spec.free && document.activeElement === input) openMenu();
+  }
+  // A native <datalist> cannot cope with this: at 2,000-odd tags the browser silently
+  // truncates its popup, so you cannot tell whether what you want is missing or just
+  // out of view. This filters, ranks prefix matches first, and says what it left out.
+  let active = -1, shown = [], tbody = null, activeRow = null, rendered = 0;
+  // The rule's facets list only what can still match given its other conditions;
+  // fall back to the whole database before the first preview has returned.
+  function pool() { return row.closest('.rule')?.facets?.[key] || vocab[key] || []; }
+  function candidates() {
+    const q = input.value.trim().toLowerCase();
+    const chosen = new Set(row.values.map(v => v.toLowerCase()));
+    const starts = [], contains = [];
+    for (const item of pool()) {
+      const lv = item.value.toLowerCase();
+      if (chosen.has(lv)) continue;
+      if (!q) { starts.push(item); continue; }
+      const i = lv.indexOf(q);
+      if (i === 0) starts.push(item); else if (i > 0) contains.push(item);
+    }
+    return starts.concat(contains);
+  }
+  function note(text) {
+    const el = document.createElement('div');
+    el.className = 'opt-note';
+    el.textContent = text;
+    return el;
+  }
+  function openMenu() {
+    // Only one picker may be open. Blur normally closes the last one, but it does not
+    // fire for programmatic focus, and two overlapping menus are unreadable.
+    for (const other of document.querySelectorAll('.options')) {
+      if (other !== menu) other.hidden = true;
+    }
+    // Everything that matches is rendered; the table scrolls rather than truncating,
+    // so there is never a value you cannot reach by scrolling to it.
+    shown = candidates();
+    active = -1;
+    activeRow = null;
+    rendered = 0;
+    // Two handlers on the table rather than two per row: at a couple of thousand
+    // rows the per-row closures cost more to build than the rows themselves.
+    tbody = document.createElement('tbody');
+    grow();
+    const table = document.createElement('table');
+    table.className = 'opt-table';
+    table.append(tbody);
+    // mousedown, not click: blur would close the menu before a click landed.
+    table.onmousedown = e => {
+      const tr = e.target.closest('tr');
+      if (!tr) return;
+      e.preventDefault();
+      commit(shown[tr.rowIndex].value);
+    };
+    table.onmouseover = e => {
+      const tr = e.target.closest('tr');
+      if (tr && tr.rowIndex !== active) { active = tr.rowIndex; paint(); }
+    };
+
+    const narrowed = pool().length < (vocab[key] || []).length;
+    const scope = narrowed ? " on aircraft matching this rule's other conditions" : '';
+    const items = [];
+    if (!shown.length) {
+      items.push(note(input.value.trim()
+        ? `No match${scope || ' in the database'}.`
+          + (spec.open ? ' Press Enter to use it anyway — the live feed may still broadcast it.' : '')
+        : 'Everything here is already selected.'));
+    } else {
+      const n = shown.length.toLocaleString();
+      items.push(note(`${n} ${shown.length === 1 ? 'value' : 'values'}${scope}, with how many aircraft each covers.`));
+    }
+    // Building a couple of thousand rows up front costs half a second; build a
+    // screenful at a time and top it up as the list is scrolled. Nothing is dropped.
+    menu.onscroll = () => {
+      if (menu.scrollTop + menu.clientHeight > menu.scrollHeight - 400) grow();
+    };
+    menu.replaceChildren(...items, table);
+    menu.hidden = false;
+    menu.scrollTop = 0;
+    paint();
+  }
+  function grow(upTo) {
+    const want = Math.min(shown.length, Math.max(rendered + rowChunk, upTo + 1 || 0));
+    if (want <= rendered) return;
+    const batch = document.createDocumentFragment();
+    for (let i = rendered; i < want; i++) {
+      const tr = document.createElement('tr');
+      tr.className = 'opt';
+      const name = document.createElement('td');
+      name.textContent = shown[i].value;
+      const count = document.createElement('td');
+      count.className = 'opt-count';
+      count.textContent = shown[i].count.toLocaleString();
+      tr.append(name, count);
+      batch.append(tr);
+    }
+    tbody.append(batch);
+    rendered = want;
+  }
+  // Touches only the two rows that changed; sweeping every row made hovering
+  // a long list crawl.
+  function paint() {
+    if (activeRow) activeRow.classList.remove('active');
+    activeRow = active >= 0 && tbody ? tbody.children[active] : null;
+    if (activeRow) {
+      activeRow.classList.add('active');
+      activeRow.scrollIntoView({block: 'nearest'});
+    }
+  }
+  function closeMenu() { menu.hidden = true; active = -1; }
+  row.refresh = () => { draw(); if (!menu.hidden) openMenu(); };
+
+  input.onkeydown = e => {
+    if (spec.free) {
+      if (e.key === 'Enter') { e.preventDefault(); commit(input.value); }
+      return;
+    }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (menu.hidden) return openMenu();
+      active = Math.min(shown.length - 1, Math.max(0, active + (e.key === 'ArrowDown' ? 1 : -1)));
+      if (active >= rendered) grow(active);
+      paint();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      // Only commit something the database actually has, so a half-typed search
+      // cannot become a chip that matches nothing.
+      if (active >= 0) commit(shown[active].value);
+      else if (spec.open || known.has(input.value.trim().toLowerCase())) commit(input.value);
+    } else if (e.key === 'Escape') {
+      closeMenu();
+    }
+  };
+  if (spec.free) {
+    input.onblur = () => commit(input.value);
+  } else {
+    input.oninput = openMenu;
+    input.onfocus = openMenu;
+    // An open field keeps what you typed; a closed one can only hold database values, so
+    // a half-typed search there is discarded rather than becoming a chip matching nothing.
+    input.onblur = spec.open
+      ? () => { commit(input.value); closeMenu(); }
+      : () => { input.value = ''; closeMenu(); };
+  }
+
+  if (spec.quick) {
+    quickBoxes = document.createElement('div');
+    quickBoxes.className = 'boxes quick';
+    for (const [value, text] of spec.quick) {
+      const wrap = document.createElement('label');
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.value = value;
+      box.onchange = () => {
+        // Toggle this one value and leave every other chip alone: the quick selects are
+        // shortcuts into the same list, not a replacement for it.
+        row.values = box.checked
+          ? [...row.values, value]
+          : row.values.filter(v => v.toLowerCase() !== value.toLowerCase());
+        draw();
+        schedulePreview(row.closest('.rule'));
+      };
+      wrap.append(box, document.createTextNode(text));
+      quickBoxes.append(wrap);
+    }
+    row.append(quickBoxes);
+  }
+
+  draw();
+  row.append(chips, picker);
+  return row;
+}
+
+// Reads one rule's conditions off the DOM. Used for both saving and previewing, so
+// the preview can never be answering a different question than the one being saved.
+function readRule(el) {
+  const rule = {name: el.querySelector('.rule-name').value};
+  const priority = el.querySelector('.rule-priority').value;
+  if (priority !== inheritPriority) rule.priority = Number(priority);
+  for (const cond of el.querySelectorAll('.cond')) {
+    if (cond.values.length) rule[cond.dataset.key] = cond.values;
+  }
+  for (const input of el.querySelectorAll('.limit')) {
+    const v = input.value.trim();
+    if (v === '') continue;
+    if (input.tagName === 'SELECT') rule[input.dataset.key] = v === 'true';
+    else rule[input.dataset.key] = input.type === 'number' ? Number(v) : v;
+  }
+  if (el.querySelector('.rule-all')?.checked) rule.all = true;
+  return rule;
+}
+
+// A rule is an allowlist, so one that matches nothing costs every alert it was meant
+// to catch. Showing the count as you build it is the only way to notice.
+function matchRow(p) {
+  const tr = document.createElement('tr');
+  const cells = [['m-id', p.reg || p.icao], ['', p.type || p.icao_type],
+    ['', p.operator], ['m-tags', (p.tags || []).join(', ')]];
+  for (const [cls, value] of cells) {
+    const td = document.createElement('td');
+    if (cls) td.className = cls;
+    td.textContent = value || '';
+    tr.append(td);
+  }
+  return tr;
+}
+
+// A rule is an allowlist, so one that matches nothing costs every alert it was meant
+// to catch. Showing the count as you build it is the only way to notice.
+//
+// `offset` appends the next page instead of redrawing: the count and the rows already
+// on screen stay put, so paging through a long list never looks like a fresh result.
+async function preview(el, offset = 0) {
+  const rule = readRule(el);
+  const box = el.querySelector('.preview');
+  const count = box.querySelector('.preview-count');
+  const list = box.querySelector('.matches');
+  const body = list.querySelector('tbody');
+  const more = box.querySelector('.more');
+  // Two quick edits can have their responses arrive out of order; only the newest
+  // request may paint, or the panel ends up describing a rule you already changed.
+  // Editing the rule also invalidates any page still in flight for the old one.
+  const seq = (el.previewSeq = (el.previewSeq || 0) + 1);
+  more.disabled = true;
+  if (offset > 0) more.textContent = 'Loading…';
+  try {
+    const r = await fetch('/api/preview?offset=' + offset, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(rule),
+    });
+    const x = await r.json();
+    if (seq !== el.previewSeq) return;
+    if (!r.ok) throw Error(x.error || 'Preview failed');
+    if (offset === 0) {
+      el.facets = x.facets;
+      for (const cond of el.querySelectorAll('.cond')) cond.refresh?.();
+    }
+    // The preview can only search the database. A rule keyed on what the live feed
+    // carries — a tail number, a type code, a squawk — or one that deliberately selects
+    // unlisted aircraft, still matches plenty that no database row can stand in for.
+    const canMatchFeed = Boolean(rule.reg?.length || rule.icao_type?.length
+      || rule.squawk?.length || rule.all || rule.listed === false);
+    const shown = offset + x.aircraft.length;
+    count.classList.toggle('none', x.total === 0 && !canMatchFeed);
+    count.textContent = x.total === 0
+      ? canMatchFeed
+        ? 'No database matches to preview. This rule can still match aircraft from the live feed.'
+        : 'No database matches to preview.'
+      : `Matches ${x.total.toLocaleString()} of ${x.database.toLocaleString()} aircraft in the database`
+        + (shown < x.total ? `, showing ${shown.toLocaleString()}:` : ':');
+    if (offset === 0) body.replaceChildren(...x.aircraft.map(matchRow));
+    else body.append(...x.aircraft.map(matchRow));
+    list.hidden = body.children.length === 0;
+    // An empty page with rows still unaccounted for means the database changed under a
+    // refresh; stop offering more rather than looping on an offset that returns nothing.
+    const remaining = x.aircraft.length === 0 ? 0 : x.total - shown;
+    more.hidden = remaining <= 0;
+    more.disabled = false;
+    more.textContent = `Load ${Math.min(remaining, x.limit).toLocaleString()} more`;
+    more.onclick = () => preview(el, shown);
+  } catch (err) {
+    if (seq !== el.previewSeq) return;
+    count.classList.remove('none');
+    count.textContent = 'Could not preview matches: ' + err.message;
+    body.replaceChildren();
+    list.hidden = true;
+    more.hidden = true;
+    more.disabled = false;
+  }
+}
+
+// Conditions change a keystroke at a time; coalesce so typing does not spray requests.
+function schedulePreview(el) {
+  if (!el) return;
+  clearTimeout(el.previewTimer);
+  el.previewTimer = setTimeout(() => preview(el), 300);
+}
+
+// The "add condition" picker only offers fields the rule is not already using.
+function refreshAddCond(rule) {
+  const select = rule.querySelector('.addcond select');
+  const used = new Set([...rule.querySelectorAll('.cond')].map(c => c.dataset.key));
+  select.replaceChildren(option('', 'Add a condition…'),
+    ...conditions.filter(c => !used.has(c.key)).map(c => option(c.key, c.label)));
+  rule.querySelector('.addcond').hidden = select.options.length < 2;
+  const none = rule.querySelector('.nocond');
+  if (none) none.hidden = used.size > 0;
+}
+
+// Per-rule limits. These ask where an aircraft is right now rather than who it is, so
+// they are not part of the database preview below. Each fails closed: a rule that states
+// a limit skips an aircraft whose data cannot answer it.
+const limitFields = [
+  {key: 'min_altitude_ft', label: 'Lowest altitude (ft)', type: 'number', min: 0},
+  {key: 'max_altitude_ft', label: 'Highest altitude (ft)', type: 'number', min: 0},
+  {key: 'max_distance_nm', label: 'Within this distance of the receiver (NM)', type: 'number', min: 0, step: 'any'},
+  {key: 'passes_within_nm', label: 'Predicted to pass within (NM)', type: 'number', min: 0, step: 'any'},
+  {key: 'passes_within', label: '…within this long', type: 'text', placeholder: '5m'},
+];
+const choiceFields = [
+  {key: 'listed', label: 'In the aircraft database',
+   options: [['', 'Either'], ['true', 'Only listed aircraft'], ['false', 'Only unlisted aircraft']]},
+  {key: 'circling', label: 'Circling',
+   options: [['', 'Either'], ['true', 'Only while circling'], ['false', 'Only while not circling']]},
+];
+
+// Blank means "no limit": the field is a pointer in the config, so omitting it is the
+// difference between "no maximum" and "a maximum of zero".
+function limitsBlock(rule) {
+  const box = document.createElement('details');
+  box.className = 'limits';
+  const sum = document.createElement('summary');
+  const set = [...limitFields, ...choiceFields].filter(f => rule[f.key] !== undefined && rule[f.key] !== null).length;
+  sum.textContent = set ? `Limits and scope (${set} set)` : 'Limits and scope';
+  box.open = set > 0;
+  const hint = document.createElement('p');
+  hint.className = 'hint';
+  hint.textContent = 'Optional. Leave blank for no limit. These describe where an aircraft is, '
+    + 'not which aircraft it is, so they do not change the preview above.';
+  const grid = document.createElement('div');
+  grid.className = 'grid';
+  for (const f of limitFields) {
+    const label = document.createElement('label');
+    const input = document.createElement('input');
+    input.type = f.type;
+    input.className = 'limit';
+    input.dataset.key = f.key;
+    if (f.min !== undefined) input.min = f.min;
+    if (f.step) input.step = f.step;
+    if (f.placeholder) input.placeholder = f.placeholder;
+    input.value = rule[f.key] ?? '';
+    label.append(document.createTextNode(f.label), input);
+    grid.append(label);
+  }
+  for (const f of choiceFields) {
+    const label = document.createElement('label');
+    const select = document.createElement('select');
+    select.className = 'limit';
+    select.dataset.key = f.key;
+    select.append(...f.options.map(([v, t]) => option(v, t)));
+    select.value = rule[f.key] === undefined || rule[f.key] === null ? '' : String(rule[f.key]);
+    select.onchange = () => schedulePreview(select.closest('.rule'));
+    label.append(document.createTextNode(f.label), select);
+    grid.append(label);
+  }
+  const all = document.createElement('label');
+  all.className = 'check';
+  const box2 = document.createElement('input');
+  box2.type = 'checkbox';
+  box2.className = 'rule-all';
+  box2.checked = Boolean(rule.all);
+  box2.onchange = () => schedulePreview(box2.closest('.rule'));
+  all.append(box2, document.createTextNode(' Match every aircraft'));
+  const allHint = document.createElement('p');
+  allHint.className = 'hint';
+  allHint.textContent = 'A rule needs at least one condition. Tick this to say "everything" on '
+    + 'purpose, rather than by forgetting to add one.';
+  box.append(sum, hint, grid, all, allHint);
+  return box;
+}
+
+function ruleRow(rule = {}) {
+  const el = document.createElement('div');
+  el.className = 'rule';
+
+  const head = document.createElement('div');
+  head.className = 'rule-head';
+  const nameLabel = document.createElement('label');
+  const name = document.createElement('input');
+  name.type = 'text';
+  name.className = 'rule-name';
+  name.placeholder = 'e.g. Air Force One';
+  name.value = rule.name || '';
+  nameLabel.append(document.createTextNode('Rule name'), name);
+  const priLabel = document.createElement('label');
+  priLabel.className = 'pri';
+  const pri = document.createElement('select');
+  pri.className = 'rule-priority';
+  pri.append(option(inheritPriority, 'Use default'), ...priorities.map(([v, t]) => option(v, t)));
+  // ?? not ||: priority 0 is "muted", a real choice, and must not read as unset.
+  pri.value = rule.priority ?? inheritPriority;
+  priLabel.append(document.createTextNode('Priority'), pri);
+  head.append(nameLabel, priLabel);
+
+  const conds = document.createElement('div');
+  conds.className = 'conds';
+  const none = document.createElement('p');
+  none.className = 'hint nocond';
+  none.textContent = 'No conditions yet — this rule matches nothing until you add one, or tick “Match every aircraft” below.';
+  conds.append(none);
+  for (const c of conditions) {
+    if (rule[c.key]?.length) conds.append(condRow(c.key, rule[c.key]));
+  }
+
+  const add = document.createElement('div');
+  add.className = 'addcond';
+  const select = document.createElement('select');
+  select.onchange = () => {
+    if (!select.value) return;
+    conds.append(condRow(select.value, []));
+    refreshAddCond(el);
+    select.value = '';
+    schedulePreview(el);
+  };
+  add.append(select);
+
+  const box = document.createElement('div');
+  box.className = 'preview';
+  const count = document.createElement('p');
+  count.className = 'preview-count';
+  count.textContent = 'Checking which aircraft match…';
+  const list = document.createElement('div');
+  list.className = 'matches';
+  list.hidden = true;
+  const table = document.createElement('table');
+  const thead = document.createElement('thead');
+  const hrow = document.createElement('tr');
+  for (const [label, width] of [['Registration', '20%'], ['Type', '22%'],
+    ['Operator', '26%'], ['Tags', '32%']]) {
+    const th = document.createElement('th');
+    th.textContent = label;
+    th.style.width = width;
+    hrow.append(th);
+  }
+  thead.append(hrow);
+  table.append(thead, document.createElement('tbody'));
+  // Inside the scroll region, not below it: the results box scrolls on its own, so the
+  // button belongs where the rows run out rather than pinned under a list you have not
+  // reached the end of yet.
+  const more = document.createElement('button');
+  more.type = 'button';
+  more.className = 'secondary more';
+  more.hidden = true;
+  list.append(table, more);
+  box.append(count, list);
+
+  const foot = document.createElement('div');
+  foot.className = 'rule-foot';
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'secondary';
+  remove.textContent = 'Remove rule';
+  remove.onclick = () => { el.remove(); drawEmpty(); };
+  foot.append(remove);
+
+  el.append(head, conds, add, box, limitsBlock(rule), foot);
+  $('rules').append(el);
+  refreshAddCond(el);
+  drawEmpty();
+  preview(el);
+}
+
+function drawEmpty() {
+  const empty = $('rules').querySelector('.empty');
+  const has = $('rules').querySelectorAll('.rule').length > 0;
+  if (has && empty) empty.remove();
+  if (!has && !empty) {
+    const p = document.createElement('p');
+    p.className = 'empty';
+    p.textContent = 'No rules — nothing will alert you. Add one to start.';
+    $('rules').append(p);
+  }
+}
+
+function render(x) {
+  data = x.alerts;
+  vocab = x.vocabulary || {};
+  locks = Object.fromEntries((x.locked || []).map(v => [v.key, v.env]));
+
+  $('ntfy.priority').replaceChildren(...priorities.filter(([v]) => v > 0).map(([v, t]) => option(v, t)));
+
+  for (const note of document.querySelectorAll('.lock')) note.remove();
+  for (const key of fields) {
+    const el = $(key), v = at(data, key);
+    if (el.type === 'checkbox') el.checked = v; else el.value = v ?? '';
+    lock(el, key);
+  }
+
+  $('rules').replaceChildren();
+  for (const rule of data.rules || []) ruleRow(rule);
+  drawEmpty();
+}
+
+// Blank means null only where the field is genuinely optional. Everywhere else JSON
+// null is a no-op on a non-pointer field, which would silently keep the old value.
+function number(key) {
+  const v = $(key).value;
+  const optional = key === 'lat' || key === 'lon';
+  return v === '' && optional ? null : Number(v);
+}
+
+function payload() {
+  const out = structuredClone(data);
+  for (const key of fields) {
+    const el = $(key);
+    if (el.type === 'checkbox') set(out, key, el.checked);
+    else if (el.type === 'number') set(out, key, number(key));
+    else if (key === 'ntfy.priority') set(out, key, Number(el.value));
+    else set(out, key, el.value);
+  }
+  out.rules = [...$('rules').querySelectorAll('.rule')].map(readRule);
+  return out;
+}
+
+function message(text, kind) {
+  const el = $('message');
+  el.textContent = text;
+  el.className = 'message ' + kind;
+  el.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+}
+
+async function load() {
+  const r = await fetch('/api/alerts');
+  if (!r.ok) {
+    let detail;
+    try { detail = (await r.json()).error; } catch {}
+    throw Error(detail || `Could not load settings (HTTP ${r.status}).`);
+  }
+  render(await r.json());
+}
+
+$('add').onclick = () => ruleRow();
+$('form').onsubmit = async e => {
+  e.preventDefault();
+  try {
+    const r = await fetch('/api/alerts', {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload())});
+    const x = await r.json();
+    if (!r.ok) { message(x.error || 'Save failed', 'error'); return; }
+    message('Saved.', 'success');
+    await load();
+    setTimeout(() => { $('message').className = 'message'; }, 4000);
+  } catch (err) {
+    message(err.message, 'error');
+  }
+};
+load().catch(err => message(err.message, 'error'));
+</script>
+</html>

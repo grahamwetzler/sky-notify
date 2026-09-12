@@ -33,9 +33,11 @@ services:
       SKY_CACHE_DIR: /data
     volumes:
       - sky-notify-data:/data
+      - sky-notify-config:/config
 
 volumes:
   sky-notify-data:
+  sky-notify-config:
 ```
 
 All six are required. sky-notify assumes nothing about your deployment — which feeder,
@@ -48,6 +50,10 @@ name is the only secret**, so pick something unguessable.
 The `/data` volume matters: it holds the cached aircraft list and the alert cooldown
 ledger. Without it you re-download the list on every restart and re-alert on everything
 currently overhead.
+
+`/config` is where `alerts.yaml` lives, and the web UI writes it. It has to be writable by
+the container's non-root user, which a named volume is — a read-only bind mount is not, and
+saves will fail against one. Set `SKY_ALERTS_CONFIG` to put the file somewhere else.
 
 See [`docker-compose.yml`](docker-compose.yml) for a fuller example and
 [`config.example.yaml`](config.example.yaml) for every setting.
@@ -103,6 +109,29 @@ config path. Missing files are fine. See both example files for the exact split.
 A typo'd YAML key or an unrecognised `SKY_*` variable is a **startup error**, not a
 silent fallback to the default. `SKY_` is this service's namespace, and
 `SKY_COOLDWON=1h` quietly leaving you on 24h is exactly the bug worth failing loudly on.
+
+### Alert settings web UI
+
+Browse to the configured listen address to edit every setting in `alerts.yaml`. Rules are
+built from the database's own vocabulary rather than typed, and each rule previews what it
+selects — a typo'd tag is otherwise silent, matching nothing and losing every alert the
+rule was meant to catch.
+
+The preview searches the database, so it answers which aircraft a rule *can* select, not
+which would alert this second. A rule's limits (`min_altitude_ft`, `max_altitude_ft`,
+`max_distance_nm`, `passes_within_nm`, `circling`) and its `squawk` describe where an
+aircraft is right now, which no database row can answer, so they do not narrow the count —
+the page says so on each condition that behaves this way. `squawk` offers the three
+emergency codes as quick selects, and takes any other code typed in.
+
+`reg`, `icao` and `icao_type` accept any value, whether or not the database has it —
+`reg` and `icao_type` are matched against the database *and* the live feed, so a type code
+no listed aircraft carries still alerts the moment one broadcasts it. The page suggests
+what the database holds and marks a value it does not, but never refuses one.
+
+The file remains authoritative, hand edits still work, and environment variables still win
+over it. Saved changes are picked up within the next 5-second reload tick. Comments do not
+survive a save. There is no authentication — put it on a local network or behind a proxy.
 
 ## Things worth knowing
 

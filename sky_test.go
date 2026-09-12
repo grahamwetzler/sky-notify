@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -86,6 +89,25 @@ A038BC,N82123
 	}
 	if rows[0].ICAO != "0000c8" || rows[0].Reg != "N917BC" || rows[0].Operator != "" {
 		t.Errorf("short row not zero-filled correctly: %+v", rows[0])
+	}
+}
+
+// C03121 upstream puts a real Category in the Tag 3 slot, shifting its link into
+// Category while keeping the declared field count, so the ragged-row path never
+// sees it. Left alone, the URL shows up as something to filter on.
+func TestParseCSVMovesAShiftedLinkOutOfCategory(t *testing.T) {
+	in := `$ICAO,$Registration,$Operator,$Type,$ICAO Type,#CMPG,$Tag 1,$#Tag 2,$#Tag 3,Category,$#Link
+C03121,C-FSPS,Saskatoon Board of Police Commissioners,Cessna 182T Skylane,C182,Pol,Police Squad,The Cops,Police Forces,https://tc.gc.ca/ADet.aspx?id=531479,
+`
+	got := mustParse(t, in)[0]
+	if got.Category != "" {
+		t.Errorf("category: want empty, got %q", got.Category)
+	}
+	if got.Link != "https://tc.gc.ca/ADet.aspx?id=531479" {
+		t.Errorf("link: want the shifted URL, got %q", got.Link)
+	}
+	if len(got.Tags) != 3 {
+		t.Errorf("tags: want the three intact, got %v", got.Tags)
 	}
 }
 
@@ -882,6 +904,390 @@ func TestConfigMissingFileIsFine(t *testing.T) {
 func TestAlertsMissingFileIsFine(t *testing.T) {
 	if _, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=/nonexistent/alerts.yaml"}); err != nil {
 		t.Fatalf("a missing alerts file should not be an error: %v", err)
+	}
+}
+
+func alertsHandler(t *testing.T, path string, planes ...*Plane) http.Handler {
+	t.Helper()
+	t.Setenv("SKY_ALERTS_CONFIG", path)
+	cfg := testConfig(t)
+	db := NewDB(cfg, http.DefaultClient)
+	if len(planes) > 0 {
+		db.merged = map[string]*Plane{}
+		for _, p := range planes {
+			db.merged[p.ICAO] = p
+		}
+	}
+	return (&health{live: NewLive(defaultAlerts()), db: db}).mux(newQueue(1))
+}
+
+func TestAlertsUIRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.yaml")
+	h := alertsHandler(t, path)
+	want := defaultAlerts()
+	want.Source.PollInterval = Duration(7 * time.Second)
+	want.Ntfy.Priority = 4
+	want.DB.RefreshInterval = Duration(2 * time.Hour)
+	want.Cooldown = Duration(30 * time.Minute)
+	lat, lon := 41.9, -87.6
+	want.Lat, want.Lon = &lat, &lon
+	minAlt, maxAlt, maxNM := 100, 40000, 25.5
+	want.Rules = []Rule{{
+		Name: "cargo", ICAO: []string{"abc123"}, Reg: []string{"N1"}, Operator: []string{"Operator"},
+		Type: []string{"Type"}, ICAOType: []string{"C17"}, Squawk: []string{"7700"}, CMPG: []string{"Mil"},
+		Category: []string{"Other"}, Tags: []string{"Cargo"}, Listed: boolp(true), Priority: intp(2),
+		MinAltitudeFt: &minAlt, MaxAltitudeFt: &maxAlt, MaxDistanceNM: &maxNM,
+	}}
+	want.LogLevel = "debug"
+	body, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPut, "/api/alerts", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT status %d: %s", w.Code, w.Body.String())
+	}
+	got, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("round trip mismatch\ngot:  %+v\nwant: %+v", got, want)
+	}
+}
+
+func TestAlertsUIGetReadsSavedFileImmediately(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.yaml")
+	h := alertsHandler(t, path)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(`{"rules":[{"name":"saved","icao":["abc123"],"priority":2}]}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT status %d: %s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/alerts", nil))
+	var body struct {
+		Alerts Alerts `json:"alerts"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Alerts.Rules) != 1 || body.Alerts.Rules[0].Name != "saved" {
+		t.Fatalf("GET returned stale rules: %+v", body.Alerts.Rules)
+	}
+}
+
+func TestAlertsUIRejectsInvalidWithoutWriting(t *testing.T) {
+	for _, body := range []string{
+		`{"rules":[{"name":"empty","priority":2}]}`,
+		`{"ntfy":{"priority":9}}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "alerts.yaml")
+			h := alertsHandler(t, path)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(body)))
+			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"error"`) {
+				t.Fatalf("status %d: %s", w.Code, w.Body.String())
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("invalid payload wrote file: %v", err)
+			}
+		})
+	}
+}
+
+func TestAlertsUIRejectsUnknownField(t *testing.T) {
+	h := alertsHandler(t, filepath.Join(t.TempDir(), "alerts.yaml"))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(`{"nope":1}`)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestAlertsUIRejectsOversizedBody(t *testing.T) {
+	h := alertsHandler(t, filepath.Join(t.TempDir(), "alerts.yaml"))
+	w := httptest.NewRecorder()
+	body := `{"log_level":"` + strings.Repeat("x", 1<<20) + `"}`
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(body)))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "request body too large") {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAlertsUIBlankCoordinatesStayNil(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.yaml")
+	h := alertsHandler(t, path)
+	w := httptest.NewRecorder()
+	body := `{"lat":null,"lon":null}`
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(body)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	got, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path})
+	if err != nil || got.Lat != nil || got.Lon != nil {
+		t.Fatalf("alerts = %+v, err = %v", got, err)
+	}
+}
+
+func TestAlertsUILockedReflectsEnvironment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.yaml")
+	for _, set := range []bool{true, false} {
+		t.Run(fmt.Sprint(set), func(t *testing.T) {
+			if set {
+				t.Setenv("SKY_COOLDOWN", "2h")
+			} else {
+				old, present := os.LookupEnv("SKY_COOLDOWN")
+				os.Unsetenv("SKY_COOLDOWN")
+				t.Cleanup(func() {
+					if present {
+						os.Setenv("SKY_COOLDOWN", old)
+					}
+				})
+			}
+			h := alertsHandler(t, path)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/alerts", nil))
+			var body struct {
+				Locked []map[string]string `json:"locked"`
+			}
+			if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, item := range body.Locked {
+				found = found || item["key"] == "cooldown"
+			}
+			if found != set {
+				t.Fatalf("locked = %v", body.Locked)
+			}
+		})
+	}
+}
+
+func TestAlertsUIGetPreservesFileValueUnderEnvironmentLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.yaml")
+	if err := os.WriteFile(path, []byte("cooldown: 24h\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SKY_COOLDOWN", "1h")
+	h := alertsHandler(t, path)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/alerts", nil))
+	var body struct {
+		Alerts Alerts              `json:"alerts"`
+		Locked []map[string]string `json:"locked"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	locked := false
+	for _, item := range body.Locked {
+		locked = locked || item["key"] == "cooldown" && item["env"] == "SKY_COOLDOWN"
+	}
+	if body.Alerts.Cooldown.Std() != 24*time.Hour || !locked {
+		t.Fatalf("response = %+v", body)
+	}
+}
+
+func TestAlertsUIGetDoesNotValidateBeforeEnvironment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.yaml")
+	// max_distance_nm fails validation without lat/lon, and here they arrive from the
+	// environment — so a GET that validated the file alone would 500 on a valid setup.
+	if err := os.WriteFile(path, []byte("rules:\n  - name: near\n    max_distance_nm: 25\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SKY_LAT", "41.9")
+	t.Setenv("SKY_LON", "-87.6")
+	h := alertsHandler(t, path)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/alerts", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET status %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAlertsUIUnknownPageIsNotFound(t *testing.T) {
+	h := alertsHandler(t, filepath.Join(t.TempDir(), "alerts.yaml"))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/nope", nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestDurationMarshalKeepsYAMLReadable(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		24 * time.Hour:   "24h",
+		5 * time.Minute:  "5m",
+		90 * time.Second: "1m30s",
+		90 * time.Minute: "1h30m",
+		0:                "0s",
+	} {
+		got, err := (Duration(d)).MarshalYAML()
+		if err != nil || got != want {
+			t.Errorf("%s: got %q, err %v; want %q", d, got, err, want)
+		}
+	}
+}
+
+// preview drives POST /api/preview and returns the decoded response.
+func previewRule(t *testing.T, h http.Handler, body string) (total, database int, sample []Plane) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/preview", strings.NewReader(body)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview status %d: %s", w.Code, w.Body.String())
+	}
+	var got struct {
+		Total    int     `json:"total"`
+		Database int     `json:"database"`
+		Aircraft []Plane `json:"aircraft"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	return got.Total, got.Database, got.Aircraft
+}
+
+func TestPreviewCountsAndCapsTheSample(t *testing.T) {
+	// One more aircraft than the sample cap, so total and sample must disagree.
+	var planes []*Plane
+	for i := 0; i <= previewLimit; i++ {
+		planes = append(planes, &Plane{ICAO: fmt.Sprintf("%06x", i), CMPG: "Mil", Tags: []string{"Cargo"}})
+	}
+	planes = append(planes, &Plane{ICAO: "ffffff", CMPG: "Civ", Tags: []string{"Airliner"}})
+	h := alertsHandler(t, filepath.Join(t.TempDir(), "alerts.yaml"), planes...)
+
+	// A rule with no conditions selects the whole database; only the sample is capped.
+	total, database, sample := previewRule(t, h, `{"name":"all","priority":3}`)
+	if total != len(planes) || database != len(planes) || len(sample) != previewLimit {
+		t.Fatalf("total=%d database=%d sample=%d, want %d/%d/%d", total, database, len(sample), len(planes), len(planes), previewLimit)
+	}
+	// The sample is sorted, so it does not reshuffle between identical requests.
+	for i := 1; i < len(sample); i++ {
+		if sample[i-1].ICAO >= sample[i].ICAO {
+			t.Fatalf("sample not sorted at %d: %q then %q", i, sample[i-1].ICAO, sample[i].ICAO)
+		}
+	}
+
+	total, _, sample = previewRule(t, h, `{"name":"civ","priority":3,"cmpg":["Civ"]}`)
+	if total != 1 || len(sample) != 1 || sample[0].ICAO != "ffffff" {
+		t.Fatalf("cmpg filter: total=%d sample=%+v", total, sample)
+	}
+}
+
+// The preview is only worth showing if it agrees with what will actually alert, so it
+// must inherit the matcher's quirks -- here, that fields are ANDed together.
+func TestPreviewMatchesTheAlertPath(t *testing.T) {
+	gov := &Plane{ICAO: "adfdf8", CMPG: "Gov", Category: "Head of State", Tags: []string{"Air Force One"}}
+	mil := &Plane{ICAO: "af83f3", CMPG: "Mil", Category: "USAF", Tags: []string{"Gunship"}}
+	h := alertsHandler(t, filepath.Join(t.TempDir(), "alerts.yaml"), gov, mil)
+
+	for _, tc := range []struct {
+		name, body string
+		want       int
+	}{
+		{"tag alone", `{"name":"x","priority":5,"tags":["Air Force One"]}`, 1},
+		{"tag and matching cmpg", `{"name":"x","priority":5,"tags":["Air Force One"],"cmpg":["Gov"]}`, 1},
+		// Every condition must match, so one wrong field empties the whole rule.
+		{"tag and conflicting cmpg", `{"name":"x","priority":5,"tags":["Air Force One"],"cmpg":["Mil"]}`, 0},
+		{"unknown value", `{"name":"x","priority":5,"tags":["Air Force Onee"]}`, 0},
+		{"case insensitive", `{"name":"x","priority":5,"cmpg":["mil"]}`, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			total, _, _ := previewRule(t, h, tc.body)
+			if total != tc.want {
+				t.Fatalf("total = %d, want %d", total, tc.want)
+			}
+			// Whatever the preview counts, the alert path must agree.
+			var rule Rule
+			if err := json.Unmarshal([]byte(tc.body), &rule); err != nil {
+				t.Fatal(err)
+			}
+			live := 0
+			for _, p := range []*Plane{gov, mil} {
+				ac := at(Aircraft{Hex: p.ICAO, Reg: p.Reg, Type: p.ICAOType})
+				if firstMatch([]Rule{rule}, ac, p, &Alert{Hex: p.ICAO}) != nil {
+					live++
+				}
+			}
+			if live != total {
+				t.Fatalf("preview says %d, firstMatch says %d", total, live)
+			}
+		})
+	}
+}
+
+func facetValues(f []FacetValue) []string {
+	out := make([]string, len(f))
+	for i, v := range f {
+		out[i] = v.Value
+	}
+	return out
+}
+
+func TestFacetsNarrowByTheOtherConditions(t *testing.T) {
+	db := &DB{merged: map[string]*Plane{
+		"a": {ICAO: "a", CMPG: "Gov", Category: "Head of State", Tags: []string{"POTUS", "Government"}},
+		"b": {ICAO: "b", CMPG: "Mil", Category: "USAF", Tags: []string{"Gunship"}},
+		"c": {ICAO: "c", CMPG: "Pol", Category: "Police Forces", Tags: []string{"Helicopter"}},
+	}}
+	all := db.Facets(Rule{})
+	if !reflect.DeepEqual(facetValues(all["tags"]), []string{"Government", "Gunship", "Helicopter", "POTUS"}) {
+		t.Fatalf("unconditioned tags = %#v", all["tags"])
+	}
+
+	// Choosing a category cuts the tag list down to that category's own tags.
+	got := db.Facets(Rule{Category: []string{"Head of State"}})
+	if !reflect.DeepEqual(facetValues(got["tags"]), []string{"Government", "POTUS"}) {
+		t.Fatalf("tags under Head of State = %#v", got["tags"])
+	}
+	if !reflect.DeepEqual(facetValues(got["cmpg"]), []string{"Gov"}) {
+		t.Fatalf("cmpg under Head of State = %#v", got["cmpg"])
+	}
+	// A field is never narrowed by its own value, or a second category could never
+	// be added and the first could never be swapped.
+	if !reflect.DeepEqual(got["category"], all["category"]) {
+		t.Fatalf("category narrowed itself: %#v", got["category"])
+	}
+
+	// Facets respect every other condition, not just the most recent one.
+	got = db.Facets(Rule{Category: []string{"Head of State"}, CMPG: []string{"Mil"}})
+	if len(got["tags"]) != 0 {
+		t.Fatalf("impossible combination still offers tags: %#v", got["tags"])
+	}
+}
+
+func TestPreviewRejectsUnknownField(t *testing.T) {
+	h := alertsHandler(t, filepath.Join(t.TempDir(), "alerts.yaml"))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/preview", strings.NewReader(`{"nope":1}`)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestVocabularyDedupesAndSorts(t *testing.T) {
+	db := &DB{merged: map[string]*Plane{
+		"a": {Operator: "Zulu", Type: "C-17", ICAOType: "C17", CMPG: "Mil", Category: "Other", Tags: []string{"Heavy", "Cargo"}},
+		"b": {Operator: "Alpha", Tags: []string{"Cargo", ""}},
+	}}
+	got := db.Vocabulary()
+	if !reflect.DeepEqual(facetValues(got["operator"]), []string{"Alpha", "Zulu"}) || !reflect.DeepEqual(facetValues(got["tags"]), []string{"Cargo", "Heavy"}) {
+		t.Fatalf("vocabulary = %#v", got)
+	}
+	// Cargo is on both aircraft, Heavy on one.
+	if got["tags"][0].Count != 2 || got["tags"][1].Count != 1 {
+		t.Fatalf("tag counts = %#v", got["tags"])
+	}
+	for _, key := range []string{"tags", "operator", "type", "icao_type", "cmpg", "category"} {
+		if _, ok := got[key]; !ok {
+			t.Errorf("missing key %q", key)
+		}
 	}
 }
 
@@ -1700,5 +2106,190 @@ func TestQueueDoesNotEvictInflightOrOtherEmergencies(t *testing.T) {
 	q.add(alertFor("cccccc", "emergency:7500", true))
 	if q.depth() != 2 {
 		t.Errorf("must not evict an in-flight or emergency entry, depth=%d", q.depth())
+	}
+}
+
+// A rule's limits ask where an aircraft is, which no database row can answer. Applying
+// them to the preview would fail them closed and report every distance-limited rule as
+// selecting nothing — the one reading that would send an operator to widen a rule that
+// was already correct.
+func TestPreviewIgnoresRuntimeLimits(t *testing.T) {
+	p := &Plane{ICAO: "abc123", Reg: "N1", Operator: "US Air Force", CMPG: "Mil", Tags: []string{"Cargo"}}
+	db := &DB{merged: map[string]*Plane{p.ICAO: p}}
+	nm, minAlt := 5.0, 30000
+	rule := Rule{Name: "x", CMPG: []string{"Mil"}, MaxDistanceNM: &nm, MinAltitudeFt: &minAlt, Circling: boolp(true)}
+
+	total, sample := db.Match(rule, 10, 0)
+	if total != 1 || len(sample) != 1 {
+		t.Fatalf("total = %d, sample = %d; limits must not narrow a database preview", total, len(sample))
+	}
+	// The alert path still enforces them: the same rule rejects an aircraft with no
+	// altitude and no position.
+	if got := firstMatch([]Rule{rule}, Aircraft{Hex: p.ICAO}, p, &Alert{Hex: p.ICAO}); got != nil {
+		t.Fatal("the alert path must still apply the limits the preview skipped")
+	}
+}
+
+// Squawk is a live-feed field, so a squawk rule selects no database row. That must read
+// as "nothing to preview", never as the rule being broken.
+func TestPreviewIgnoresSquawk(t *testing.T) {
+	p := &Plane{ICAO: "abc123", CMPG: "Mil"}
+	db := &DB{merged: map[string]*Plane{p.ICAO: p}}
+	if total, _ := db.Match(Rule{Name: "x", CMPG: []string{"Mil"}, Squawk: []string{"7700"}}, 10, 0); total != 1 {
+		t.Fatalf("total = %d, want the rule previewed on its database conditions alone", total)
+	}
+}
+
+// Paging walks a stable order. merged is a map, so without the ICAO sort each page would
+// be drawn from a different iteration order and "load more" could repeat a row it had
+// already shown while never reaching one it had not.
+func TestMatchPagesCoverEveryRowExactlyOnce(t *testing.T) {
+	merged := map[string]*Plane{}
+	for i := 0; i < 55; i++ {
+		p := &Plane{ICAO: fmt.Sprintf("%06x", i), CMPG: "Mil"}
+		merged[p.ICAO] = p
+	}
+	db := &DB{merged: merged}
+	rule := Rule{Name: "x", CMPG: []string{"Mil"}}
+
+	var seen []string
+	for offset := 0; ; offset += 20 {
+		total, page := db.Match(rule, 20, offset)
+		if total != len(merged) {
+			t.Fatalf("total = %d at offset %d, want %d on every page", total, offset, len(merged))
+		}
+		if len(page) == 0 {
+			break
+		}
+		for _, p := range page {
+			seen = append(seen, p.ICAO)
+		}
+	}
+	if len(seen) != len(merged) {
+		t.Fatalf("paged over %d rows, want %d", len(seen), len(merged))
+	}
+	if !sort.StringsAreSorted(seen) {
+		t.Fatal("pages must continue one stable order, not restart it")
+	}
+	unique := map[string]bool{}
+	for _, hex := range seen {
+		if unique[hex] {
+			t.Fatalf("row %s served twice across pages", hex)
+		}
+		unique[hex] = true
+	}
+}
+
+// An offset past the end is what a stale page sends after the database shrinks under a
+// refresh. It must read as "no more rows", not panic on the slice bound.
+func TestMatchOffsetPastTheEndIsEmpty(t *testing.T) {
+	p := &Plane{ICAO: "abc123", CMPG: "Mil"}
+	db := &DB{merged: map[string]*Plane{p.ICAO: p}}
+	total, sample := db.Match(Rule{Name: "x", CMPG: []string{"Mil"}}, 20, 500)
+	if total != 1 || len(sample) != 0 {
+		t.Fatalf("total = %d, sample = %d; want the real total and an empty page", total, len(sample))
+	}
+}
+
+// An icao_type rule is not a database query: the feed carries the type code an aircraft
+// broadcasts, and plenty of codes belong to no listed aircraft at all. A rule naming one
+// must still alert, or the condition silently means "and also happens to be in the
+// database" — which is not what it says.
+func TestICAOTypeRuleMatchesAnUnlistedAircraft(t *testing.T) {
+	cfg := testConfig(t)
+	db := dbWith(t, cfg, mustParse(t, sampleCSV))
+	alerts := defaultAlerts()
+	alerts.Rules = []Rule{{Name: "gliders", ICAOType: []string{"AS21"}, Priority: intp(4)}}
+
+	a := Evaluate(at(Aircraft{Hex: "ffffff", Type: "AS21"}), db, alerts, nil)
+	if a == nil || a.Plane != nil || a.Trigger != "gliders" {
+		t.Fatalf("alert = %+v, want an unlisted live-feed type code to alert", a)
+	}
+	// And the database preview reports zero without that being a contradiction: it can
+	// only search rows, and no row carries this code.
+	if total, _ := db.Match(alerts.Rules[0], 20, 0); total != 0 {
+		t.Fatalf("database preview = %d, want 0 for a code no row carries", total)
+	}
+}
+
+// The service runs the file plus the environment, so that is what a save has to be judged
+// against. A rule needing coordinates the environment supplies is valid at runtime, and
+// rejecting it would make the UI refuse a setting the operator already runs.
+func TestAlertsUISaveValidatesWithEnvironmentApplied(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.yaml")
+	t.Setenv("SKY_LAT", "41.9")
+	t.Setenv("SKY_LON", "-87.6")
+	h := alertsHandler(t, path)
+	w := httptest.NewRecorder()
+	body := `{"rules":[{"name":"near","priority":4,"max_distance_nm":25}]}`
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(body)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	// The override is validated against, never written: the file keeps the operator's own
+	// values, so removing the variable does not silently leave its coordinates behind.
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(blob), "41.9") {
+		t.Fatalf("environment coordinates were baked into the file:\n%s", blob)
+	}
+	// And it really is what the loader accepts.
+	if _, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path, "SKY_LAT=41.9", "SKY_LON=-87.6"}); err != nil {
+		t.Fatalf("the saved file must load under the same environment: %v", err)
+	}
+}
+
+// The mirror of the above: an override that makes the payload invalid has to fail at save
+// time, not silently write a file the watcher then refuses on reload.
+func TestAlertsUISaveRejectsWhatTheEnvironmentBreaks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.yaml")
+	t.Setenv("SKY_COOLDOWN", "0s")
+	h := alertsHandler(t, path)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(`{"rules":[{"name":"x","all":true}]}`)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for a payload the environment invalidates", w.Code)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("a rejected save must not touch the file")
+	}
+}
+
+// A rule that inherits ntfy.priority has to keep inheriting it. Writing the current
+// default into the rule freezes it there, silently changing behaviour the next time the
+// default moves — and immediately, for anyone whose default is not 3.
+func TestRuleWithoutPriorityRoundTripsAsUnset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.yaml")
+	h := alertsHandler(t, path)
+	w := httptest.NewRecorder()
+	body := `{"ntfy":{"priority":2},"rules":[{"name":"inherits","all":true},{"name":"muted","all":true,"priority":0}]}`
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(body)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(blob), "priority: 3") {
+		t.Fatalf("an unset priority was written as the default:\n%s", blob)
+	}
+	got, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Rules[0].Priority != nil {
+		t.Fatalf("rule 0 priority = %d, want nil so it follows ntfy.priority", *got.Rules[0].Priority)
+	}
+	// 0 is "muted", a real choice, and must survive the same round trip as a set value.
+	if got.Rules[1].Priority == nil || *got.Rules[1].Priority != 0 {
+		t.Fatalf("rule 1 priority = %v, want an explicit 0", got.Rules[1].Priority)
+	}
+	// The inheriting rule alerts at the configured default, not at 3.
+	a := Evaluate(at(Aircraft{Hex: "ffffff"}), NewDB(testConfig(t), http.DefaultClient), got, nil)
+	if a == nil || a.Priority != 2 {
+		t.Fatalf("alert = %+v, want the inherited priority 2", a)
 	}
 }
