@@ -22,8 +22,8 @@ lon: -0.1246
 # `name` is optional too. It never reaches the notification — it is the cooldown key and
 # the log label, so set it on a rule you want to recognise in the log and leave it off one
 # whose conditions already say what it is. An unnamed rule is keyed by a fingerprint of its
-# conditions instead. Names that are set must be unique, or two rules would silence each
-# other.
+# conditions instead. Either way the key must be unique, or two rules would silence each
+# other: no two rules may share a name or state exactly the same conditions unnamed.
 rules:
   - name: Emergency squawks
     squawk: ["7500", "7600", "7700"]

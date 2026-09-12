@@ -456,10 +456,15 @@ func (h *health) mux(q *queue) http.Handler {
 			writeJSONError(w, http.StatusInternalServerError, err)
 			return
 		}
+		// Each locked setting carries its value as well as its name. The page warns
+		// about rules this server would reject, and the save validates the file with
+		// the environment laid over it — so without the value here, a distance rule on
+		// a receiver whose coordinates arrive as SKY_LAT and SKY_LON would be marked
+		// invalid against a file that never mentions them.
 		var locked []map[string]string
 		for _, b := range alertEnvBindings() {
-			if _, ok := env[b.name]; ok {
-				locked = append(locked, map[string]string{"key": b.key, "env": b.name})
+			if v, ok := env[b.name]; ok {
+				locked = append(locked, map[string]string{"key": b.key, "env": b.name, "value": v})
 			}
 		}
 		// The cooldown key of every rule, in order. A rule may have no name, and the

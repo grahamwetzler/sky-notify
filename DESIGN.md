@@ -22,7 +22,10 @@ rule leads with it before its conditions.
 The second half of that idea is that the figure has to be honest. Where a database row
 could not both narrow the rule and satisfy it, the page shows `—` and the reason rather
 than a number: a `squawk`-only rule would otherwise read as the whole database, and a
-`listed: false` rule as zero. Both are lies dressed as figures.
+`listed: false` rule as zero. Both are lies dressed as figures. The same honesty runs the
+other way: a rule that cannot match whatever the feed brings — `listed: false` beside a
+condition only a database row carries, or a hex the database has never heard of beside
+`listed: true` — reads red and says it will never alert, rather than hiding behind `—`.
 
 ## Color
 
@@ -106,6 +109,7 @@ nested cards do not exist on this page.
   showing and what narrowed them.
 - **Result band** — figure, sentence, the not-counted line, then the matching aircraft in a
   table that scrolls horizontally in its own container rather than breaking at phone width.
+  Reaching further into a long list appends to it in place and leaves the page where it was.
 
 ## Copy
 
@@ -127,6 +131,9 @@ from the rule itself, so they cannot drift from what will be saved.
    answer a different question than the save.
 3. **Typing never rebuilds the pane.** A structural change re-renders; a keystroke in a
    number field moves only the figure, the sentence and the list row, so the caret stays.
+   A preview answer arriving mid-edit does rebuild, and puts the caret and the scroll
+   position back, so a slow answer never takes the field out from under a half-typed
+   number.
 4. **Per-rule state is keyed by the rule object**, not its position, so reordering and
    deleting carry it with no bookkeeping.
 5. **Browser surfaces are themed**: selection, focus ring, scrollbars, `color-scheme`, and

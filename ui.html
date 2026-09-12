@@ -546,8 +546,17 @@ function coverage(r) {
   const p = meta(r).preview;
   if (!keys.length) return {kind: 'wild', figure: 'Every',
     note: 'This rule states no condition, so it matches every aircraft and no rule below it is ever reached.'};
-  if (r.listed === false) return {kind: 'blind', figure: '—',
-    note: 'This rule matches only aircraft the database does not list, so there is nothing here to count. It alerts on what the feed brings.'};
+  if (r.listed === false) {
+    /* Nothing broadcasts an operator or a tag: those come off the database row, and
+       this rule has just asked for aircraft that have no row. It can never match. */
+    const owned = DB_ONLY.filter(k => hasValue(r[k]));
+    if (owned.length) return {kind: 'dead', figure: '—',
+      note: 'This rule asks for aircraft the database does not list, then asks for '
+        + list(owned.map(k => BY_KEY[k].short || BY_KEY[k].label.toLowerCase()), ' and ')
+        + ', which only a database row can answer. It will never alert.'};
+    return {kind: 'blind', figure: '—',
+      note: 'This rule matches only aircraft the database does not list, so there is nothing here to count. It alerts on what the feed brings.'};
+  }
   if (!keys.some(k => BY_KEY[k].source !== 'feed')) return {kind: 'blind', figure: '—',
     note: 'Every condition here is read off the live feed, so the database has nothing to count. The rule alerts the moment an aircraft broadcasts a match.'};
   if (!p) return {kind: 'wait', figure: '…', note: 'Checking which aircraft this selects…'};
@@ -561,12 +570,17 @@ function coverage(r) {
     note: `of the ${(p.database ?? 0).toLocaleString()} aircraft in the database can satisfy this rule’s identity conditions.`};
 }
 
-/* A zero is inconclusive two different ways. reg, icao and icao_type are matched against
-   either source, so a rule narrowed by one can still catch an aircraft whose database row
-   says otherwise. And unless a rule states something only a database row carries, it can
-   match an aircraft with no row at all. */
+/* A zero is inconclusive two different ways. reg and icao_type are matched against either
+   source, so a rule narrowed by one can still catch an aircraft whose database row says
+   otherwise. And unless a rule states something only a database row carries, it can match
+   an aircraft with no row at all.
+
+   The hex is not one of those: it is the key the database row is looked up by, so a hex
+   the database has never heard of cannot arrive from the feed carrying another aircraft's
+   row. A rule that pairs one with `listed: true`, or with anything only a row can answer,
+   is dead rather than merely unpreviewable. */
 const DB_ONLY = ['cmpg', 'category', 'tags', 'operator', 'type'];
-const EITHER_SOURCE = ['reg', 'icao', 'icao_type'];
+const EITHER_SOURCE = ['reg', 'icao_type'];
 function canMatchFeed(r) {
   if (EITHER_SOURCE.some(k => hasValue(r[k]))) return true;
   return r.listed !== true && !DB_ONLY.some(k => hasValue(r[k]));
@@ -582,12 +596,15 @@ const blindKeys = r => stated(r).filter(k => BY_KEY[k].source === 'feed');
    page after a failed write. */
 function problem(r, key) {
   const spec = BY_KEY[key];
-  if (spec.needsPosition && hasValue(r[key]) && (doc.lat == null || doc.lon == null))
+  if (DB_ONLY.includes(key) && hasValue(r[key]) && r.listed === false)
+    return 'Only a database row carries this, and this rule asks for aircraft that have no row, so it can never match. Remove this or the “not in the database” condition.';
+  if (spec.needsPosition && hasValue(r[key]) && (setting('lat', doc.lat) == null || setting('lon', doc.lon) == null))
     return 'Needs the receiver’s latitude and longitude, which are not set. Open Settings to add them.';
   if (spec.needsFastPoll && r.circling === true) {
-    const s = parseDuration(doc.source.poll_interval);
+    const iv = setting('source.poll_interval', doc.source.poll_interval);
+    const s = parseDuration(iv);
     if (s != null && s > 30)
-      return `Needs the feeder polled every 30 seconds or less; it is currently ${doc.source.poll_interval}.`;
+      return `Needs the feeder polled every 30 seconds or less; it is currently ${iv}.`;
   }
   if (key === 'max_altitude_ft' && hasValue(r.min_altitude_ft) && hasValue(r.max_altitude_ft)
       && +r.max_altitude_ft <= +r.min_altitude_ft)
@@ -596,10 +613,25 @@ function problem(r, key) {
     return 'Must be a duration like 5m or 30s.';
   return null;
 }
+/* The environment overrides the file, and the server validates the overlay, so a check
+   made against the file alone would call a rule invalid over a setting the file does not
+   own. Anything locked reads from the environment; everything else reads live from the
+   document being edited. */
+function setting(key, fileValue) {
+  return locks[key] ? locks[key].value : fileValue;
+}
+
+/* Go's duration syntax, which is what the server parses these with: one or more
+   number-unit pairs, so 1m30s is as valid as 90s. */
+const DUR_UNIT = {ns: 1e-9, us: 1e-6, 'µs': 1e-6, ms: .001, s: 1, m: 60, h: 3600};
 function parseDuration(s) {
-  const m = /^(\d+(?:\.\d+)?)(ms|s|m|h)$/.exec(String(s ?? '').trim());
-  if (!m) return null;
-  return +m[1] * {ms: .001, s: 1, m: 60, h: 3600}[m[2]];
+  const t = String(s ?? '').trim();
+  const re = /(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)/y;
+  /* A sticky regex resets lastIndex when it finally fails, so the end of the last
+     match is kept: the whole string must be pairs, or this is not a duration. */
+  let total = 0, end = 0, m;
+  while ((m = re.exec(t))) { total += +m[1] * DUR_UNIT[m[2]]; end = re.lastIndex; }
+  return t && end === t.length ? total : null;
 }
 
 /* ── Messages ─────────────────────────────────────────────────────────── */
@@ -875,6 +907,7 @@ function conditionCard(r, key) {
   if (spec.kind === 'num' || spec.kind === 'text') {
     const row = el('div', 'numrow');
     const input = el('input');
+    input.id = 'c-' + key;
     input.type = spec.kind === 'num' ? 'number' : 'text';
     if (spec.min !== undefined) input.min = spec.min;
     if (spec.step) input.step = spec.step;
@@ -894,6 +927,7 @@ function conditionCard(r, key) {
     card.append(row);
   } else if (spec.kind === 'tri') {
     const s = el('select');
+    s.id = 'c-' + key;
     for (const [v, t] of spec.options) s.append(new Option(t, v));
     s.value = r[key] === undefined || r[key] === null ? '' : String(r[key]);
     s.setAttribute('aria-label', spec.label);
@@ -1045,9 +1079,29 @@ function select(next) {
   if (innerWidth <= 900) scrollTo({top: 0, behavior: 'smooth'});
 }
 
-/* ── The detail pane ──────────────────────────────────────────────────── */
+/* ── The detail pane ──────────────────────────────────────────────────────
+   A preview answer can arrive while the pane is being used, and a rebuild is the only
+   render this page has. So the two things a rebuild costs are put back: the caret, or a
+   slow answer takes the field out from under a half-typed number, and the scroll
+   position, or reaching further down a list of matches throws you to the top.        */
 function renderPane() {
   const pane = $('#pane');
+  const had = document.activeElement;
+  const id = pane.contains(had) && had.id ? had.id : null;
+  /* selectionStart throws on a number input and says nothing on a select. */
+  const caret = id && had.type === 'text' ? [had.selectionStart, had.selectionEnd] : null;
+  const y = scrollY;
+  paintPane(pane);
+  const back = id && document.getElementById(id);
+  if (back) {
+    back.focus();
+    if (caret) back.setSelectionRange(caret[0], caret[1]);
+  }
+  /* Last, because focusing can scroll the element into view on its own. */
+  if (scrollY !== y) scrollTo(0, y);
+}
+
+function paintPane(pane) {
   pane.replaceChildren();
   if (isSettings()) return renderSettings(pane);
 
@@ -1164,10 +1218,14 @@ function resultBand(r, cov) {
       /* Inside the scroll region, not below it: the button belongs where the rows
          run out rather than pinned under a list you have not reached the end of. */
       const more = el('button', 'btn more');
+      more.id = 'more';
       more.type = 'button';
       const remaining = p.total - shown;
       more.textContent = `Show ${Math.min(remaining, p.limit || 20).toLocaleString()} more`;
-      more.onclick = () => { more.disabled = true; more.textContent = 'Loading…';
+      /* Unhooked rather than disabled: a second click does nothing either way, and a
+         disabled button drops focus to the body, which would cost a keyboard reader
+         their place in the list they just asked for more of. */
+      more.onclick = () => { more.onclick = null; more.textContent = 'Loading…';
         runPreview(r, shown); };
       wrap.append(more);
     }
@@ -1198,6 +1256,7 @@ function labelBand(r, i) {
   const lab = el('label', 'field');
   lab.append(el('span', 'lbl', 'Label — optional'));
   const input = el('input'); input.type = 'text';
+  input.id = 'rule-name';
   input.value = r.name || '';
   input.placeholder = 'unlabelled';
   const note = el('span', 'help');
@@ -1321,11 +1380,11 @@ function settingField(f) {
   const value = at(doc, f.key);
   input.value = value === null || value === undefined ? '' : String(value);
 
-  const env = locks[f.key];
-  if (env) {
+  const lock = locks[f.key];
+  if (lock) {
     input.disabled = true;
     wrap.append(input);
-    wrap.append(el('span', 'help lock', `Set by ${env}. The environment overrides this file, so editing it here would change nothing.`));
+    wrap.append(el('span', 'help lock', `Set by ${lock.env}, currently ${lock.value}. The environment overrides this file, so editing it here would change nothing.`));
     return wrap;
   }
   input.oninput = () => {
@@ -1478,7 +1537,7 @@ async function load() {
   doc.rules = doc.rules || [];
   alertsPath = body.path;
   vocab = body.vocabulary || {};
-  locks = Object.fromEntries((body.locked || []).map(l => [l.key, l.env]));
+  locks = Object.fromEntries((body.locked || []).map(l => [l.key, l]));
   const keys = body.rule_keys || [];
   doc.rules.forEach((r, i) => { meta(r).key = keys[i] || ''; });
   /* The path can be long and its tail is the part that identifies it. */

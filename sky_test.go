@@ -1534,6 +1534,17 @@ func TestRuleNamesAreOptional(t *testing.T) {
 		t.Errorf("a named rule keys on its name, got %q", got)
 	}
 
+	// Names and fingerprints share one cooldown namespace, so a key that repeats is
+	// refused however it came to repeat: two rules that state the same conditions, or a
+	// name copied from the fingerprint the UI showed for an unnamed rule.
+	if _, err := loadAlertsWith(t, "rules:\n  - cmpg: [Mil]\n  - cmpg: [Mil]\n    priority: 2\n"); err == nil {
+		t.Error("two unnamed rules with the same conditions share a cooldown key and must be refused")
+	}
+	clash := fmt.Sprintf("rules:\n  - listed: true\n  - name: %q\n    cmpg: [Mil]\n", a)
+	if _, err := loadAlertsWith(t, clash); err == nil {
+		t.Errorf("a name equal to an earlier rule's fingerprint %s must be refused", a)
+	}
+
 	db := dbWith(t, testConfig(t), mustParse(t, sampleCSV))
 	alerts := defaultAlerts()
 	alerts.Rules = []Rule{{Listed: boolp(true)}}

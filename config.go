@@ -632,16 +632,17 @@ func (a *Alerts) validate() error {
 	if a.Ntfy.Priority < 1 || a.Ntfy.Priority > 5 {
 		return fmt.Errorf("ntfy.priority must be 1..5, got %d", a.Ntfy.Priority)
 	}
-	// Names are optional, but a name that repeats is a bug worth failing on: the name is
-	// the cooldown key, so two rules sharing one would silence each other.
+	// Names are optional, but a cooldown key that repeats is a bug worth failing on: two
+	// rules sharing one silence each other. Checking the key rather than the name covers
+	// all three ways a key can repeat — two identical unnamed rules, two rules sharing a
+	// name, and a rule named after the fingerprint the UI showed for an unnamed one.
 	seen := map[string]bool{}
 	for i, rule := range a.Rules {
-		if rule.Name != "" {
-			if seen[rule.Name] {
-				return fmt.Errorf("rule %d (%q): name must be unique", i, rule.Name)
-			}
-			seen[rule.Name] = true
+		key := rule.Key()
+		if seen[key] {
+			return fmt.Errorf("rule %d (%s): its cooldown key %q is already taken by an earlier rule — two rules sharing one would silence each other", i, rule.label(), key)
 		}
+		seen[key] = true
 		if rule.Priority != nil && (*rule.Priority < 0 || *rule.Priority > 5) {
 			return fmt.Errorf("rule %d (%s): priority must be 0..5, got %d", i, rule.label(), *rule.Priority)
 		}

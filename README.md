@@ -81,8 +81,10 @@ log label, so it is worth setting on a rule you want to recognise in the log and
 worth inventing on one whose conditions already say what it is. A rule without a name is
 keyed by a fingerprint of its own conditions, like `#9979234a`: reordering the rules
 leaves its cooldowns alone, and editing what it matches resets them, which is right,
-since the ledger's entries were recorded for a rule that no longer exists. Names that
-*are* set must be unique, because two rules sharing one would silence each other.
+since the ledger's entries were recorded for a rule that no longer exists. Keys must be
+unique, because two rules sharing one would silence each other — so no two rules may
+share a name, state the same conditions unnamed, or have one named after the other's
+fingerprint.
 
 The flight path conditions read the same recent motion. `passes_within_nm` predicts the
 closest approach to your `lat`/`lon` along the aircraft's current ground track and speed,
