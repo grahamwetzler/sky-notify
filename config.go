@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -39,28 +40,56 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 	return nil
 }
 
+func (d Duration) MarshalYAML() (any, error) { return durationString(d), nil }
+
+func (d Duration) MarshalJSON() ([]byte, error) { return json.Marshal(durationString(d)) }
+
+func (d *Duration) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	v, err := time.ParseDuration(s)
+	if err != nil {
+		return err
+	}
+	*d = Duration(v)
+	return nil
+}
+
 func (d Duration) Std() time.Duration { return time.Duration(d) }
 
+func durationString(d Duration) string {
+	s := time.Duration(d).String()
+	if strings.HasSuffix(s, "h0m0s") {
+		return strings.TrimSuffix(s, "0m0s")
+	}
+	if strings.HasSuffix(s, "m0s") {
+		return strings.TrimSuffix(s, "0s")
+	}
+	return s
+}
+
 type Rule struct {
-	Name           string    `yaml:"name"`
-	Priority       *int      `yaml:"priority"`
-	ICAO           []string  `yaml:"icao"`
-	Reg            []string  `yaml:"reg"`
-	ICAOType       []string  `yaml:"icao_type"`
-	Squawk         []string  `yaml:"squawk"`
-	Operator       []string  `yaml:"operator"`
-	Type           []string  `yaml:"type"`
-	CMPG           []string  `yaml:"cmpg"`
-	Category       []string  `yaml:"category"`
-	Tags           []string  `yaml:"tags"`
-	Listed         *bool     `yaml:"listed"`
-	All            bool      `yaml:"all"`
-	MinAltitudeFt  *int      `yaml:"min_altitude_ft"`
-	MaxAltitudeFt  *int      `yaml:"max_altitude_ft"`
-	MaxDistanceNM  *float64  `yaml:"max_distance_nm"`
-	Circling       *bool     `yaml:"circling"`
-	PassesWithinNM *float64  `yaml:"passes_within_nm"`
-	PassesWithin   *Duration `yaml:"passes_within"`
+	Name           string    `yaml:"name" json:"name"`
+	Priority       *int      `yaml:"priority" json:"priority"`
+	ICAO           []string  `yaml:"icao,omitempty" json:"icao,omitempty"`
+	Reg            []string  `yaml:"reg,omitempty" json:"reg,omitempty"`
+	ICAOType       []string  `yaml:"icao_type,omitempty" json:"icao_type,omitempty"`
+	Squawk         []string  `yaml:"squawk,omitempty" json:"squawk,omitempty"`
+	Operator       []string  `yaml:"operator,omitempty" json:"operator,omitempty"`
+	Type           []string  `yaml:"type,omitempty" json:"type,omitempty"`
+	CMPG           []string  `yaml:"cmpg,omitempty" json:"cmpg,omitempty"`
+	Category       []string  `yaml:"category,omitempty" json:"category,omitempty"`
+	Tags           []string  `yaml:"tags,omitempty" json:"tags,omitempty"`
+	Listed         *bool     `yaml:"listed,omitempty" json:"listed,omitempty"`
+	All            bool      `yaml:"all,omitempty" json:"all,omitempty"`
+	MinAltitudeFt  *int      `yaml:"min_altitude_ft,omitempty" json:"min_altitude_ft,omitempty"`
+	MaxAltitudeFt  *int      `yaml:"max_altitude_ft,omitempty" json:"max_altitude_ft,omitempty"`
+	MaxDistanceNM  *float64  `yaml:"max_distance_nm,omitempty" json:"max_distance_nm,omitempty"`
+	Circling       *bool     `yaml:"circling,omitempty" json:"circling,omitempty"`
+	PassesWithinNM *float64  `yaml:"passes_within_nm,omitempty" json:"passes_within_nm,omitempty"`
+	PassesWithin   *Duration `yaml:"passes_within,omitempty" json:"passes_within,omitempty"`
 }
 
 type Config struct {
@@ -89,19 +118,19 @@ type Config struct {
 
 type Alerts struct {
 	Source struct {
-		PollInterval Duration `yaml:"poll_interval"`
-	} `yaml:"source"`
+		PollInterval Duration `yaml:"poll_interval" json:"poll_interval"`
+	} `yaml:"source" json:"source"`
 	Ntfy struct {
-		Priority int `yaml:"priority"`
-	} `yaml:"ntfy"`
+		Priority int `yaml:"priority" json:"priority"`
+	} `yaml:"ntfy" json:"ntfy"`
 	DB struct {
-		RefreshInterval Duration `yaml:"refresh_interval"`
-	} `yaml:"db"`
-	Cooldown Duration `yaml:"cooldown"`
-	Lat      *float64 `yaml:"lat"`
-	Lon      *float64 `yaml:"lon"`
-	Rules    []Rule   `yaml:"rules"`
-	LogLevel string   `yaml:"log_level"`
+		RefreshInterval Duration `yaml:"refresh_interval" json:"refresh_interval"`
+	} `yaml:"db" json:"db"`
+	Cooldown Duration `yaml:"cooldown" json:"cooldown"`
+	Lat      *float64 `yaml:"lat" json:"lat"`
+	Lon      *float64 `yaml:"lon" json:"lon"`
+	Rules    []Rule   `yaml:"rules" json:"rules"`
+	LogLevel string   `yaml:"log_level" json:"log_level"`
 }
 
 const configPollInterval = 5 * time.Second
@@ -174,18 +203,19 @@ func envBindings() []envBinding {
 
 type alertEnvBinding struct {
 	name  string
+	key   string
 	apply func(*Alerts, string) error
 }
 
 func alertEnvBindings() []alertEnvBinding {
 	return []alertEnvBinding{
-		{"SKY_SOURCE_POLL_INTERVAL", func(a *Alerts, v string) error { return setDur(&a.Source.PollInterval, v) }},
-		{"SKY_NTFY_PRIORITY", func(a *Alerts, v string) error { return setInt(&a.Ntfy.Priority, v) }},
-		{"SKY_DB_REFRESH_INTERVAL", func(a *Alerts, v string) error { return setDur(&a.DB.RefreshInterval, v) }},
-		{"SKY_COOLDOWN", func(a *Alerts, v string) error { return setDur(&a.Cooldown, v) }},
-		{"SKY_LAT", func(a *Alerts, v string) error { return setFloatPtr(&a.Lat, v) }},
-		{"SKY_LON", func(a *Alerts, v string) error { return setFloatPtr(&a.Lon, v) }},
-		{"SKY_LOG_LEVEL", func(a *Alerts, v string) error { a.LogLevel = v; return nil }},
+		{"SKY_SOURCE_POLL_INTERVAL", "source.poll_interval", func(a *Alerts, v string) error { return setDur(&a.Source.PollInterval, v) }},
+		{"SKY_NTFY_PRIORITY", "ntfy.priority", func(a *Alerts, v string) error { return setInt(&a.Ntfy.Priority, v) }},
+		{"SKY_DB_REFRESH_INTERVAL", "db.refresh_interval", func(a *Alerts, v string) error { return setDur(&a.DB.RefreshInterval, v) }},
+		{"SKY_COOLDOWN", "cooldown", func(a *Alerts, v string) error { return setDur(&a.Cooldown, v) }},
+		{"SKY_LAT", "lat", func(a *Alerts, v string) error { return setFloatPtr(&a.Lat, v) }},
+		{"SKY_LON", "lon", func(a *Alerts, v string) error { return setFloatPtr(&a.Lon, v) }},
+		{"SKY_LOG_LEVEL", "log_level", func(a *Alerts, v string) error { a.LogLevel = v; return nil }},
 	}
 }
 
@@ -254,8 +284,8 @@ func LoadConfig(environ []string) (*Config, error) {
 
 func LoadAlerts(environ []string) (*Alerts, error) {
 	env := environMap(environ)
-	alerts := defaultAlerts()
-	if err := loadYAML(alertsPath(env), alerts, alertsMisplaced, configPath(env), "startup-only", alertsRemoved); err != nil {
+	alerts, err := loadAlertsFile(env)
+	if err != nil {
 		return nil, err
 	}
 	if err := checkEnv(env); err != nil {
@@ -269,6 +299,14 @@ func LoadAlerts(environ []string) (*Alerts, error) {
 		}
 	}
 	if err := alerts.validate(); err != nil {
+		return nil, err
+	}
+	return alerts, nil
+}
+
+func loadAlertsFile(env map[string]string) (*Alerts, error) {
+	alerts := defaultAlerts()
+	if err := loadYAML(alertsPath(env), alerts, alertsMisplaced, configPath(env), "startup-only", alertsRemoved); err != nil {
 		return nil, err
 	}
 	return alerts, nil

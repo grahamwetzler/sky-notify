@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -11,15 +12,24 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
+
+//go:embed ui.html
+var uiFS embed.FS
 
 const (
 	maxPending     = 512
 	coldStartLimit = 5 * time.Minute
 	drainTimeout   = 5 * time.Second
+	// How many matching aircraft a rule preview shows. The count it reports is the
+	// real total; only the sample is capped.
+	previewLimit = 20
 )
 
 func main() {
@@ -430,6 +440,89 @@ func (h *health) setPollErr(err error) {
 
 func (h *health) mux(q *queue) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		b, _ := uiFS.ReadFile("ui.html")
+		w.Write(b)
+	})
+	mux.HandleFunc("GET /api/alerts", func(w http.ResponseWriter, r *http.Request) {
+		env := environMap(os.Environ())
+		alerts, err := loadAlertsFile(env)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err)
+			return
+		}
+		var locked []map[string]string
+		for _, b := range alertEnvBindings() {
+			if _, ok := env[b.name]; ok {
+				locked = append(locked, map[string]string{"key": b.key, "env": b.name})
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"alerts": alerts, "path": alertsPath(env), "locked": locked,
+			"vocabulary": h.db.Vocabulary(),
+		})
+	})
+	mux.HandleFunc("POST /api/preview", func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		var rule Rule
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&rule); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err)
+			return
+		}
+		// A negative or unparseable offset reads as the first page rather than as an
+		// error: it can only come from our own page, and showing the top of the list is
+		// a better answer than refusing to preview at all.
+		offset, err := strconv.Atoi(r.URL.Query().Get("offset"))
+		if err != nil || offset < 0 {
+			offset = 0
+		}
+		total, sample := h.db.Match(rule, previewLimit, offset)
+		rows, _ := h.db.Stats()
+		body := map[string]any{
+			"total": total, "aircraft": sample, "database": rows,
+			"limit": previewLimit, "offset": offset,
+		}
+		// Faceting scans the whole database once per pickable field, and the facets do
+		// not change as you page through a fixed rule. Only the first page pays for it.
+		if offset == 0 {
+			body["facets"] = h.db.Facets(rule)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(body)
+	})
+	mux.HandleFunc("PUT /api/alerts", func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		alerts := defaultAlerts()
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(alerts); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := alerts.validate(); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err)
+			return
+		}
+		blob, err := yaml.Marshal(alerts)
+		if err == nil {
+			blob = append([]byte("# Written by the sky-notify web UI. Hand edits are read back on the next reload.\n"), blob...)
+			err = writeFileDurable(alertsPath(environMap(os.Environ())), blob)
+		}
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		h.mu.Lock()
 		lastPoll, pollErr, aircraft := h.lastFreshPoll, h.lastPollErr, h.aircraft
@@ -483,6 +576,12 @@ func (h *health) mux(q *queue) http.Handler {
 		json.NewEncoder(w).Encode(body)
 	})
 	return mux
+}
+
+func writeJSONError(w http.ResponseWriter, status int, err error) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 }
 
 // probeSelf backs the container HEALTHCHECK: the distroless image has no shell, curl or

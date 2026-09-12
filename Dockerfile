@@ -7,7 +7,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 ARG TARGETOS TARGETARCH
-COPY *.go ./
+COPY *.go ui.html ./
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" -o /out/sky-notify .
 
