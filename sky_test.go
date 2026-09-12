@@ -261,11 +261,11 @@ func TestAlertsWaitForPositionAndDistance(t *testing.T) {
 	}
 }
 
-// The wildcard opt-in: every interesting aircraft, no fields to enumerate.
+// The wildcard is what a rule says by saying nothing: no conditions, every aircraft.
 func TestWildcardRule(t *testing.T) {
 	cfg := testConfig(t)
 	alerts := defaultAlerts()
-	alerts.Rules = []Rule{{Name: "everything interesting", All: true, Listed: boolp(true)}}
+	alerts.Rules = []Rule{{Name: "everything interesting", Listed: boolp(true)}}
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
 
 	if a := Evaluate(at(Aircraft{Hex: "adeb2f"}), db, alerts, nil); a == nil {
@@ -275,17 +275,23 @@ func TestWildcardRule(t *testing.T) {
 		t.Fatalf("listed: true still excludes unlisted aircraft, got %+v", a)
 	}
 
-	// all: true is a condition on its own; a rule with no conditions at all is not.
-	alerts.Rules = []Rule{{Name: "everything", All: true}}
+	alerts.Rules = []Rule{{Name: "everything"}}
 	if err := alerts.validate(); err != nil {
-		t.Fatalf("all: true should satisfy the condition requirement: %v", err)
+		t.Fatalf("a rule with no conditions is the wildcard, not an error: %v", err)
 	}
 	if a := Evaluate(at(Aircraft{Hex: "ffffff"}), db, alerts, nil); a == nil {
-		t.Fatal("a bare wildcard rule should match any aircraft")
+		t.Fatal("a rule with no conditions should match any aircraft")
 	}
-	alerts.Rules = []Rule{{Name: "nothing stated"}}
-	if err := alerts.validate(); err == nil {
-		t.Fatal("a rule with no conditions must still be rejected")
+	// An empty rules list stays silent: there is no rule to reach.
+	alerts.Rules = nil
+	if a := Evaluate(at(Aircraft{Hex: "ffffff"}), db, alerts, nil); a != nil {
+		t.Fatalf("no rules must alert on nothing, got %+v", a)
+	}
+	// all: true was the old spelling. It has to name its replacement, not read as a typo.
+	alerts.Rules = []Rule{{Name: "old wildcard", All: boolp(true)}}
+	err := alerts.validate()
+	if err == nil || !strings.Contains(err.Error(), "no conditions") {
+		t.Fatalf("all: true should be rejected with a migration note, got %v", err)
 	}
 }
 
@@ -981,7 +987,7 @@ func TestAlertsUIGetReadsSavedFileImmediately(t *testing.T) {
 
 func TestAlertsUIRejectsInvalidWithoutWriting(t *testing.T) {
 	for _, body := range []string{
-		`{"rules":[{"name":"empty","priority":2}]}`,
+		`{"rules":[{"name":"nameless"},{"name":"nameless"}]}`,
 		`{"ntfy":{"priority":9}}`,
 	} {
 		t.Run(body, func(t *testing.T) {
@@ -1467,7 +1473,7 @@ func TestRuleValidationNamesRule(t *testing.T) {
 	}{
 		{"missing name", "rules:\n  - listed: true\n"},
 		{"duplicate name", "rules:\n  - name: same\n    listed: true\n  - name: same\n    listed: false\n"},
-		{"no conditions", "rules:\n  - name: empty\n"},
+		{"the old all key", "rules:\n  - name: empty\n    all: true\n"},
 		{"distance without coordinates", "rules:\n  - name: distance\n    max_distance_nm: 3\n"},
 		{"inverted altitude", "rules:\n  - name: altitude\n    min_altitude_ft: 100\n    max_altitude_ft: 100\n"},
 		{"bad priority", "rules:\n  - name: priority\n    listed: true\n    priority: 9\n"},
@@ -2248,7 +2254,7 @@ func TestAlertsUISaveRejectsWhatTheEnvironmentBreaks(t *testing.T) {
 	t.Setenv("SKY_COOLDOWN", "0s")
 	h := alertsHandler(t, path)
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(`{"rules":[{"name":"x","all":true}]}`)))
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(`{"rules":[{"name":"x"}]}`)))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 for a payload the environment invalidates", w.Code)
 	}
@@ -2264,7 +2270,7 @@ func TestRuleWithoutPriorityRoundTripsAsUnset(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "alerts.yaml")
 	h := alertsHandler(t, path)
 	w := httptest.NewRecorder()
-	body := `{"ntfy":{"priority":2},"rules":[{"name":"inherits","all":true},{"name":"muted","all":true,"priority":0}]}`
+	body := `{"ntfy":{"priority":2},"rules":[{"name":"inherits"},{"name":"muted","priority":0}]}`
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(body)))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())

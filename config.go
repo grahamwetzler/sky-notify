@@ -71,19 +71,22 @@ func durationString(d Duration) string {
 }
 
 type Rule struct {
-	Name           string    `yaml:"name" json:"name"`
-	Priority       *int      `yaml:"priority,omitempty" json:"priority,omitempty"`
-	ICAO           []string  `yaml:"icao,omitempty" json:"icao,omitempty"`
-	Reg            []string  `yaml:"reg,omitempty" json:"reg,omitempty"`
-	ICAOType       []string  `yaml:"icao_type,omitempty" json:"icao_type,omitempty"`
-	Squawk         []string  `yaml:"squawk,omitempty" json:"squawk,omitempty"`
-	Operator       []string  `yaml:"operator,omitempty" json:"operator,omitempty"`
-	Type           []string  `yaml:"type,omitempty" json:"type,omitempty"`
-	CMPG           []string  `yaml:"cmpg,omitempty" json:"cmpg,omitempty"`
-	Category       []string  `yaml:"category,omitempty" json:"category,omitempty"`
-	Tags           []string  `yaml:"tags,omitempty" json:"tags,omitempty"`
-	Listed         *bool     `yaml:"listed,omitempty" json:"listed,omitempty"`
-	All            bool      `yaml:"all,omitempty" json:"all,omitempty"`
+	Name     string   `yaml:"name" json:"name"`
+	Priority *int     `yaml:"priority,omitempty" json:"priority,omitempty"`
+	ICAO     []string `yaml:"icao,omitempty" json:"icao,omitempty"`
+	Reg      []string `yaml:"reg,omitempty" json:"reg,omitempty"`
+	ICAOType []string `yaml:"icao_type,omitempty" json:"icao_type,omitempty"`
+	Squawk   []string `yaml:"squawk,omitempty" json:"squawk,omitempty"`
+	Operator []string `yaml:"operator,omitempty" json:"operator,omitempty"`
+	Type     []string `yaml:"type,omitempty" json:"type,omitempty"`
+	CMPG     []string `yaml:"cmpg,omitempty" json:"cmpg,omitempty"`
+	Category []string `yaml:"category,omitempty" json:"category,omitempty"`
+	Tags     []string `yaml:"tags,omitempty" json:"tags,omitempty"`
+	Listed   *bool    `yaml:"listed,omitempty" json:"listed,omitempty"`
+	// All is gone: a rule with no conditions already matches every aircraft. It survives
+	// only to say so, since KnownFields would otherwise report it as a typo. json:"-" so
+	// a UI save cannot resurrect it.
+	All            *bool     `yaml:"all,omitempty" json:"-"`
 	MinAltitudeFt  *int      `yaml:"min_altitude_ft,omitempty" json:"min_altitude_ft,omitempty"`
 	MaxAltitudeFt  *int      `yaml:"max_altitude_ft,omitempty" json:"max_altitude_ft,omitempty"`
 	MaxDistanceNM  *float64  `yaml:"max_distance_nm,omitempty" json:"max_distance_nm,omitempty"`
@@ -607,11 +610,11 @@ func (a *Alerts) validate() error {
 		if rule.Priority != nil && (*rule.Priority < 0 || *rule.Priority > 5) {
 			return fmt.Errorf("rule %d (%q): priority must be 0..5, got %d", i, rule.Name, *rule.Priority)
 		}
-		if len(rule.ICAO)+len(rule.Reg)+len(rule.ICAOType)+len(rule.Squawk)+len(rule.Operator)+len(rule.Type)+len(rule.CMPG)+len(rule.Category)+len(rule.Tags) == 0 && !rule.All && rule.Listed == nil && rule.MinAltitudeFt == nil && rule.MaxAltitudeFt == nil && rule.MaxDistanceNM == nil && rule.Circling == nil && rule.PassesWithinNM == nil {
-			return fmt.Errorf("rule %d (%q): at least one condition is required", i, rule.Name)
+		if rule.All != nil {
+			return fmt.Errorf("rule %d (%q): all is no longer a key — a rule with no conditions already matches every aircraft, so delete it", i, rule.Name)
 		}
 		if (rule.MinAltitudeFt != nil && *rule.MinAltitudeFt < 0) || (rule.MaxAltitudeFt != nil && *rule.MaxAltitudeFt < 0) {
-			return fmt.Errorf("rule %d (%q): altitude limits must not be negative", i, rule.Name)
+			return fmt.Errorf("rule %d (%q): altitudes must not be negative", i, rule.Name)
 		}
 		if rule.MinAltitudeFt != nil && rule.MaxAltitudeFt != nil && *rule.MaxAltitudeFt <= *rule.MinAltitudeFt {
 			return fmt.Errorf("rule %d (%q): max_altitude_ft must exceed min_altitude_ft", i, rule.Name)
