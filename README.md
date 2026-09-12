@@ -126,22 +126,33 @@ silent fallback to the default. `SKY_` is this service's namespace, and
 
 ### Alert settings web UI
 
-Browse to the configured listen address to edit every setting in `alerts.yaml`. Rules are
-built from the database's own vocabulary rather than typed, and each rule previews what it
-selects — a typo'd tag is otherwise silent, matching nothing and losing every alert the
-rule was meant to catch.
+Browse to the configured listen address to edit every setting in `alerts.yaml`. The rule
+list is the page: each rule reads back as a sentence — "Police aircraft, within 15 NM of
+the receiver" — beside a figure for how much of the database it selects, so the set can be
+audited by reading down it rather than by reading the YAML. Rules below a wildcard are
+struck through as unreachable. Selecting one opens it; conditions are grouped by the
+question they ask (which aircraft it is, where it is right now, how it is flying) and are
+built from the database's own vocabulary rather than typed. A typo'd tag is otherwise
+silent, matching nothing and losing every alert the rule was meant to catch.
 
 The preview searches the database, so it answers which aircraft a rule *can* select, not
-which would alert this second. The altitude, distance and flight path conditions describe
-where an aircraft is right now, and `squawk` comes off the live feed; no database row can
-answer any of them, so they do not narrow the count — the page says so on each condition
-that behaves this way. `squawk` offers the three emergency codes as quick selects, and
-takes any other code typed in.
+which would alert this second — and a figure is only shown where a database row could both
+narrow the rule and satisfy it. A rule stating nothing but `squawk` would otherwise read as
+the whole database, and a `listed: false` rule as zero, so both read `—` with the reason
+instead. The altitude, distance and flight path conditions describe where an aircraft is
+right now, and `squawk` comes off the live feed; no database row can answer any of them, so
+the page names them under the figure as not counted. `squawk` offers the three emergency
+codes as quick selects, and takes any other code typed in.
 
-`reg`, `icao` and `icao_type` accept any value, whether or not the database has it —
-`reg` and `icao_type` are matched against the database *and* the live feed, so a type code
-no listed aircraft carries still alerts the moment one broadcasts it. The page suggests
-what the database holds and marks a value it does not, but never refuses one.
+`reg`, `icao` and `icao_type` accept any value, whether or not the database has it — all
+three are matched against the database *and* the live feed, so a type code no listed
+aircraft carries still alerts the moment one broadcasts it. The page suggests what the
+database holds and marks a value it does not, but never refuses one.
+
+Conditions that would be rejected on save say so where they are built: a distance with no
+receiver `lat`/`lon`, a `circling` rule with `source.poll_interval` above 30s, a maximum
+altitude below the minimum. Fields an environment variable has claimed are disabled and
+name the variable. The page follows the browser's light or dark setting and has a toggle.
 
 The file remains authoritative, hand edits still work, and environment variables still win
 over it. Saved changes are picked up within the next 5-second reload tick. Comments do not
