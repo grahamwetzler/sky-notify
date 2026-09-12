@@ -189,7 +189,7 @@ const conditions = [
   {key: 'position', label: 'Altitude and distance', live: 'Describes where the aircraft is, not which aircraft it is',
    keys: ['min_altitude_ft', 'max_altitude_ft', 'max_distance_nm'],
    hint: 'Where the aircraft is right now. Each fails closed: an aircraft whose feed cannot '
-     + 'answer one does not match, so Mode-S-only traffic never satisfies a distance.',
+     + 'answer one does not match, rather than matching on a zero.',
    fields: [
      {key: 'min_altitude_ft', label: 'Lowest altitude (ft)', type: 'number', min: 0},
      {key: 'max_altitude_ft', label: 'Highest altitude (ft)', type: 'number', min: 0},
@@ -606,6 +606,7 @@ function matchRow(p) {
 // on screen stay put, so paging through a long list never looks like a fresh result.
 async function preview(el, offset = 0) {
   const rule = readRule(el);
+  drawWildcard(el);
   const box = el.querySelector('.preview');
   const count = box.querySelector('.preview-count');
   const list = box.querySelector('.matches');
@@ -680,8 +681,18 @@ function refreshAddCond(rule) {
   select.replaceChildren(option('', 'Add a condition…'),
     ...conditions.filter(c => !used.has(c.key)).map(c => option(c.key, c.label)));
   rule.querySelector('.addcond').hidden = select.options.length < 2;
-  const none = rule.querySelector('.nocond');
-  if (none) none.hidden = used.size > 0;
+  drawWildcard(rule);
+}
+
+// The wildcard note has to describe what will be saved, not what is on screen. A
+// condition row left empty contributes nothing to readRule, so a rule of blank rows saves
+// as the wildcard — and the one warning that would have said so used to hide itself the
+// moment a row appeared. Reading the payload is what keeps the two from disagreeing.
+function drawWildcard(el) {
+  const none = el.querySelector('.nocond');
+  if (!none) return;
+  const stated = Object.keys(readRule(el)).filter(k => k !== 'name' && k !== 'priority');
+  none.hidden = stated.length > 0;
 }
 
 
@@ -712,7 +723,8 @@ function ruleRow(rule = {}) {
   conds.className = 'conds';
   const none = document.createElement('p');
   none.className = 'hint nocond';
-  none.textContent = 'No conditions — this rule matches every aircraft. Add one to narrow it.';
+  none.textContent = 'No conditions stated — this rule matches every aircraft, so no rule '
+    + 'below it is ever reached. Fill one in to narrow it.';
   conds.append(none);
   const stated = k => rule[k] !== undefined && rule[k] !== null && (!Array.isArray(rule[k]) || rule[k].length > 0);
   for (const c of conditions) {
