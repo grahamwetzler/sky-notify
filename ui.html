@@ -79,9 +79,8 @@ button.link{background:none;color:var(--link);border:0;padding:.15rem;text-decor
 .boxes.quick{margin-bottom:.5rem}
 .live-note{font-style:italic}
 .matches .more{display:block;width:calc(100% - 1.2rem);margin:.6rem}
-.limits{margin:1rem 0 0;border-top:1px solid var(--border-soft);padding-top:.25rem}
-.limits summary{font-weight:500;font-size:.95rem}
-.limits .grid{margin-top:.5rem}
+.cond .grid{margin-top:.5rem}
+.cond .grid label{margin:.5rem 0}
 .rule-foot{margin-top:1rem;display:flex;justify-content:flex-end}
 .empty{color:var(--muted);font-style:italic;margin:0 0 1rem}
 /* Messaging + actions */
@@ -107,7 +106,8 @@ summary{cursor:pointer;font-weight:600;padding:.5rem 0}
 <h2>Rules — which aircraft alert you</h2>
 <p class="hint">Nothing alerts unless a rule matches it — emergency squawks included. An aircraft
 must match <strong>every</strong> condition in a rule, and the first rule that matches wins, so put
-a narrow exception above the broad rule it carves out of. Registrations and type codes are read
+a narrow exception above the broad rule it carves out of. A rule with no conditions is the
+wildcard — it matches everything, so it belongs last. Registrations and type codes are read
 from both the database and the live feed, so you can enter any tail number.</p>
 <div id="rules"></div>
 <button type="button" class="secondary" id="add">Add rule</button>
@@ -115,8 +115,8 @@ from both the database and the live feed, so you can enter any tail number.</p>
 
 <section>
 <h2>Receiver location</h2>
-<p class="hint">Needed by any rule that limits distance or predicts a pass overhead. Leave both
-blank if no rule uses one.</p>
+<p class="hint">Needed by any rule with a distance from the receiver or a predicted pass
+overhead. Leave both blank if no rule uses one.</p>
 <div class="grid">
 <label>Receiver latitude<input id="lat" type="number" min="-90" max="90" step="any"></label>
 <label>Receiver longitude<input id="lon" type="number" min="-180" max="180" step="any"></label>
@@ -161,8 +161,13 @@ const priorities = [[0, '0 — muted'], [1, '1 — lowest'], [2, '2 — low'], [
 // today's default into the rule would freeze it there the next time that default moves.
 const inheritPriority = '';
 
-// The rule match fields, in the order they are offered. `options` means a fixed
-// checkbox set; `free` means there is no database vocabulary to suggest from.
+// The rule conditions, in the order they are offered. Every one is an optional filter
+// on the same footing: leave them all off and the rule matches every aircraft.
+//
+// A condition either collects values (`options` means a fixed checkbox set, `free` means
+// there is no database vocabulary to suggest from) or holds a small set of `fields`.
+// `live` marks one the database cannot answer, so the preview ignores it; a string
+// replaces the note that says why.
 const conditions = [
   {key: 'cmpg', label: 'Operator type', hint: 'Who operates the aircraft, as the database classifies it.',
    options: [['Civ', 'Civilian'], ['Gov', 'Government'], ['Mil', 'Military'], ['Pol', 'Police']]},
@@ -177,8 +182,35 @@ const conditions = [
   {key: 'icao', label: 'ICAO hex address', hint: 'The 24-bit address, e.g. adfdf8. Type one and press Enter.', free: true},
   {key: 'squawk', label: 'Squawk', hint: 'The transponder code the aircraft is broadcasting.', free: true, live: true,
    quick: [['7700', 'General emergency (7700)'], ['7600', 'Radio failure (7600)'], ['7500', 'Hijack (7500)']]},
+  {key: 'listed', label: 'In the aircraft database',
+   hint: 'Whether plane-alert-db knows the aircraft at all. Everything above describes a '
+     + 'listed aircraft, so this is only worth stating on its own.',
+   fields: [{key: 'listed', options: [['', 'Either'], ['true', 'Only listed aircraft'], ['false', 'Only unlisted aircraft']]}]},
+  {key: 'position', label: 'Altitude and distance', live: 'Describes where the aircraft is, not which aircraft it is',
+   keys: ['min_altitude_ft', 'max_altitude_ft', 'max_distance_nm'],
+   hint: 'Where the aircraft is right now. Each fails closed: an aircraft whose feed cannot '
+     + 'answer one does not match, so Mode-S-only traffic never satisfies a distance.',
+   fields: [
+     {key: 'min_altitude_ft', label: 'Lowest altitude (ft)', type: 'number', min: 0},
+     {key: 'max_altitude_ft', label: 'Highest altitude (ft)', type: 'number', min: 0},
+     {key: 'max_distance_nm', label: 'Within this distance of the receiver (NM)', type: 'number', min: 0, step: 'any'},
+   ]},
+  {key: 'flight_path', label: 'Flight path', live: 'Describes how the aircraft is flying, not which aircraft it is',
+   keys: ['circling', 'passes_within_nm', 'passes_within'],
+   hint: 'How the aircraft is flying. Circling is a full turn inside 2 NM in the last 10 '
+     + 'minutes — how news and police helicopters fly. The prediction runs the current ground '
+     + 'track and speed forward from the receiver’s position.',
+   fields: [
+     {key: 'circling', label: 'Circling', options: [['', 'Either'], ['true', 'Only while circling'], ['false', 'Only while not circling']]},
+     {key: 'passes_within_nm', label: 'Predicted to pass within (NM)', type: 'number', min: 0, step: 'any'},
+     {key: 'passes_within', label: '…within this long', type: 'text', placeholder: '5m'},
+   ]},
 ];
+// Most conditions are one key; the grouped ones name theirs.
+for (const c of conditions) c.keys = c.keys || [c.key];
 const byKey = Object.fromEntries(conditions.map(c => [c.key, c]));
+// A rule with none of these can still match an aircraft no database row describes.
+const databaseOnly = ['cmpg', 'category', 'tags', 'operator', 'type'];
 
 let data, locks = {}, vocab = {};
 
@@ -196,14 +228,13 @@ function lock(el, key) {
   el.parentNode.append(note);
 }
 
-// One condition row: a set of chips plus a way to add another value. Values are held
-// on the row itself so reading a rule back never has to parse what is on screen.
-function condRow(key, values) {
+// One condition row: its heading, its hint, and whatever it collects. Every condition
+// is optional and removable, and a rule left with none matches every aircraft.
+function condRow(key, rule) {
   const spec = byKey[key];
   const row = document.createElement('div');
   row.className = 'cond';
   row.dataset.key = key;
-  row.values = [...values];
 
   const head = document.createElement('div');
   head.className = 'cond-head';
@@ -214,22 +245,54 @@ function condRow(key, values) {
   drop.type = 'button';
   drop.className = 'link';
   drop.textContent = 'Remove condition';
-  drop.onclick = () => { const rule = row.closest('.rule'); row.remove(); refreshAddCond(rule); schedulePreview(rule); };
+  drop.onclick = () => { const r = row.closest('.rule'); row.remove(); refreshAddCond(r); schedulePreview(r); };
   head.append(label, drop);
 
   const hint = document.createElement('p');
   hint.className = 'hint';
   hint.textContent = spec.hint;
   row.append(head, hint);
-  // A condition read from the live feed has nothing to match in the database, so the
-  // preview below cannot answer it. Saying that here is the difference between a rule
-  // that looks broken and one you can see is simply not previewable.
+  // A condition the database cannot answer — a live-feed field, or where an aircraft is
+  // right now — leaves the preview below untouched. Saying that here is the difference
+  // between a rule that looks broken and one you can see is simply not previewable.
   if (spec.live) {
     const note = document.createElement('p');
     note.className = 'hint live-note';
-    note.textContent = 'Comes from the live feed, not the database, so it does not change the preview below.';
+    note.textContent = (typeof spec.live === 'string' ? spec.live : 'Comes from the live feed, not the database')
+      + ', so it does not change the preview below.';
     row.append(note);
   }
+
+  // Blank means "not stated": these are pointers in the config, so leaving one out is
+  // the difference between "no maximum" and "a maximum of zero".
+  if (spec.fields) {
+    const grid = document.createElement('div');
+    grid.className = 'grid';
+    for (const f of spec.fields) {
+      const wrap = document.createElement('label');
+      const el = document.createElement(f.options ? 'select' : 'input');
+      el.dataset.key = f.key;
+      if (f.options) {
+        el.append(...f.options.map(([v, t]) => option(v, t)));
+        el.value = rule[f.key] === undefined || rule[f.key] === null ? '' : String(rule[f.key]);
+      } else {
+        el.type = f.type;
+        if (f.min !== undefined) el.min = f.min;
+        if (f.step) el.step = f.step;
+        if (f.placeholder) el.placeholder = f.placeholder;
+        el.value = rule[f.key] ?? '';
+      }
+      el.onchange = () => schedulePreview(row.closest('.rule'));
+      if (f.label) wrap.append(document.createTextNode(f.label));
+      wrap.append(el);
+      grid.append(wrap);
+    }
+    row.append(grid);
+    return row;
+  }
+
+  // Values are held on the row itself so reading a rule back never has to parse the DOM.
+  row.values = [...(rule[key] || [])];
 
   if (spec.options) {
     const boxes = document.createElement('div');
@@ -503,15 +566,17 @@ function readRule(el) {
   const priority = el.querySelector('.rule-priority').value;
   if (priority !== inheritPriority) rule.priority = Number(priority);
   for (const cond of el.querySelectorAll('.cond')) {
-    if (cond.values.length) rule[cond.dataset.key] = cond.values;
+    if (cond.values) {
+      if (cond.values.length) rule[cond.dataset.key] = cond.values;
+      continue;
+    }
+    for (const field of cond.querySelectorAll('[data-key]')) {
+      const v = field.value.trim();
+      if (v === '') continue;
+      if (field.tagName === 'SELECT') rule[field.dataset.key] = v === 'true';
+      else rule[field.dataset.key] = field.type === 'number' ? Number(v) : v;
+    }
   }
-  for (const input of el.querySelectorAll('.limit')) {
-    const v = input.value.trim();
-    if (v === '') continue;
-    if (input.tagName === 'SELECT') rule[input.dataset.key] = v === 'true';
-    else rule[input.dataset.key] = input.type === 'number' ? Number(v) : v;
-  }
-  if (el.querySelector('.rule-all')?.checked) rule.all = true;
   return rule;
 }
 
@@ -560,11 +625,11 @@ async function preview(el, offset = 0) {
       el.facets = x.facets;
       for (const cond of el.querySelectorAll('.cond')) cond.refresh?.();
     }
-    // The preview can only search the database. A rule keyed on what the live feed
-    // carries — a tail number, a type code, a squawk — or one that deliberately selects
-    // unlisted aircraft, still matches plenty that no database row can stand in for.
-    const canMatchFeed = Boolean(rule.reg?.length || rule.icao_type?.length
-      || rule.squawk?.length || rule.all || rule.listed === false);
+    // The preview can only search the database. Unless a rule states a condition only a
+    // database row carries, it still matches plenty of aircraft no row can stand in for:
+    // one keyed on a tail number, a hex, a type code or a squawk, one that deliberately
+    // selects unlisted aircraft, and the wildcard that states nothing at all.
+    const canMatchFeed = rule.listed !== true && !databaseOnly.some(k => rule[k]?.length);
     const shown = offset + x.aircraft.length;
     count.classList.toggle('none', x.total === 0 && !canMatchFeed);
     count.textContent = x.total === 0
@@ -612,77 +677,6 @@ function refreshAddCond(rule) {
   if (none) none.hidden = used.size > 0;
 }
 
-// Per-rule limits. These ask where an aircraft is right now rather than who it is, so
-// they are not part of the database preview below. Each fails closed: a rule that states
-// a limit skips an aircraft whose data cannot answer it.
-const limitFields = [
-  {key: 'min_altitude_ft', label: 'Lowest altitude (ft)', type: 'number', min: 0},
-  {key: 'max_altitude_ft', label: 'Highest altitude (ft)', type: 'number', min: 0},
-  {key: 'max_distance_nm', label: 'Within this distance of the receiver (NM)', type: 'number', min: 0, step: 'any'},
-  {key: 'passes_within_nm', label: 'Predicted to pass within (NM)', type: 'number', min: 0, step: 'any'},
-  {key: 'passes_within', label: '…within this long', type: 'text', placeholder: '5m'},
-];
-const choiceFields = [
-  {key: 'listed', label: 'In the aircraft database',
-   options: [['', 'Either'], ['true', 'Only listed aircraft'], ['false', 'Only unlisted aircraft']]},
-  {key: 'circling', label: 'Circling',
-   options: [['', 'Either'], ['true', 'Only while circling'], ['false', 'Only while not circling']]},
-];
-
-// Blank means "no limit": the field is a pointer in the config, so omitting it is the
-// difference between "no maximum" and "a maximum of zero".
-function limitsBlock(rule) {
-  const box = document.createElement('details');
-  box.className = 'limits';
-  const sum = document.createElement('summary');
-  const set = [...limitFields, ...choiceFields].filter(f => rule[f.key] !== undefined && rule[f.key] !== null).length;
-  sum.textContent = set ? `Limits and scope (${set} set)` : 'Limits and scope';
-  box.open = set > 0;
-  const hint = document.createElement('p');
-  hint.className = 'hint';
-  hint.textContent = 'Optional. Leave blank for no limit. These describe where an aircraft is, '
-    + 'not which aircraft it is, so they do not change the preview above.';
-  const grid = document.createElement('div');
-  grid.className = 'grid';
-  for (const f of limitFields) {
-    const label = document.createElement('label');
-    const input = document.createElement('input');
-    input.type = f.type;
-    input.className = 'limit';
-    input.dataset.key = f.key;
-    if (f.min !== undefined) input.min = f.min;
-    if (f.step) input.step = f.step;
-    if (f.placeholder) input.placeholder = f.placeholder;
-    input.value = rule[f.key] ?? '';
-    label.append(document.createTextNode(f.label), input);
-    grid.append(label);
-  }
-  for (const f of choiceFields) {
-    const label = document.createElement('label');
-    const select = document.createElement('select');
-    select.className = 'limit';
-    select.dataset.key = f.key;
-    select.append(...f.options.map(([v, t]) => option(v, t)));
-    select.value = rule[f.key] === undefined || rule[f.key] === null ? '' : String(rule[f.key]);
-    select.onchange = () => schedulePreview(select.closest('.rule'));
-    label.append(document.createTextNode(f.label), select);
-    grid.append(label);
-  }
-  const all = document.createElement('label');
-  all.className = 'check';
-  const box2 = document.createElement('input');
-  box2.type = 'checkbox';
-  box2.className = 'rule-all';
-  box2.checked = Boolean(rule.all);
-  box2.onchange = () => schedulePreview(box2.closest('.rule'));
-  all.append(box2, document.createTextNode(' Match every aircraft'));
-  const allHint = document.createElement('p');
-  allHint.className = 'hint';
-  allHint.textContent = 'A rule needs at least one condition. Tick this to say "everything" on '
-    + 'purpose, rather than by forgetting to add one.';
-  box.append(sum, hint, grid, all, allHint);
-  return box;
-}
 
 function ruleRow(rule = {}) {
   const el = document.createElement('div');
@@ -711,10 +705,11 @@ function ruleRow(rule = {}) {
   conds.className = 'conds';
   const none = document.createElement('p');
   none.className = 'hint nocond';
-  none.textContent = 'No conditions yet — this rule matches nothing until you add one, or tick “Match every aircraft” below.';
+  none.textContent = 'No conditions — this rule matches every aircraft. Add one to narrow it.';
   conds.append(none);
+  const stated = k => rule[k] !== undefined && rule[k] !== null && (!Array.isArray(rule[k]) || rule[k].length > 0);
   for (const c of conditions) {
-    if (rule[c.key]?.length) conds.append(condRow(c.key, rule[c.key]));
+    if (c.keys.some(stated)) conds.append(condRow(c.key, rule));
   }
 
   const add = document.createElement('div');
@@ -722,7 +717,7 @@ function ruleRow(rule = {}) {
   const select = document.createElement('select');
   select.onchange = () => {
     if (!select.value) return;
-    conds.append(condRow(select.value, []));
+    conds.append(condRow(select.value, {}));
     refreshAddCond(el);
     select.value = '';
     schedulePreview(el);
@@ -768,7 +763,7 @@ function ruleRow(rule = {}) {
   remove.onclick = () => { el.remove(); drawEmpty(); };
   foot.append(remove);
 
-  el.append(head, conds, add, box, limitsBlock(rule), foot);
+  el.append(head, conds, add, box, foot);
   $('rules').append(el);
   refreshAddCond(el);
   drawEmpty();
