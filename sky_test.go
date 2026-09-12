@@ -1471,7 +1471,6 @@ func TestRuleValidationNamesRule(t *testing.T) {
 	for _, tc := range []struct {
 		name, yaml string
 	}{
-		{"missing name", "rules:\n  - listed: true\n"},
 		{"duplicate name", "rules:\n  - name: same\n    listed: true\n  - name: same\n    listed: false\n"},
 		{"the old all key", "rules:\n  - name: empty\n    all: true\n"},
 		{"distance without coordinates", "rules:\n  - name: distance\n    max_distance_nm: 3\n"},
@@ -1491,6 +1490,59 @@ func TestRuleValidationNamesRule(t *testing.T) {
 	// Motion keys are conditions in their own right.
 	if _, err := loadAlertsWith(t, "rules:\n  - name: orbit\n    circling: true\n"); err != nil {
 		t.Errorf("circling alone should be a valid rule: %v", err)
+	}
+}
+
+// A name is a label, not a requirement: it never reaches a notification, only the
+// cooldown ledger and the logs, and a rule's conditions already say what it is.
+func TestRuleNamesAreOptional(t *testing.T) {
+	cfg, err := loadAlertsWith(t, "rules:\n  - listed: true\n  - cmpg: [Mil]\n")
+	if err != nil {
+		t.Fatalf("a rule without a name must be valid: %v", err)
+	}
+	a, b := cfg.Rules[0].Key(), cfg.Rules[1].Key()
+	if a == "" || b == "" {
+		t.Fatalf("unnamed rules need keys, got %q and %q", a, b)
+	}
+	if a == b {
+		t.Fatalf("rules with different conditions must key apart, both %q", a)
+	}
+
+	// The key is the cooldown key, so what does and does not move it is the whole point:
+	// position and priority must not, and a changed condition must.
+	same, err := loadAlertsWith(t, "rules:\n  - cmpg: [Mil]\n    priority: 5\n  - listed: true\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := same.Rules[0].Key(); got != b {
+		t.Errorf("reordering or repriotising a rule must not change its key: %q, want %q", got, b)
+	}
+	edited, err := loadAlertsWith(t, "rules:\n  - cmpg: [Pol]\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := edited.Rules[0].Key(); got == b {
+		t.Errorf("editing a rule's conditions must change its key, still %q", got)
+	}
+
+	// A named rule keys on its name, and that is what the alert carries.
+	named, err := loadAlertsWith(t, "rules:\n  - name: listed\n    listed: true\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := named.Rules[0].Key(); got != "listed" {
+		t.Errorf("a named rule keys on its name, got %q", got)
+	}
+
+	db := dbWith(t, testConfig(t), mustParse(t, sampleCSV))
+	alerts := defaultAlerts()
+	alerts.Rules = []Rule{{Listed: boolp(true)}}
+	alert := Evaluate(at(Aircraft{Hex: "adeb2f"}), db, alerts, nil)
+	if alert == nil {
+		t.Fatal("an unnamed rule must still alert")
+	}
+	if alert.Trigger != alerts.Rules[0].Key() {
+		t.Errorf("trigger = %q, want the rule key %q", alert.Trigger, alerts.Rules[0].Key())
 	}
 }
 

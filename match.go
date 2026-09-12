@@ -76,10 +76,10 @@ func Evaluate(ac Aircraft, db *DB, cfg *Alerts, trk *track) *Alert {
 		priority = *rule.Priority
 	}
 	if priority == 0 {
-		slog.Debug("rule matched but muted", "rule", rule.Name, "icao", hex)
+		slog.Debug("rule matched but muted", "rule", rule.Key(), "icao", hex)
 		return nil
 	}
-	a.Trigger, a.Priority = rule.Name, priority
+	a.Trigger, a.Priority = rule.Key(), priority
 	// Derived from the squawk itself, never from which rule fired: the queue's eviction
 	// and ordering (main.go) and the notification's framing (notify.go) must treat a 7700
 	// as urgent however the operator happened to write the rule that caught it.

@@ -15,10 +15,15 @@ cooldown: 24h
 lat: 51.5007
 lon: -0.1246
 
-# Every rule is one thing you asked to hear about. Names must be unique: the name is the
-# cooldown key, so two rules matching one aircraft stay quiet independently of each other.
-# Conditions within a rule are ANDed; values within one field are ORed. First match wins.
-# Every condition is optional: a rule that states none matches every aircraft.
+# Every rule is one thing you asked to hear about. Conditions within a rule are ANDed;
+# values within one field are ORed. First match wins. Every condition is optional: a rule
+# that states none matches every aircraft.
+#
+# `name` is optional too. It never reaches the notification — it is the cooldown key and
+# the log label, so set it on a rule you want to recognise in the log and leave it off one
+# whose conditions already say what it is. An unnamed rule is keyed by a fingerprint of its
+# conditions instead. Names that are set must be unique, or two rules would silence each
+# other.
 rules:
   - name: Emergency squawks
     squawk: ["7500", "7600", "7700"]
@@ -33,9 +38,9 @@ rules:
     max_altitude_ft: 2000
     max_distance_nm: 3
 
-  # Predicted from current ground track and speed: will come within 1 NM in the next 5 minutes.
-  - name: Overflights
-    passes_within_nm: 1
+  # Predicted from current ground track and speed: will come within 1 NM in the next 5
+  # minutes. No name: the conditions are the description.
+  - passes_within_nm: 1
     passes_within: 5m      # the default
     max_altitude_ft: 10000
 

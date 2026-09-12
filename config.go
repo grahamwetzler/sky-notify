@@ -71,7 +71,7 @@ func durationString(d Duration) string {
 }
 
 type Rule struct {
-	Name     string   `yaml:"name" json:"name"`
+	Name     string   `yaml:"name,omitempty" json:"name"`
 	Priority *int     `yaml:"priority,omitempty" json:"priority,omitempty"`
 	ICAO     []string `yaml:"icao,omitempty" json:"icao,omitempty"`
 	Reg      []string `yaml:"reg,omitempty" json:"reg,omitempty"`
@@ -93,6 +93,40 @@ type Rule struct {
 	Circling       *bool     `yaml:"circling,omitempty" json:"circling,omitempty"`
 	PassesWithinNM *float64  `yaml:"passes_within_nm,omitempty" json:"passes_within_nm,omitempty"`
 	PassesWithin   *Duration `yaml:"passes_within,omitempty" json:"passes_within,omitempty"`
+}
+
+// Key is what the cooldown ledger and the logs call this rule. A name is optional: it
+// never reaches a notification, so requiring one only made the operator invent labels for
+// rules whose conditions already say what they are.
+//
+// An unnamed rule is keyed by a fingerprint of its own conditions rather than by its
+// position, so reordering the list leaves its cooldowns alone — and editing what it
+// matches resets them, which is right, since the ledger's entries were recorded for a
+// rule that no longer exists. Name and priority are excluded: neither changes which
+// aircraft the rule claims.
+func (r *Rule) Key() string {
+	if r.Name != "" {
+		return r.Name
+	}
+	conds := *r
+	conds.Name, conds.Priority, conds.All = "", nil, nil
+	blob, err := yaml.Marshal(conds)
+	if err != nil {
+		// A struct of scalars and string slices cannot fail to marshal, but a key that
+		// silently collapsed to one value for every rule would merge their cooldowns.
+		panic("rule fingerprint: " + err.Error())
+	}
+	sum := sha256.Sum256(blob)
+	return fmt.Sprintf("#%x", sum[:4])
+}
+
+// label names a rule in an error message. An unnamed one is identified the way the log
+// and the ledger will identify it, so a validation error points at something findable.
+func (r *Rule) label() string {
+	if r.Name != "" {
+		return strconv.Quote(r.Name)
+	}
+	return "unnamed, " + r.Key()
 }
 
 type Config struct {
@@ -598,26 +632,27 @@ func (a *Alerts) validate() error {
 	if a.Ntfy.Priority < 1 || a.Ntfy.Priority > 5 {
 		return fmt.Errorf("ntfy.priority must be 1..5, got %d", a.Ntfy.Priority)
 	}
+	// Names are optional, but a name that repeats is a bug worth failing on: the name is
+	// the cooldown key, so two rules sharing one would silence each other.
 	seen := map[string]bool{}
 	for i, rule := range a.Rules {
-		if rule.Name == "" {
-			return fmt.Errorf("rule %d (%q): name is required", i, rule.Name)
+		if rule.Name != "" {
+			if seen[rule.Name] {
+				return fmt.Errorf("rule %d (%q): name must be unique", i, rule.Name)
+			}
+			seen[rule.Name] = true
 		}
-		if seen[rule.Name] {
-			return fmt.Errorf("rule %d (%q): name must be unique", i, rule.Name)
-		}
-		seen[rule.Name] = true
 		if rule.Priority != nil && (*rule.Priority < 0 || *rule.Priority > 5) {
-			return fmt.Errorf("rule %d (%q): priority must be 0..5, got %d", i, rule.Name, *rule.Priority)
+			return fmt.Errorf("rule %d (%s): priority must be 0..5, got %d", i, rule.label(), *rule.Priority)
 		}
 		if rule.All != nil {
-			return fmt.Errorf("rule %d (%q): all is no longer a key — a rule with no conditions already matches every aircraft, so delete it", i, rule.Name)
+			return fmt.Errorf("rule %d (%s): all is no longer a key — a rule with no conditions already matches every aircraft, so delete it", i, rule.label())
 		}
 		if (rule.MinAltitudeFt != nil && *rule.MinAltitudeFt < 0) || (rule.MaxAltitudeFt != nil && *rule.MaxAltitudeFt < 0) {
-			return fmt.Errorf("rule %d (%q): altitudes must not be negative", i, rule.Name)
+			return fmt.Errorf("rule %d (%s): altitudes must not be negative", i, rule.label())
 		}
 		if rule.MinAltitudeFt != nil && rule.MaxAltitudeFt != nil && *rule.MaxAltitudeFt <= *rule.MinAltitudeFt {
-			return fmt.Errorf("rule %d (%q): max_altitude_ft must exceed min_altitude_ft", i, rule.Name)
+			return fmt.Errorf("rule %d (%s): max_altitude_ft must exceed min_altitude_ft", i, rule.label())
 		}
 		for _, lim := range []struct {
 			name string
@@ -627,25 +662,25 @@ func (a *Alerts) validate() error {
 				continue
 			}
 			if math.IsNaN(*lim.val) || math.IsInf(*lim.val, 0) || *lim.val <= 0 {
-				return fmt.Errorf("rule %d (%q): %s must be a finite number > 0", i, rule.Name, lim.name)
+				return fmt.Errorf("rule %d (%s): %s must be a finite number > 0", i, rule.label(), lim.name)
 			}
 			if a.Lat == nil || a.Lon == nil {
-				return fmt.Errorf("rule %d (%q): %s requires top-level lat and lon in alerts.yaml", i, rule.Name, lim.name)
+				return fmt.Errorf("rule %d (%s): %s requires top-level lat and lon in alerts.yaml", i, rule.label(), lim.name)
 			}
 		}
 		if rule.PassesWithin != nil {
 			if rule.PassesWithinNM == nil {
-				return fmt.Errorf("rule %d (%q): passes_within requires passes_within_nm", i, rule.Name)
+				return fmt.Errorf("rule %d (%s): passes_within requires passes_within_nm", i, rule.label())
 			}
 			if rule.PassesWithin.Std() <= 0 {
-				return fmt.Errorf("rule %d (%q): passes_within must be > 0", i, rule.Name)
+				return fmt.Errorf("rule %d (%s): passes_within must be > 0", i, rule.label())
 			}
 		}
 		// Samples further apart than maxSampleGap break the orbit, so slower polling would
 		// leave a circling rule valid but unable ever to match. Half the gap leaves room
 		// for one missed poll.
 		if rule.Circling != nil && *rule.Circling && a.Source.PollInterval.Std() > maxSampleGap/2 {
-			return fmt.Errorf("rule %d (%q): circling needs source.poll_interval of at most %s", i, rule.Name, maxSampleGap/2)
+			return fmt.Errorf("rule %d (%s): circling needs source.poll_interval of at most %s", i, rule.label(), maxSampleGap/2)
 		}
 	}
 	for _, d := range []struct {

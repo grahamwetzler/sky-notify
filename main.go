@@ -462,10 +462,17 @@ func (h *health) mux(q *queue) http.Handler {
 				locked = append(locked, map[string]string{"key": b.key, "env": b.name})
 			}
 		}
+		// The cooldown key of every rule, in order. A rule may have no name, and the
+		// page has to be able to say what the ledger and the logs will call it — which
+		// only this side can compute, so it is not left to the page to guess.
+		keys := make([]string, len(alerts.Rules))
+		for i := range alerts.Rules {
+			keys[i] = alerts.Rules[i].Key()
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"alerts": alerts, "path": alertsPath(env), "locked": locked,
-			"vocabulary": h.db.Vocabulary(),
+			"rule_keys": keys, "vocabulary": h.db.Vocabulary(),
 		})
 	})
 	mux.HandleFunc("POST /api/preview", func(w http.ResponseWriter, r *http.Request) {
@@ -488,7 +495,7 @@ func (h *health) mux(q *queue) http.Handler {
 		rows, _ := h.db.Stats()
 		body := map[string]any{
 			"total": total, "aircraft": sample, "database": rows,
-			"limit": previewLimit, "offset": offset,
+			"limit": previewLimit, "offset": offset, "key": rule.Key(),
 		}
 		// Faceting scans the whole database once per pickable field, and the facets do
 		// not change as you page through a fixed rule. Only the first page pays for it.

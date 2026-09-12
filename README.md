@@ -76,6 +76,14 @@ goes last, and `listed: true` alone is "everything in plane-alert-db". Matches i
 and surrounding space but must be exact—not substrings. A rule without `priority` uses
 `ntfy.priority`; `priority: 0` mutes and stops evaluation. Put exceptions first.
 
+`name` is optional and never reaches the notification — it is the cooldown key and the
+log label, so it is worth setting on a rule you want to recognise in the log and not
+worth inventing on one whose conditions already say what it is. A rule without a name is
+keyed by a fingerprint of its own conditions, like `#9979234a`: reordering the rules
+leaves its cooldowns alone, and editing what it matches resets them, which is right,
+since the ledger's entries were recorded for a rule that no longer exists. Names that
+*are* set must be unique, because two rules sharing one would silence each other.
+
 The flight path conditions read the same recent motion. `passes_within_nm` predicts the
 closest approach to your `lat`/`lon` along the aircraft's current ground track and speed,
 within `passes_within` (default `5m`), so `passes_within_nm: 1` means "will fly over me in
@@ -162,8 +170,9 @@ made atomic, so a crash in the gap between them re-alerts that aircraft on resta
 gap is a synchronous `fsync`'d write, so it's small — but it isn't zero, and pretending
 otherwise would be the actual defect.
 
-**Cooldowns are per aircraft *and* rule name.** Two rules that match the same aircraft
-have independent cooldowns, while only the first matching rule alerts in each poll.
+**Cooldowns are per aircraft *and* rule.** Two rules that match the same aircraft have
+independent cooldowns, while only the first matching rule alerts in each poll. The key is
+the rule's `name`, or a fingerprint of its conditions when it has none.
 
 **A stale list is served forever.** If the refresh fails, sky-notify keeps using the
 cached list and warns — an airframe that was interesting last month still is. What it
