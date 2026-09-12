@@ -156,7 +156,10 @@ const fields = ['source.poll_interval', 'db.refresh_interval', 'cooldown', 'ntfy
 // Rows built per batch as a long picker list is scrolled.
 const rowChunk = 150;
 
-const priorities = [[0, '0 — muted'], [1, '1 — lowest'], [2, '2 — low'], [3, '3 — default'], [4, '4 — high'], [5, '5 — highest']];
+const priorities = [[0, '0 — muted'], [1, '1 — lowest'], [2, '2 — low'], [3, '3 — normal'], [4, '4 — high'], [5, '5 — highest']];
+// A rule with no priority follows ntfy.priority, and has to keep following it: writing
+// today's default into the rule would freeze it there the next time that default moves.
+const inheritPriority = '';
 
 // The rule match fields, in the order they are offered. `options` means a fixed
 // checkbox set; `free` means there is no database vocabulary to suggest from.
@@ -496,10 +499,9 @@ function condRow(key, values) {
 // Reads one rule's conditions off the DOM. Used for both saving and previewing, so
 // the preview can never be answering a different question than the one being saved.
 function readRule(el) {
-  const rule = {
-    name: el.querySelector('.rule-name').value,
-    priority: Number(el.querySelector('.rule-priority').value),
-  };
+  const rule = {name: el.querySelector('.rule-name').value};
+  const priority = el.querySelector('.rule-priority').value;
+  if (priority !== inheritPriority) rule.priority = Number(priority);
   for (const cond of el.querySelectorAll('.cond')) {
     if (cond.values.length) rule[cond.dataset.key] = cond.values;
   }
@@ -682,7 +684,7 @@ function limitsBlock(rule) {
   return box;
 }
 
-function ruleRow(rule = {priority: 3}) {
+function ruleRow(rule = {}) {
   const el = document.createElement('div');
   el.className = 'rule';
 
@@ -699,8 +701,9 @@ function ruleRow(rule = {priority: 3}) {
   priLabel.className = 'pri';
   const pri = document.createElement('select');
   pri.className = 'rule-priority';
-  pri.append(...priorities.map(([v, t]) => option(v, t)));
-  pri.value = rule.priority ?? 3;
+  pri.append(option(inheritPriority, 'Use default'), ...priorities.map(([v, t]) => option(v, t)));
+  // ?? not ||: priority 0 is "muted", a real choice, and must not read as unset.
+  pri.value = rule.priority ?? inheritPriority;
   priLabel.append(document.createTextNode('Priority'), pri);
   head.append(nameLabel, priLabel);
 

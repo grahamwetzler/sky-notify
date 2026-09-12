@@ -72,7 +72,7 @@ func durationString(d Duration) string {
 
 type Rule struct {
 	Name           string    `yaml:"name" json:"name"`
-	Priority       *int      `yaml:"priority" json:"priority"`
+	Priority       *int      `yaml:"priority,omitempty" json:"priority,omitempty"`
 	ICAO           []string  `yaml:"icao,omitempty" json:"icao,omitempty"`
 	Reg            []string  `yaml:"reg,omitempty" json:"reg,omitempty"`
 	ICAOType       []string  `yaml:"icao_type,omitempty" json:"icao_type,omitempty"`
@@ -127,8 +127,8 @@ type Alerts struct {
 		RefreshInterval Duration `yaml:"refresh_interval" json:"refresh_interval"`
 	} `yaml:"db" json:"db"`
 	Cooldown Duration `yaml:"cooldown" json:"cooldown"`
-	Lat      *float64 `yaml:"lat" json:"lat"`
-	Lon      *float64 `yaml:"lon" json:"lon"`
+	Lat      *float64 `yaml:"lat,omitempty" json:"lat"`
+	Lon      *float64 `yaml:"lon,omitempty" json:"lon"`
 	Rules    []Rule   `yaml:"rules" json:"rules"`
 	LogLevel string   `yaml:"log_level" json:"log_level"`
 }
@@ -291,17 +291,28 @@ func LoadAlerts(environ []string) (*Alerts, error) {
 	if err := checkEnv(env); err != nil {
 		return nil, err
 	}
-	for _, b := range alertEnvBindings() {
-		if v, ok := env[b.name]; ok {
-			if err := b.apply(alerts, v); err != nil {
-				return nil, fmt.Errorf("%s: %w", b.name, err)
-			}
-		}
+	if err := applyAlertEnv(alerts, env); err != nil {
+		return nil, err
 	}
 	if err := alerts.validate(); err != nil {
 		return nil, err
 	}
 	return alerts, nil
+}
+
+// applyAlertEnv lays the environment over a loaded file. The UI validates through this
+// too: what the service runs is the file plus the overrides, so validating the file alone
+// would reject a save that is only valid because of an override, and accept one the
+// watcher refuses the moment the override is applied.
+func applyAlertEnv(a *Alerts, env map[string]string) error {
+	for _, b := range alertEnvBindings() {
+		if v, ok := env[b.name]; ok {
+			if err := b.apply(a, v); err != nil {
+				return fmt.Errorf("%s: %w", b.name, err)
+			}
+		}
+	}
+	return nil
 }
 
 func loadAlertsFile(env map[string]string) (*Alerts, error) {

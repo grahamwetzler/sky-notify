@@ -2211,3 +2211,85 @@ func TestICAOTypeRuleMatchesAnUnlistedAircraft(t *testing.T) {
 		t.Fatalf("database preview = %d, want 0 for a code no row carries", total)
 	}
 }
+
+// The service runs the file plus the environment, so that is what a save has to be judged
+// against. A rule needing coordinates the environment supplies is valid at runtime, and
+// rejecting it would make the UI refuse a setting the operator already runs.
+func TestAlertsUISaveValidatesWithEnvironmentApplied(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.yaml")
+	t.Setenv("SKY_LAT", "41.9")
+	t.Setenv("SKY_LON", "-87.6")
+	h := alertsHandler(t, path)
+	w := httptest.NewRecorder()
+	body := `{"rules":[{"name":"near","priority":4,"max_distance_nm":25}]}`
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(body)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	// The override is validated against, never written: the file keeps the operator's own
+	// values, so removing the variable does not silently leave its coordinates behind.
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(blob), "41.9") {
+		t.Fatalf("environment coordinates were baked into the file:\n%s", blob)
+	}
+	// And it really is what the loader accepts.
+	if _, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path, "SKY_LAT=41.9", "SKY_LON=-87.6"}); err != nil {
+		t.Fatalf("the saved file must load under the same environment: %v", err)
+	}
+}
+
+// The mirror of the above: an override that makes the payload invalid has to fail at save
+// time, not silently write a file the watcher then refuses on reload.
+func TestAlertsUISaveRejectsWhatTheEnvironmentBreaks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.yaml")
+	t.Setenv("SKY_COOLDOWN", "0s")
+	h := alertsHandler(t, path)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(`{"rules":[{"name":"x","all":true}]}`)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for a payload the environment invalidates", w.Code)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("a rejected save must not touch the file")
+	}
+}
+
+// A rule that inherits ntfy.priority has to keep inheriting it. Writing the current
+// default into the rule freezes it there, silently changing behaviour the next time the
+// default moves — and immediately, for anyone whose default is not 3.
+func TestRuleWithoutPriorityRoundTripsAsUnset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.yaml")
+	h := alertsHandler(t, path)
+	w := httptest.NewRecorder()
+	body := `{"ntfy":{"priority":2},"rules":[{"name":"inherits","all":true},{"name":"muted","all":true,"priority":0}]}`
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(body)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(blob), "priority: 3") {
+		t.Fatalf("an unset priority was written as the default:\n%s", blob)
+	}
+	got, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Rules[0].Priority != nil {
+		t.Fatalf("rule 0 priority = %d, want nil so it follows ntfy.priority", *got.Rules[0].Priority)
+	}
+	// 0 is "muted", a real choice, and must survive the same round trip as a set value.
+	if got.Rules[1].Priority == nil || *got.Rules[1].Priority != 0 {
+		t.Fatalf("rule 1 priority = %v, want an explicit 0", got.Rules[1].Priority)
+	}
+	// The inheriting rule alerts at the configured default, not at 3.
+	a := Evaluate(at(Aircraft{Hex: "ffffff"}), NewDB(testConfig(t), http.DefaultClient), got, nil)
+	if a == nil || a.Priority != 2 {
+		t.Fatalf("alert = %+v, want the inherited priority 2", a)
+	}
+}

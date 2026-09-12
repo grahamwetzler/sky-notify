@@ -35,8 +35,13 @@ services:
       # Both survive restarts; without this you re-download the list and re-alert on
       # everything currently overhead every time the container restarts.
       - sky-notify-data:/data
+      # Holds alerts.yaml, which the web UI writes. Without a writable /config the UI
+      # loads and previews but every save fails: the image runs as a non-root user.
+      - sky-notify-config:/config
       # Optional YAML config. Everything above can be set this way instead.
       # - ./config.yaml:/config/config.yaml:ro
+      # A read-only bind mount makes alerts.yaml yours to hand-edit and read-only to the
+      # UI — saves will fail. Use the named volume above if you want to edit in the browser.
       # - ./alerts.yaml:/config/alerts.yaml:ro
     networks:
       - adsb
@@ -77,6 +82,7 @@ services:
 
 volumes:
   sky-notify-data:
+  sky-notify-config:
   globe-history:
   sky-archive-lake:
 

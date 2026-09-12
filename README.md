@@ -33,9 +33,11 @@ services:
       SKY_CACHE_DIR: /data
     volumes:
       - sky-notify-data:/data
+      - sky-notify-config:/config
 
 volumes:
   sky-notify-data:
+  sky-notify-config:
 ```
 
 All six are required. sky-notify assumes nothing about your deployment — which feeder,
@@ -48,6 +50,10 @@ name is the only secret**, so pick something unguessable.
 The `/data` volume matters: it holds the cached aircraft list and the alert cooldown
 ledger. Without it you re-download the list on every restart and re-alert on everything
 currently overhead.
+
+`/config` is where `alerts.yaml` lives, and the web UI writes it. It has to be writable by
+the container's non-root user, which a named volume is — a read-only bind mount is not, and
+saves will fail against one. Set `SKY_ALERTS_CONFIG` to put the file somewhere else.
 
 See [`docker-compose.yml`](docker-compose.yml) for a fuller example and
 [`config.example.yaml`](config.example.yaml) for every setting.

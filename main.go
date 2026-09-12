@@ -507,14 +507,25 @@ func (h *health) mux(q *queue) http.Handler {
 			writeJSONError(w, http.StatusBadRequest, err)
 			return
 		}
-		if err := alerts.validate(); err != nil {
+		// Validate what the service will actually run: the file as written, with the
+		// environment laid over it exactly as LoadAlerts does. The overlay is a copy, so
+		// the file keeps the operator's own values — an override is not silently baked in.
+		// Only the env bindings' scalar fields are reassigned, and none of them alias the
+		// rules slice, so a shallow copy is enough to keep the payload untouched.
+		overlaid := *alerts
+		env := environMap(os.Environ())
+		if err := applyAlertEnv(&overlaid, env); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := overlaid.validate(); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err)
 			return
 		}
 		blob, err := yaml.Marshal(alerts)
 		if err == nil {
 			blob = append([]byte("# Written by the sky-notify web UI. Hand edits are read back on the next reload.\n"), blob...)
-			err = writeFileDurable(alertsPath(environMap(os.Environ())), blob)
+			err = writeFileDurable(alertsPath(env), blob)
 		}
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, err)

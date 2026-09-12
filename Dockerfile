@@ -11,14 +11,16 @@ COPY *.go ui.html ./
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" -o /out/sky-notify .
 
-# /data is created here so it can be copied in with the runtime uid. Docker seeds a
-# fresh named volume from the image path *including its ownership* — without this the
-# non-root process cannot create db.json or state.json on a brand-new volume.
-RUN mkdir -p /out/data
+# /data and /config are created here so they can be copied in with the runtime uid. Docker
+# seeds a fresh named volume from the image path *including its ownership* — without this
+# the non-root process cannot create db.json or state.json on a brand-new volume, and the
+# web UI cannot write alerts.yaml back to its default location.
+RUN mkdir -p /out/data /out/config
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/sky-notify /sky-notify
 COPY --from=build --chown=65532:65532 /out/data /data
+COPY --from=build --chown=65532:65532 /out/config /config
 
 VOLUME /data
 EXPOSE 8080
