@@ -1,4 +1,5 @@
-# Nothing alerts unless a rule says so. Every key is optional and hot-reloaded.
+# Nothing alerts unless a rule says so, and no alert is sent until the aircraft has
+# reported a position. Every key is optional and hot-reloaded.
 # Startup-only settings live in config.yaml. Mount beside it or set SKY_ALERTS_CONFIG.
 
 source:
@@ -40,5 +41,12 @@ rules:
   - name: Orbiting aircraft
     circling: true
     max_distance_nm: 10
+
+  # The wildcard. all: true states no condition, so this is every aircraft in
+  # plane-alert-db; without listed: true it is every aircraft you hear. It matches
+  # everything, so it goes last — any rule below it would never be reached.
+  # - name: Everything interesting
+  #   all: true
+  #   listed: true
 
 log_level: info

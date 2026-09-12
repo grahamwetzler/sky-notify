@@ -58,6 +58,15 @@ func Evaluate(ac Aircraft, db *DB, cfg *Alerts, trk *track) *Alert {
 		a.HasDistance = true
 		a.recvLat, a.recvLon = *cfg.Lat, *cfg.Lon
 	}
+	// Hold the alert back until the aircraft has reported a position — and with it the
+	// distance to the receiver, when one is configured. Nothing records a cooldown until
+	// an alert is published, so this defers rather than drops: the next poll re-evaluates
+	// the same aircraft, which is usually still overhead. An aircraft that never
+	// broadcasts a position (Mode S only) therefore never alerts.
+	if ac.Lat == nil || ac.Lon == nil {
+		slog.Debug("holding alert until a position arrives", "icao", hex)
+		return nil
+	}
 	rule := firstMatch(cfg.Rules, ac, plane, a)
 	if rule == nil {
 		return nil
@@ -94,6 +103,9 @@ func firstMatch(rules []Rule, ac Aircraft, p *Plane, a *Alert) *Rule {
 // matches ANDs every condition the rule states. A field the rule leaves out is not a
 // condition at all, which is what makes an empty rules list silent rather than universal.
 func (r *Rule) matches(ac Aircraft, p *Plane, a *Alert) bool {
+	// r.All needs no check here: it states no condition. It exists so that "match
+	// everything" is something an operator writes on purpose, rather than what a rule
+	// that forgot its conditions does by accident.
 	if r.Listed != nil && *r.Listed != (p != nil) {
 		return false
 	}

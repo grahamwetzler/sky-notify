@@ -57,7 +57,9 @@ See [`docker-compose.yml`](docker-compose.yml) for a fuller example and
 Nothing alerts unless a rule in `alerts.yaml` matches, including emergency squawks and
 aircraft in plane-alert-db. Rules can match feed fields (`icao`, `reg`, `icao_type`,
 `squawk`), database fields (`operator`, `type`, `cmpg`, `category`, `tags`), database
-membership (`listed`), and per-rule altitude or distance limits. Values within one field
+membership (`listed`), and per-rule altitude or distance limits. `all: true` is the
+wildcard: it states no condition, so `all: true` with `listed: true` is "every
+interesting aircraft" and `all: true` alone is "everything I hear". Values within one field
 are ORed, fields and limits are ANDed, and the first matching rule wins. Matches ignore
 case and surrounding space but must be exact—not substrings. A rule without `priority`
 uses `ntfy.priority`; `priority: 0` mutes and stops evaluation. Put exceptions first.
@@ -108,10 +110,16 @@ silent fallback to the default. `SKY_` is this service's namespace, and
 setting in it updates live. A key placed in the wrong file is a startup error that names
 the file it belongs in.
 
+**An alert waits for a position.** No aircraft alerts until it has reported `lat`/`lon`,
+and with them its distance from your `lat`/`lon` when you have set one — a notification
+you cannot place on a map is one you cannot act on. Nothing records a cooldown until the
+alert is published, so this holds the alert rather than dropping it: the next poll
+re-evaluates the same aircraft, which is usually still overhead. Mode-S-only traffic that
+never broadcasts a position never alerts.
+
 **Per-rule limits fail closed.** A rule with an altitude limit does not match without
-`alt_baro`, and one with `max_distance_nm` or `passes_within_nm` does not match without a
-position (`passes_within_nm` also needs a ground track when the aircraft is moving). This matters
-for Mode-S-only traffic, which often includes the military aircraft you wanted to see.
+`alt_baro`, and one with `passes_within_nm` does not match without a ground track when the
+aircraft is moving.
 
 **Delivery is at-least-once.** Publishing to ntfy and recording the cooldown can't be
 made atomic, so a crash in the gap between them re-alerts that aircraft on restart. The
