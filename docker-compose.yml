@@ -43,16 +43,42 @@ services:
     depends_on:
       - ultrafeeder
 
+  # Optional: archives every aircraft's flight path for later review and replay. See
+  # "History and replay" in the README. Needs the two ultrafeeder settings below.
+  sky-archive:
+    image: ghcr.io/grahamwetzler/sky-archive:latest
+    container_name: sky-archive
+    restart: unless-stopped
+    environment:
+      # Fills dim_plane's plane-alert-db columns, which drive the `interesting` view. Unset to skip.
+      PLANE_ALERT_CSV_URL: https://raw.githubusercontent.com/sdr-enthusiasts/plane-alert-db/main/plane-alert-db.csv
+      # Makes each visit's replay_url open in your own map.
+      TAR1090_URL: http://ultrafeeder/
+      # ARCHIVE_INTERVAL: "21600"   # seconds between passes
+      # SETTLE_HOURS: "2"           # wait this long after UTC midnight before loading a day
+    volumes:
+      - globe-history:/globe_history:ro
+      - sky-archive-lake:/lake
+
   # Your existing ultrafeeder service — shown only so the example resolves.
   ultrafeeder:
     image: ghcr.io/sdr-enthusiasts/docker-adsb-ultrafeeder:latest
     container_name: ultrafeeder
     restart: unless-stopped
+    environment:
+      # For sky-archive: readsb records every aircraft's full trace, one file per aircraft
+      # per UTC day. tar1090 can replay them for as many days as are kept.
+      READSB_ENABLE_TRACES: "true"
+      MAX_GLOBE_HISTORY: "90"
+    volumes:
+      - globe-history:/var/globe_history
     networks:
       - adsb
 
 volumes:
   sky-notify-data:
+  globe-history:
+  sky-archive-lake:
 
 networks:
   adsb:
