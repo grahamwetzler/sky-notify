@@ -27,7 +27,7 @@ services:
       # SKY_COOLDOWN: 24h
       # SKY_LOG_LEVEL: info
 
-      # Receiver coordinates for rules with max_distance_nm.
+      # Receiver coordinates for rules with max_distance_nm or passes_within_nm.
       # SKY_LAT: "51.5007"
       # SKY_LON: "-0.1246"
     volumes:

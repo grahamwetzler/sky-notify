@@ -101,20 +101,19 @@ func firstMatch(rules []Rule, ac Aircraft, p *Plane, a *Alert) *Rule {
 }
 
 // matches ANDs every condition the rule states. A field the rule leaves out is not a
-// condition at all, which is what makes an empty rules list silent rather than universal.
+// condition at all, so a rule that states none matches every aircraft — the wildcard is
+// what a rule says by saying nothing, not a key of its own. An empty rules *list* is
+// still silent: there is no rule to reach.
 func (r *Rule) matches(ac Aircraft, p *Plane, a *Alert) bool {
-	return r.matchesIdentity(ac, p, a) && r.withinLimits(ac, a)
+	return r.matchesIdentity(ac, p, a) && r.matchesPosition(ac, a) && r.matchesFlightPath(ac, a)
 }
 
-// matchesIdentity is the half of matches that asks who the aircraft is, separated from
-// withinLimits, which asks where it is right now. The alerts UI previews a rule against
-// the database, where every row is an identity and nothing has an altitude or a
-// position; running the limits there would fail them closed and preview every
+// matchesIdentity is the part of matches that asks who the aircraft is, separated from
+// the two that ask where it is and how it is flying. The alerts UI previews a rule
+// against the database, where every row is an identity and nothing has an altitude or a
+// position; running the other two there would fail them closed and preview every
 // distance-limited rule as selecting nothing.
 func (r *Rule) matchesIdentity(ac Aircraft, p *Plane, a *Alert) bool {
-	// r.All needs no check here: it states no condition. It exists so that "match
-	// everything" is something an operator writes on purpose, rather than what a rule
-	// that forgot its conditions does by accident.
 	if r.Listed != nil && *r.Listed != (p != nil) {
 		return false
 	}
@@ -141,10 +140,10 @@ func (r *Rule) matchesIdentity(ac Aircraft, p *Plane, a *Alert) bool {
 }
 
 // matchesPlane previews a rule against one database row. It applies only the conditions
-// a database row can answer: squawk comes from the live feed, and the limits below ask
-// where an aircraft is right now, so neither is knowable here and both fail closed if
-// asked. The preview therefore answers "which aircraft can this rule select", not "which
-// would alert this second" — the UI says so next to the count.
+// a database row can answer: squawk comes from the live feed, and position and flight
+// path ask where an aircraft is right now, so neither is knowable here and all fail
+// closed if asked. The preview therefore answers "which aircraft can this rule select",
+// not "which would alert this second" — the UI says so next to the count.
 func (r *Rule) matchesPlane(p *Plane) bool {
 	identity := *r
 	identity.Squawk = nil
@@ -156,34 +155,41 @@ func matchesEither(want []string, a, b string) bool {
 	return len(want) == 0 || matches(want, a) || matches(want, b)
 }
 
-// withinLimits fails closed: a rule that states a limit suppresses an aircraft whose data
-// cannot answer it, rather than admitting it on a zero value. max_distance_nm therefore
-// hides Mode-S-only traffic that broadcasts no position — frequently the military traffic
-// the rule was written for — so a rule states a limit only when it means it.
-func (r *Rule) withinLimits(ac Aircraft, a *Alert) bool {
+// matchesPosition asks where the aircraft is: how high, and how far from the receiver.
+// It fails closed, as every runtime condition does: a rule that states one suppresses an
+// aircraft whose data cannot answer it, rather than admitting it on a zero value. So an
+// altitude hides traffic reporting no alt_baro. Distance costs nothing extra: Evaluate
+// has already held back anything without a position, and validate requires the receiver
+// coordinates, so HasDistance is always true by the time a rule is asked.
+func (r *Rule) matchesPosition(ac Aircraft, a *Alert) bool {
 	if r.MaxDistanceNM != nil && (!a.HasDistance || a.DistanceNM > *r.MaxDistanceNM) {
 		return false
 	}
-	if r.Circling != nil && *r.Circling != a.Circling {
+	if r.MinAltitudeFt == nil && r.MaxAltitudeFt == nil {
+		return true
+	}
+	if !ac.AltBaro.Present {
 		return false
 	}
-	if r.MinAltitudeFt != nil || r.MaxAltitudeFt != nil {
-		if !ac.AltBaro.Present {
-			return false
-		}
-		if r.MinAltitudeFt != nil && ac.AltBaro.Feet < *r.MinAltitudeFt {
-			return false
-		}
-		if r.MaxAltitudeFt != nil && ac.AltBaro.Feet > *r.MaxAltitudeFt {
-			return false
-		}
+	if r.MinAltitudeFt != nil && ac.AltBaro.Feet < *r.MinAltitudeFt {
+		return false
+	}
+	return r.MaxAltitudeFt == nil || ac.AltBaro.Feet <= *r.MaxAltitudeFt
+}
+
+// matchesFlightPath asks how the aircraft is flying: whether it is orbiting, and whether
+// it is predicted to pass close by. Both read the same recent motion, which is why they
+// belong together.
+func (r *Rule) matchesFlightPath(ac Aircraft, a *Alert) bool {
+	if r.Circling != nil && *r.Circling != a.Circling {
+		return false
 	}
 	return r.passesOverhead(ac, a)
 }
 
 // passesOverhead is the last check, so the prediction it records on the alert belongs to
-// a rule that matched. It fails closed like every limit: a moving aircraft without a
-// position or ground track has no prediction. A stationary one is predicted to stay put.
+// a rule that matched. It fails closed too: a moving aircraft without a position or
+// ground track has no prediction. A stationary one is predicted to stay put.
 func (r *Rule) passesOverhead(ac Aircraft, a *Alert) bool {
 	if r.PassesWithinNM == nil {
 		return true
