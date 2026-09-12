@@ -153,10 +153,9 @@ re-evaluates the same aircraft, which is usually still overhead. Mode-S-only tra
 never broadcasts a position never alerts.
 
 **Conditions fail closed.** A rule stating an altitude does not match an aircraft without
-`alt_baro`, one stating `max_distance_nm` does not match without a position, and one with
-`passes_within_nm` does not match without a ground track when the aircraft is moving. So
-state one only when you mean it: `max_distance_nm` hides the Mode-S-only traffic that is
-often exactly what the rule was written for.
+`alt_baro`, and one with `passes_within_nm` does not match without a ground track when the
+aircraft is moving. A rule states a condition about data the aircraft has not sent, so it
+does not match — rather than matching on a zero.
 
 **Delivery is at-least-once.** Publishing to ntfy and recording the cooldown can't be
 made atomic, so a crash in the gap between them re-alerts that aircraft on restart. The

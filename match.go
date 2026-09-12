@@ -157,10 +157,10 @@ func matchesEither(want []string, a, b string) bool {
 
 // matchesPosition asks where the aircraft is: how high, and how far from the receiver.
 // It fails closed, as every runtime condition does: a rule that states one suppresses an
-// aircraft whose data cannot answer it, rather than admitting it on a zero value.
-// max_distance_nm therefore hides Mode-S-only traffic that broadcasts no position —
-// frequently the military traffic the rule was written for — so state it only if you
-// mean it.
+// aircraft whose data cannot answer it, rather than admitting it on a zero value. So an
+// altitude hides traffic reporting no alt_baro. Distance costs nothing extra: Evaluate
+// has already held back anything without a position, and validate requires the receiver
+// coordinates, so HasDistance is always true by the time a rule is asked.
 func (r *Rule) matchesPosition(ac Aircraft, a *Alert) bool {
 	if r.MaxDistanceNM != nil && (!a.HasDistance || a.DistanceNM > *r.MaxDistanceNM) {
 		return false
