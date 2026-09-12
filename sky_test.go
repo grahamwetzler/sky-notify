@@ -117,13 +117,13 @@ func TestNonICAOAddressDoesNotMatchDatabase(t *testing.T) {
 	alerts.Rules = []Rule{{Name: "listed", Listed: &listed}}
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
 
-	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts, nil); a == nil {
+	if a := Evaluate(at(Aircraft{Hex: "adeb2f"}), db, alerts, nil); a == nil {
 		t.Fatal("plain hex should match the database")
 	}
-	if a := Evaluate(Aircraft{Hex: "~adeb2f"}, db, alerts, nil); a != nil {
+	if a := Evaluate(at(Aircraft{Hex: "~adeb2f"}), db, alerts, nil); a != nil {
 		t.Fatalf("tilde-prefixed address must not match the database, got %+v", a)
 	}
-	if a := Evaluate(Aircraft{Hex: "~ADEB2F"}, db, alerts, nil); a != nil {
+	if a := Evaluate(at(Aircraft{Hex: "~ADEB2F"}), db, alerts, nil); a != nil {
 		t.Fatal("uppercase tilde-prefixed address must not match either")
 	}
 }
@@ -197,14 +197,14 @@ func TestAltitudeFilterFailsClosedAndTreatsGroundAsZero(t *testing.T) {
 	alerts.Rules = []Rule{{Name: "airborne", MinAltitudeFt: &minimum}}
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
 
-	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts, nil); a != nil {
+	if a := Evaluate(at(Aircraft{Hex: "adeb2f"}), db, alerts, nil); a != nil {
 		t.Error("missing alt_baro must be suppressed when an altitude filter is on")
 	}
-	ground := Aircraft{Hex: "adeb2f", AltBaro: Altitude{Present: true, Ground: true}}
+	ground := at(Aircraft{Hex: "adeb2f", AltBaro: Altitude{Present: true, Ground: true}})
 	if a := Evaluate(ground, db, alerts, nil); a != nil {
 		t.Error(`"ground" must read as 0 ft and fail a 1000ft floor`)
 	}
-	airborne := Aircraft{Hex: "adeb2f", AltBaro: Altitude{Present: true, Feet: 31000}}
+	airborne := at(Aircraft{Hex: "adeb2f", AltBaro: Altitude{Present: true, Feet: 31000}})
 	if a := Evaluate(airborne, db, alerts, nil); a == nil {
 		t.Error("airborne aircraft should pass the floor")
 	}
@@ -215,9 +215,55 @@ func TestSilenceIsTheDefault(t *testing.T) {
 	alerts := defaultAlerts()
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
 	for _, ac := range []Aircraft{{Hex: "adeb2f"}, {Hex: "ffffff"}, {Hex: "ffffff", Squawk: "7700"}} {
-		if a := Evaluate(ac, db, alerts, nil); a != nil {
+		if a := Evaluate(at(ac), db, alerts, nil); a != nil {
 			t.Fatalf("empty rules must be silent, got %+v", a)
 		}
+	}
+}
+
+// A matching aircraft with no position is held, not dropped: the next poll re-evaluates
+// it, and nothing has recorded a cooldown in the meantime.
+func TestAlertsWaitForPositionAndDistance(t *testing.T) {
+	cfg := testConfig(t)
+	alerts := defaultAlerts()
+	alerts.Lat, alerts.Lon = &testLat, &testLon
+	alerts.Rules = []Rule{{Name: "listed", Listed: boolp(true)}}
+	db := dbWith(t, cfg, mustParse(t, sampleCSV))
+
+	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts, nil); a != nil {
+		t.Fatalf("an aircraft without a position must not alert, got %+v", a)
+	}
+	a := Evaluate(at(Aircraft{Hex: "adeb2f"}), db, alerts, nil)
+	if a == nil || !a.HasDistance {
+		t.Fatalf("the same aircraft with a position should alert with a distance, got %+v", a)
+	}
+}
+
+// The wildcard opt-in: every interesting aircraft, no fields to enumerate.
+func TestWildcardRule(t *testing.T) {
+	cfg := testConfig(t)
+	alerts := defaultAlerts()
+	alerts.Rules = []Rule{{Name: "everything interesting", All: true, Listed: boolp(true)}}
+	db := dbWith(t, cfg, mustParse(t, sampleCSV))
+
+	if a := Evaluate(at(Aircraft{Hex: "adeb2f"}), db, alerts, nil); a == nil {
+		t.Fatal("a wildcard rule should match a listed aircraft")
+	}
+	if a := Evaluate(at(Aircraft{Hex: "ffffff"}), db, alerts, nil); a != nil {
+		t.Fatalf("listed: true still excludes unlisted aircraft, got %+v", a)
+	}
+
+	// all: true is a condition on its own; a rule with no conditions at all is not.
+	alerts.Rules = []Rule{{Name: "everything", All: true}}
+	if err := alerts.validate(); err != nil {
+		t.Fatalf("all: true should satisfy the condition requirement: %v", err)
+	}
+	if a := Evaluate(at(Aircraft{Hex: "ffffff"}), db, alerts, nil); a == nil {
+		t.Fatal("a bare wildcard rule should match any aircraft")
+	}
+	alerts.Rules = []Rule{{Name: "nothing stated"}}
+	if err := alerts.validate(); err == nil {
+		t.Fatal("a rule with no conditions must still be rejected")
 	}
 }
 
@@ -226,7 +272,7 @@ func TestEmergencyRequiresAndUsesRule(t *testing.T) {
 	alerts := defaultAlerts()
 	alerts.Rules = []Rule{{Name: "emergency", Squawk: []string{"7500", "7600", "7700"}}}
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
-	if a := Evaluate(Aircraft{Hex: "ffffff", Squawk: "7700"}, db, alerts, nil); a == nil || !a.Emergency || a.Trigger != "emergency" {
+	if a := Evaluate(at(Aircraft{Hex: "ffffff", Squawk: "7700"}), db, alerts, nil); a == nil || !a.Emergency || a.Trigger != "emergency" {
 		t.Fatalf("squawk rule should produce framed emergency, got %+v", a)
 	}
 }
@@ -277,7 +323,7 @@ func TestPriorityRulesAndSquawks(t *testing.T) {
 			alerts := defaultAlerts()
 			alerts.Rules = tc.rules
 			db := dbWith(t, cfg, mustParse(t, sampleCSV))
-			a := Evaluate(Aircraft{Hex: "adeb2f", Squawk: tc.squawk}, db, alerts, nil)
+			a := Evaluate(at(Aircraft{Hex: "adeb2f", Squawk: tc.squawk}), db, alerts, nil)
 			if (a != nil) != tc.wantAlert {
 				t.Fatalf("alert = %+v, want alert %v", a, tc.wantAlert)
 			}
@@ -290,6 +336,15 @@ func TestPriorityRulesAndSquawks(t *testing.T) {
 
 func boolp(v bool) *bool { return &v }
 
+// Every alert now waits for a position, so test aircraft carry one unless the test is
+// about what happens without one.
+var testLat, testLon = 51.5, -0.12
+
+func at(ac Aircraft) Aircraft {
+	ac.Lat, ac.Lon = &testLat, &testLon
+	return ac
+}
+
 func TestListedAndFeedOnlyRules(t *testing.T) {
 	cfg := testConfig(t)
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
@@ -300,7 +355,7 @@ func TestListedAndFeedOnlyRules(t *testing.T) {
 	}{{boolp(true), "adeb2f", true}, {boolp(true), "ffffff", false}, {boolp(false), "ffffff", true}, {nil, "ffffff", true}} {
 		a := defaultAlerts()
 		a.Rules = []Rule{{Name: "rule", Listed: tc.listed, ICAO: []string{tc.hex}}}
-		if got := Evaluate(Aircraft{Hex: tc.hex}, db, a, nil); (got != nil) != tc.want {
+		if got := Evaluate(at(Aircraft{Hex: tc.hex}), db, a, nil); (got != nil) != tc.want {
 			t.Errorf("listed=%v hex=%s alert=%+v", tc.listed, tc.hex, got)
 		}
 	}
@@ -326,7 +381,7 @@ func TestUnlistedAircraftMatchesFeedFieldsAndLimits(t *testing.T) {
 func TestRegAndICAOTypeMatchFromEitherSource(t *testing.T) {
 	cfg := testConfig(t)
 	db := dbWith(t, cfg, mustParse(t, sampleCSV))
-	listed := Aircraft{Hex: "adeb2f", Reg: "OTHER", Type: "OTHER"}
+	listed := at(Aircraft{Hex: "adeb2f", Reg: "OTHER", Type: "OTHER"})
 
 	alerts := defaultAlerts()
 	alerts.Rules = []Rule{{Name: "by database reg", Reg: []string{"N12345"}}}
@@ -352,7 +407,7 @@ func TestPerRuleLimitsSelectLaterRule(t *testing.T) {
 		{Name: "low", ICAO: []string{"ffffff"}, MaxAltitudeFt: &low, Priority: intp(2)},
 		{Name: "high", ICAO: []string{"ffffff"}, MinAltitudeFt: &high, MaxAltitudeFt: &ceiling, Priority: intp(4)},
 	}
-	got := Evaluate(Aircraft{Hex: "ffffff", AltBaro: Altitude{Present: true, Feet: 5000}}, db, alerts, nil)
+	got := Evaluate(at(Aircraft{Hex: "ffffff", AltBaro: Altitude{Present: true, Feet: 5000}}), db, alerts, nil)
 	if got == nil || got.Trigger != "high" || got.Priority != 4 {
 		t.Fatalf("later altitude rule should win, got %+v", got)
 	}
@@ -363,10 +418,12 @@ func TestDistanceLimitFailsClosedThenEvaluationContinues(t *testing.T) {
 	db := dbWith(t, cfg, nil)
 	limit := 3.0
 	alerts := defaultAlerts()
+	alerts.Lat, alerts.Lon = &testLat, &testLon
 	alerts.Rules = []Rule{{Name: "near", ICAO: []string{"ffffff"}, MaxDistanceNM: &limit}, {Name: "anywhere", ICAO: []string{"ffffff"}}}
-	got := Evaluate(Aircraft{Hex: "ffffff"}, db, alerts, nil)
+	far := 10.0
+	got := Evaluate(Aircraft{Hex: "ffffff", Lat: &testLat, Lon: &far}, db, alerts, nil)
 	if got == nil || got.Trigger != "anywhere" {
-		t.Fatalf("missing position should fail only the limited rule, got %+v", got)
+		t.Fatalf("an out-of-range aircraft should fail only the limited rule, got %+v", got)
 	}
 }
 
@@ -557,14 +614,14 @@ func TestCooldownsAreIndependentPerRule(t *testing.T) {
 	cooldown := alerts.Cooldown.Std()
 
 	// A quiet pass matches the second rule; only that rule's cooldown advances.
-	routine := Evaluate(Aircraft{Hex: "adeb2f"}, db, alerts, nil)
+	routine := Evaluate(at(Aircraft{Hex: "adeb2f"}), db, alerts, nil)
 	if routine == nil || routine.Trigger != "listed" {
 		t.Fatalf("want the listed rule, got %+v", routine)
 	}
 	s.Record(cooldownKey(routine.Hex, routine.Trigger), cooldown)
 
 	// The same airframe squawking 7700 now matches the first rule, on its own key.
-	emergency := Evaluate(Aircraft{Hex: "adeb2f", Squawk: "7700"}, db, alerts, nil)
+	emergency := Evaluate(at(Aircraft{Hex: "adeb2f", Squawk: "7700"}), db, alerts, nil)
 	if emergency == nil || emergency.Trigger != "emergency" {
 		t.Fatalf("want the emergency rule, got %+v", emergency)
 	}
@@ -586,7 +643,7 @@ func TestListedAircraftInEmergencyProducesOneAlert(t *testing.T) {
 	s := NewState(t.TempDir())
 	cooldown := alerts.Cooldown.Std()
 
-	a := Evaluate(Aircraft{Hex: "adeb2f", Squawk: "7700"}, db, alerts, nil)
+	a := Evaluate(at(Aircraft{Hex: "adeb2f", Squawk: "7700"}), db, alerts, nil)
 	if a == nil || !a.Emergency {
 		t.Fatal("want an emergency alert")
 	}
@@ -713,7 +770,7 @@ func TestConfigReloadHotSwapTakesEffect(t *testing.T) {
 	if err := reloadConfig(live, environ, nil); err != nil {
 		t.Fatal(err)
 	}
-	if a := Evaluate(Aircraft{Hex: "adeb2f"}, db, live.Get(), nil); a == nil || a.Priority != 5 {
+	if a := Evaluate(at(Aircraft{Hex: "adeb2f"}), db, live.Get(), nil); a == nil || a.Priority != 5 {
 		t.Fatalf("reloaded alert = %+v, want priority 5", a)
 	}
 }

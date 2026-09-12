@@ -54,6 +54,7 @@ type Rule struct {
 	Category       []string  `yaml:"category"`
 	Tags           []string  `yaml:"tags"`
 	Listed         *bool     `yaml:"listed"`
+	All            bool      `yaml:"all"`
 	MinAltitudeFt  *int      `yaml:"min_altitude_ft"`
 	MaxAltitudeFt  *int      `yaml:"max_altitude_ft"`
 	MaxDistanceNM  *float64  `yaml:"max_distance_nm"`
@@ -557,7 +558,7 @@ func (a *Alerts) validate() error {
 		if rule.Priority != nil && (*rule.Priority < 0 || *rule.Priority > 5) {
 			return fmt.Errorf("rule %d (%q): priority must be 0..5, got %d", i, rule.Name, *rule.Priority)
 		}
-		if len(rule.ICAO)+len(rule.Reg)+len(rule.ICAOType)+len(rule.Squawk)+len(rule.Operator)+len(rule.Type)+len(rule.CMPG)+len(rule.Category)+len(rule.Tags) == 0 && rule.Listed == nil && rule.MinAltitudeFt == nil && rule.MaxAltitudeFt == nil && rule.MaxDistanceNM == nil && rule.Circling == nil && rule.PassesWithinNM == nil {
+		if len(rule.ICAO)+len(rule.Reg)+len(rule.ICAOType)+len(rule.Squawk)+len(rule.Operator)+len(rule.Type)+len(rule.CMPG)+len(rule.Category)+len(rule.Tags) == 0 && !rule.All && rule.Listed == nil && rule.MinAltitudeFt == nil && rule.MaxAltitudeFt == nil && rule.MaxDistanceNM == nil && rule.Circling == nil && rule.PassesWithinNM == nil {
 			return fmt.Errorf("rule %d (%q): at least one condition is required", i, rule.Name)
 		}
 		if (rule.MinAltitudeFt != nil && *rule.MinAltitudeFt < 0) || (rule.MaxAltitudeFt != nil && *rule.MaxAltitudeFt < 0) {
