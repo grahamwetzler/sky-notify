@@ -2842,6 +2842,37 @@ func TestFitViewDoesNotWrapAroundTheWorld(t *testing.T) {
 	}
 }
 
+// The crop is only as good as its edges: every framed point has to survive it, and the
+// image has to stay between the width the footer needs and the long edge it is built for.
+func TestFitViewCropKeepsItsPointsAndItsBounds(t *testing.T) {
+	for name, c := range map[string]struct {
+		pts    []latlon
+		framed bool // false when the box cannot fit even at minZoom and is cropped instead
+	}{
+		// Mercator stretches towards the poles: the mean latitude is not the middle of
+		// the projected box, and a frame centred on it drops the northern point.
+		"a ten-degree span up north": {[]latlon{{70, 0}, {80, 0}}, true},
+		"a tall narrow box":          {[]latlon{{0, 0}, {0.5, 0}}, true},
+		"either side of the strait":  {[]latlon{{10, 179.9}, {10, -179.9}}, true},
+		"a quarter of the equator":   {[]latlon{{0, 0}, {0, 100}}, false},
+	} {
+		v := fitView(c.pts)
+		if v.w < minWidthPx || v.w > mapPx || v.h < 1 || v.h > mapPx {
+			t.Errorf("%s: image is %dx%d, want %d..%d wide and at most %d tall",
+				name, v.w, v.h, minWidthPx, mapPx, mapPx)
+		}
+		if !c.framed {
+			continue
+		}
+		for _, p := range c.pts {
+			q := v.pixel(p.lat, p.lon)
+			if q.x < 0 || q.x > float64(v.w) || q.y < 0 || q.y > float64(v.h) {
+				t.Errorf("%s: %v landed off the %dx%d image at %v", name, p, v.w, v.h, q)
+			}
+		}
+	}
+}
+
 // A single point has no extent; the minimum span is what stops the zoom clamp dividing
 // by zero and the receiver coinciding with the aircraft blanking the map.
 func TestFitViewGivesADegenerateBoxAMinimumSpan(t *testing.T) {

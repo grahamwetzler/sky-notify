@@ -12,6 +12,10 @@ const (
 	maxZoom   = 14 // OpenFreeMap's planet tiles stop here
 	padding   = 0.10
 	minSpanNM = 2.0
+	// The footer is one line — scale bar, its distance, and the attribution — and it
+	// measures ~381px. A frame narrower than this would wrap the credit off its own
+	// left edge, and the credit is an ODbL obligation, so narrow frames widen instead.
+	minWidthPx = 400
 	// Web Mercator cannot represent the poles; this is where the square world ends.
 	maxMercatorLat = 85.05112878
 )
@@ -73,17 +77,23 @@ func fitView(pts []latlon) view {
 	}
 	// Crop to the box rather than padding it out to a square: mapPx is the long edge, not
 	// the picture. A receiver and an aircraft nearly in line would make a letterbox strip,
-	// so the short edge stops at half the long one.
-	w := worldX(maxLon, zoom) - worldX(minLon, zoom)
-	h := worldY(minLat, zoom) - worldY(maxLat, zoom)
+	// so the short edge stops at half the long one, and mapPx still caps both — when even
+	// minZoom could not fit the box, the frame is a crop of it rather than a 4096px mural.
+	x0, x1 := worldX(minLon, zoom), worldX(maxLon, zoom)
+	y0, y1 := worldY(maxLat, zoom), worldY(minLat, zoom)
+	w, h := x1-x0, y1-y0
 	long := math.Max(w, h)
-	w, h = math.Max(w, long/2), math.Max(h, long/2)
+	w = math.Min(math.Max(w, math.Max(long/2, minWidthPx)), mapPx)
+	h = math.Min(math.Max(h, long/2), mapPx)
+	// Centre on the projected box, not on the mean latitude: Mercator stretches towards
+	// the poles, so the two are not the same point and a tight crop would drop the
+	// northern edge off a frame centred the naive way.
 	return view{
 		zoom:    zoom,
 		w:       int(math.Round(w)),
 		h:       int(math.Round(h)),
-		originX: worldX(centreLon, zoom) - w/2,
-		originY: worldY(centreLat, zoom) - h/2,
+		originX: (x0+x1)/2 - w/2,
+		originY: (y0+y1)/2 - h/2,
 	}
 }
 
