@@ -3297,6 +3297,12 @@ func TestCompactTilesCannotInflateIntoMemory(t *testing.T) {
 		"a flood of closed rings": mvtTile(mvtFeature(append(
 			[]byte{9, 0, 0}, // MoveTo(1) at the origin, so there is a ring to close
 			bytes.Repeat([]byte{15}, maxTilePoints+1)...))),
+		// Two bytes per key name, and each becomes a string header in the layer table.
+		"a flood of key names": mvtTile(bytes.Repeat([]byte{0x1a, 0x00}, maxTileEntries+1)),
+		// Two bytes per tag pair, all naming the same key. The props map used to be
+		// sized by the tag count rather than by how many distinct keys can exist, so
+		// this asked for millions of buckets to store one property.
+		"a flood of repeated tags": mvtTile(mvtTagBomb(maxTileEntries + 1)),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := decodeTile(context.Background(), tile); err == nil {
@@ -3323,6 +3329,14 @@ func mvtFeature(geometry []byte) []byte {
 	geom := append(append([]byte{0x22}, varint(len(geometry))...), geometry...) // Feature.geometry
 	body := append([]byte{0x18, 0x03}, geom...)                                 // Feature.type = POLYGON
 	return append(append([]byte{0x12}, varint(len(body))...), body...)
+}
+
+// mvtTagBomb is one key, one value, and a feature naming that key pairs times over.
+func mvtTagBomb(pairs int) []byte {
+	tags := make([]byte, pairs*2) // packed (0, 0) varints, two bytes a pair
+	feature := append(append([]byte{0x12}, varint(len(tags))...), tags...)
+	out := []byte{0x1a, 0x01, 'k', 0x22, 0x03, 0x0a, 0x01, 'v'} // keys ["k"], values ["v"]
+	return append(out, append(append([]byte{0x12}, varint(len(feature))...), feature...)...)
 }
 
 func varint(n int) []byte {

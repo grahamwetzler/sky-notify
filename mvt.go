@@ -24,6 +24,10 @@ const (
 	maxTileLayers   = 64
 	maxTileFeatures = 100_000
 	maxTilePoints   = 1_000_000
+	// Property entries: the layer's key and value tables, and each tag pair naming one.
+	// A tag pair is two bytes and a map entry, which is the cheapest amplification in
+	// the format. A z11 tile over Dallas carries under 2,000.
+	maxTileEntries = 500_000
 	// The schema default when a layer omits extent. Tile coordinates run [0,extent).
 	defaultExtent = 4096
 )
@@ -31,7 +35,7 @@ const (
 // budget is what is left of a tile's allowance. It is spent at the moment of allocation,
 // not counted up afterwards: a limit checked once the memory is already committed is a
 // report, not a limit.
-type budget struct{ featuresLeft, pointsLeft int }
+type budget struct{ featuresLeft, pointsLeft, entriesLeft int }
 
 func (b *budget) feature() error {
 	if b.featuresLeft--; b.featuresLeft < 0 {
@@ -43,6 +47,13 @@ func (b *budget) feature() error {
 func (b *budget) points(n int) error {
 	if b.pointsLeft -= n; b.pointsLeft < 0 {
 		return fmt.Errorf("%w: over %d points in one tile", errMalformed, maxTilePoints)
+	}
+	return nil
+}
+
+func (b *budget) entries(n int) error {
+	if b.entriesLeft -= n; b.entriesLeft < 0 {
+		return fmt.Errorf("%w: over %d property entries in one tile", errMalformed, maxTileEntries)
 	}
 	return nil
 }
@@ -81,7 +92,7 @@ type layer struct {
 // any effect on a large tile.
 func decodeTile(ctx context.Context, b []byte) ([]layer, error) {
 	var out []layer
-	left := &budget{featuresLeft: maxTileFeatures, pointsLeft: maxTilePoints}
+	left := &budget{featuresLeft: maxTileFeatures, pointsLeft: maxTilePoints, entriesLeft: maxTileEntries}
 	p := &pbuf{b: b}
 	for p.more() {
 		field, wire, err := p.key()
@@ -152,10 +163,16 @@ func decodeLayer(b []byte, left *budget) (layer, error) {
 			if err != nil {
 				return l, err
 			}
+			if err := left.entries(1); err != nil {
+				return l, err
+			}
 			keys = append(keys, string(v))
 		case field == 4 && wire == wireBytes: // values
 			v, err := p.bytes()
 			if err != nil {
+				return l, err
+			}
+			if err := left.entries(1); err != nil {
 				return l, err
 			}
 			val, err := decodeValue(v)
@@ -205,14 +222,18 @@ func decodeFeature(b []byte, keys []string, values []any, left *budget) (feature
 		}
 		switch {
 		case field == 2: // tags, packed or not
-			tags, err = p.uint32s(wire, tags)
+			// Two values per property entry, and a valid tile never needs more than the
+			// budget will pay for.
+			tags, err = p.uint32s(wire, tags, 2*left.entriesLeft)
 		case field == 3 && wire == wireVarint: // type
 			var v uint64
 			if v, err = p.varint(); err == nil {
 				f.kind = geomKind(v)
 			}
 		case field == 4: // geometry, packed or not
-			geom, err = p.uint32s(wire, geom)
+			// At worst three words per point: a MoveTo of its own plus its two
+			// parameters. A ClosePath is one word and costs a point too.
+			geom, err = p.uint32s(wire, geom, 3*left.pointsLeft)
 		default:
 			err = p.skip(wire)
 		}
@@ -224,13 +245,19 @@ func decodeFeature(b []byte, keys []string, values []any, left *budget) (feature
 	if len(tags)%2 != 0 {
 		return f, fmt.Errorf("%w: odd tag count", errMalformed)
 	}
+	if err := left.entries(len(tags) / 2); err != nil {
+		return f, err
+	}
+	if len(tags) > 0 {
+		// Sized by the key table, not by the tag count: a feature cannot hold more
+		// distinct properties than the layer declares names for, and millions of tags
+		// all naming key 0 would otherwise ask for millions of buckets to store one.
+		f.props = make(map[string]any, min(len(tags)/2, len(keys)))
+	}
 	for i := 0; i+1 < len(tags); i += 2 {
 		k, v := int(tags[i]), int(tags[i+1])
 		if k >= len(keys) || v >= len(values) {
 			return f, fmt.Errorf("%w: tag index out of range", errMalformed)
-		}
-		if f.props == nil {
-			f.props = make(map[string]any, len(tags)/2)
 		}
 		f.props[keys[k]] = values[v]
 	}
@@ -419,11 +446,18 @@ func (p *pbuf) fixed64() (uint64, error) {
 
 // uint32s appends a repeated uint32 field, which an encoder may write packed or one
 // varint per key. Both spellings occur in the wild, so both are read.
-func (p *pbuf) uint32s(wire int, dst []uint32) ([]uint32, error) {
+//
+// max is what the remaining budget could still pay for. Expanding a packed array is
+// itself an allocation — a byte of input becomes four — so the ceiling has to stop the
+// read rather than judge the result.
+func (p *pbuf) uint32s(wire int, dst []uint32, max int) ([]uint32, error) {
 	if wire == wireVarint {
 		v, err := p.varint()
 		if err != nil {
 			return dst, err
+		}
+		if len(dst) >= max {
+			return dst, errTooManyValues(max)
 		}
 		return append(dst, uint32(v)), nil
 	}
@@ -440,9 +474,17 @@ func (p *pbuf) uint32s(wire int, dst []uint32) ([]uint32, error) {
 		if err != nil {
 			return dst, err
 		}
+		if len(dst) >= max {
+			return dst, errTooManyValues(max)
+		}
 		dst = append(dst, uint32(v))
 	}
 	return dst, nil
+}
+
+func errTooManyValues(max int) error {
+	return fmt.Errorf("%w: a packed field claimed more values than the %d left in one tile's budget",
+		errMalformed, max)
 }
 
 func (p *pbuf) skip(wire int) error {
