@@ -47,30 +47,6 @@ services:
       # UI — saves will fail. Use the named volume above if you want to edit in the browser.
       # - ./alerts.yaml:/config/alerts.yaml:ro
 
-  # Optional: archives every aircraft's flight path for later review and replay. See
-  # "History and replay" in the README.
-  #
-  # This reads the trace files readsb writes, so it only works where you can reach
-  # ultrafeeder's /var/globe_history as a directory — on the feeder host itself, or over
-  # a network share. Over HTTP to a remote feeder you cannot, so leave this out unless
-  # you are running the stack next to the feeder. On the feeder host, set
-  # READSB_ENABLE_TRACES=true and MAX_GLOBE_HISTORY=90 on ultrafeeder first.
-  # sky-archive:
-  #   image: ghcr.io/grahamwetzler/sky-archive:latest
-  #   container_name: sky-archive
-  #   restart: unless-stopped
-  #   environment:
-  #     # Fills dim_plane's plane-alert-db columns, which drive the `interesting` view. Unset to skip.
-  #     PLANE_ALERT_CSV_URL: https://raw.githubusercontent.com/sdr-enthusiasts/plane-alert-db/main/plane-alert-db.csv
-  #     # Makes each visit's replay_url open in your own map.
-  #     TAR1090_URL: https://adsb.example.com/
-  #     # ARCHIVE_INTERVAL: "21600"   # seconds between passes
-  #     # SETTLE_HOURS: "2"           # wait this long after UTC midnight before loading a day
-  #   volumes:
-  #     - /var/globe_history:/globe_history:ro
-  #     - sky-archive-lake:/lake
-
 volumes:
   sky-notify-data:
   sky-notify-config:
-  # sky-archive-lake:
