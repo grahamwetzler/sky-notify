@@ -399,39 +399,55 @@ func overlapsAny(boxes []labelBox, b labelBox) bool {
 // footerHeight is the strip the attribution and scale bar own; labels stay out of it.
 const footerHeight = 34
 
-// drawFooter writes the attribution and a scale bar. The credit is an ODbL obligation,
-// not decoration: it travels in the image because the image is what gets forwarded.
+// credit is the ODbL obligation. It travels in the image because the image is what gets
+// forwarded, so it is the one part of the footer that is never dropped.
+const credit = "© OpenStreetMap contributors · OpenFreeMap"
+
+// scaleBar picks the longest round distance whose bar and label still fit in the room the
+// credit leaves. The bar is a courtesy and the credit is not, so on a narrow frame — or a
+// close zoom near the poles, where a single mile can be a thousand pixels — the honest
+// answer is no bar at all rather than one written through the attribution.
+func (m *mapRenderer) scaleBar(dc *gg.Context, v view, lat float64) (px float64, label string, ok bool) {
+	// Metres per pixel at this latitude, converted to nautical miles.
+	nmPerPx := 156543.03392 * math.Cos(lat*math.Pi/180) / math.Exp2(float64(v.zoom)) / 1852
+	dc.SetFontFace(m.face(11))
+	creditW, _ := dc.MeasureString(credit)
+	limit := float64(v.w-14) - creditW - 8
+	for _, nm := range []float64{500, 200, 100, 50, 20, 10, 5, 2, 1} {
+		l := fmt.Sprintf("%.0f NM", nm)
+		lw, _ := dc.MeasureString(l)
+		if w := nm / nmPerPx; 16+w+6+lw <= limit {
+			return w, l, true
+		}
+	}
+	return 0, "", false
+}
+
+// drawFooter writes the attribution and, when there is room for it, a scale bar.
 func (m *mapRenderer) drawFooter(dc *gg.Context, v view, a *Alert) {
 	lat := 0.0
 	if a.AC.Lat != nil {
 		lat = *a.AC.Lat
 	}
-	// Metres per pixel at this latitude, converted to nautical miles.
-	nmPerPx := 156543.03392 * math.Cos(lat*math.Pi/180) / math.Exp2(float64(v.zoom)) / 1852
-	barNM := 1.0
-	for _, n := range []float64{1, 2, 5, 10, 20, 50, 100, 200, 500} {
-		barNM = n
-		if n/nmPerPx >= 70 {
-			break
-		}
-	}
-	barPx := barNM / nmPerPx
-
 	y := float64(v.h - 14)
-	dc.SetColor(colHalo)
-	dc.SetLineWidth(5)
-	dc.DrawLine(16, y, 16+barPx, y)
-	dc.Stroke()
-	dc.SetColor(colFooter)
-	dc.SetLineWidth(2)
-	dc.DrawLine(16, y, 16+barPx, y)
-	dc.DrawLine(16, y-4, 16, y+4)
-	dc.DrawLine(16+barPx, y-4, 16+barPx, y+4)
-	dc.Stroke()
+
+	if barPx, label, ok := m.scaleBar(dc, v, lat); ok {
+		dc.SetColor(colHalo)
+		dc.SetLineWidth(5)
+		dc.DrawLine(16, y, 16+barPx, y)
+		dc.Stroke()
+		dc.SetColor(colFooter)
+		dc.SetLineWidth(2)
+		dc.DrawLine(16, y, 16+barPx, y)
+		dc.DrawLine(16, y-4, 16, y+4)
+		dc.DrawLine(16+barPx, y-4, 16+barPx, y+4)
+		dc.Stroke()
+		dc.SetFontFace(m.face(11))
+		haloTextAnchored(dc, label, 22+barPx, y, 0, 0.4, colFooter)
+	}
 
 	dc.SetFontFace(m.face(11))
-	haloTextAnchored(dc, fmt.Sprintf("%.0f NM", barNM), 22+barPx, y, 0, 0.4, colFooter)
-	haloTextAnchored(dc, "© OpenStreetMap contributors · OpenFreeMap", float64(v.w-14), y, 1, 0.4, colFooter)
+	haloTextAnchored(dc, credit, float64(v.w-14), y, 1, 0.4, colFooter)
 }
 
 // ---------- drawing helpers ----------

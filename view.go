@@ -12,9 +12,9 @@ const (
 	maxZoom   = 14 // OpenFreeMap's planet tiles stop here
 	padding   = 0.10
 	minSpanNM = 2.0
-	// The footer is one line — scale bar, its distance, and the attribution — and it
-	// measures ~381px. A frame narrower than this would wrap the credit off its own
-	// left edge, and the credit is an ODbL obligation, so narrow frames widen instead.
+	// The attribution is ~229px of the footer line and cannot be dropped, so a frame
+	// narrower than this would wrap the ODbL credit off its own left edge. Narrow frames
+	// widen instead; the scale bar takes whatever room is left over, or is left out.
 	minWidthPx = 400
 	// Web Mercator cannot represent the poles; this is where the square world ends.
 	maxMercatorLat = 85.05112878

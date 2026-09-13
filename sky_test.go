@@ -21,6 +21,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/fogleman/gg"
 )
 
 // ---------- helpers ----------
@@ -3026,6 +3028,43 @@ func TestFramingWithoutAReceiverCentresOnTheAircraft(t *testing.T) {
 			if sameColor(img.At(x, y), colReceiver) {
 				t.Fatalf("a receiver was drawn at (%d,%d) with none configured", x, y)
 			}
+		}
+	}
+}
+
+// The attribution is the obligation and the scale bar is the courtesy, so the bar is the
+// one that gives way. Close in at 55N a single mile is 169px, which will not fit beside a
+// 229px credit on a 400px frame — before the bar yielded, it was drawn straight through it.
+func TestTheScaleBarYieldsToTheAttribution(t *testing.T) {
+	m, err := newMapRenderer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dc := gg.NewContext(10, 10)
+	dc.SetFontFace(m.face(11))
+	creditW, _ := dc.MeasureString(credit)
+
+	for name, c := range map[string]struct {
+		pts     []latlon
+		wantBar bool
+	}{
+		"a mile apart at 55N":  {[]latlon{{55, 0}, {55.05, 0}}, false},
+		"forty miles in Texas": {[]latlon{{32.90, -96.64}, {33.47, -96.09}}, true},
+	} {
+		v := fitView(c.pts)
+		px, label, ok := m.scaleBar(dc, v, c.pts[0].lat)
+		if ok != c.wantBar {
+			t.Errorf("%s: %dpx wide at zoom %d drew bar=%v (%q, %.0fpx), want bar=%v",
+				name, v.w, v.zoom, ok, label, px, c.wantBar)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		lw, _ := dc.MeasureString(label)
+		if right, creditLeft := 22+px+lw, float64(v.w-14)-creditW; right > creditLeft {
+			t.Errorf("%s: scale bar ends at %.0f, over the credit starting at %.0f",
+				name, right, creditLeft)
 		}
 	}
 }
