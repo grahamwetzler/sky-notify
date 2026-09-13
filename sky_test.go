@@ -1304,11 +1304,11 @@ func TestFeedTypesCountAircraftSeen(t *testing.T) {
 	h.setPollOK(&feed{Aircraft: []Aircraft{
 		{Hex: "ABC123", Type: "B738"}, {Hex: "def456", Type: "B738"},
 		{Hex: "aaa111", Type: " A320 "}, {Hex: "bbb222"}, {Hex: "", Type: "C172"},
-	}})
+	}}, NewTracker())
 	// Same aircraft again, and one that has changed what it broadcasts.
 	h.setPollOK(&feed{Aircraft: []Aircraft{
 		{Hex: "abc123", Type: "B738"}, {Hex: "aaa111", Type: "A321"},
-	}})
+	}}, NewTracker())
 	want := []FacetValue{{Value: "A321", Count: 1}, {Value: "B738", Count: 2}}
 	if got := h.feedTypes(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("feedTypes = %#v, want %#v", got, want)
@@ -2401,5 +2401,74 @@ func TestRuleWithoutPriorityRoundTripsAsUnset(t *testing.T) {
 	a := Evaluate(at(Aircraft{Hex: "ffffff"}), NewDB(testConfig(t), http.DefaultClient), got, nil)
 	if a == nil || a.Priority != 2 {
 		t.Fatalf("alert = %+v, want the inherited priority 2", a)
+	}
+}
+
+// The live preview answers "what would this alert on right now", so unlike the database
+// preview it must apply the runtime conditions — and must agree, aircraft for aircraft,
+// with what the poll loop would actually enqueue.
+func TestLivePreviewMatchesWhatWouldAlert(t *testing.T) {
+	p := &Plane{ICAO: "abc123", Reg: "N1", Operator: "US Air Force", CMPG: "Mil"}
+	db := &DB{merged: map[string]*Plane{p.ICAO: p}}
+	lat, lon, nm, minAlt := 30.0, -95.0, 25.0, 10000
+	rule := Rule{Name: "mil", CMPG: []string{"Mil"}, MaxDistanceNM: &nm, MinAltitudeFt: &minAlt}
+	cfg := defaultAlerts()
+	cfg.Lat, cfg.Lon, cfg.Rules = &lat, &lon, []Rule{rule}
+
+	near := Aircraft{Hex: "abc123", Lat: &lat, Lon: &lon, AltBaro: Altitude{Feet: 31000, Present: true}}
+	low := near
+	low.AltBaro = Altitude{Feet: 500, Present: true}
+	low.Hex = "abc124"
+	far := near
+	far.Hex = "abc125"
+	farLat := lat + 5
+	far.Lat = &farLat
+	noPos := Aircraft{Hex: "abc126", AltBaro: Altitude{Feet: 31000, Present: true}}
+	overhead := []Aircraft{low, far, noPos, near}
+	// low, far and noPos share abc123's row only by hex, so give them one too: the rule
+	// is narrowed by CMPG and they must fail on position, not on identity.
+	for _, ac := range overhead {
+		hex := normalizeHex(ac.Hex)
+		db.merged[hex] = &Plane{ICAO: hex, Reg: "N1", Operator: "US Air Force", CMPG: "Mil"}
+	}
+
+	total, sample := MatchLive(rule, overhead, nil, db, cfg, previewLimit)
+	if total != 1 || len(sample) != 1 || sample[0].ICAO != "abc123" {
+		t.Fatalf("live preview = %d %#v, want only abc123", total, sample)
+	}
+	if sample[0].AltitudeFt == nil || *sample[0].AltitudeFt != 31000 || sample[0].DistanceNM == nil {
+		t.Fatalf("hit is missing the position it was matched on: %#v", sample[0])
+	}
+	// Whatever the preview says, the alert path must reach the same verdict.
+	tr := NewTracker()
+	for _, ac := range overhead {
+		got := Evaluate(ac, db, cfg, tr.get(normalizeHex(ac.Hex))) != nil
+		want := normalizeHex(ac.Hex) == "abc123"
+		if got != want {
+			t.Fatalf("%s: alert path says %v, preview says %v", ac.Hex, got, want)
+		}
+	}
+}
+
+// The nearest aircraft is the one a rule is usually being written for, and a capped
+// sample that dropped it would be the wrong twenty.
+func TestLivePreviewListsNearestFirst(t *testing.T) {
+	lat, lon := 30.0, -95.0
+	cfg := defaultAlerts()
+	cfg.Lat, cfg.Lon = &lat, &lon
+	db := &DB{merged: map[string]*Plane{}}
+	var overhead []Aircraft
+	for i := 0; i < previewLimit+5; i++ {
+		at := lat + float64(previewLimit+5-i)/10
+		overhead = append(overhead, Aircraft{Hex: fmt.Sprintf("%06x", i), Lat: &at, Lon: &lon})
+	}
+	total, sample := MatchLive(Rule{Name: "all"}, overhead, nil, db, cfg, previewLimit)
+	if total != len(overhead) || len(sample) != previewLimit {
+		t.Fatalf("total = %d, sample = %d; want %d capped at %d", total, len(sample), len(overhead), previewLimit)
+	}
+	for i := 1; i < len(sample); i++ {
+		if *sample[i-1].DistanceNM > *sample[i].DistanceNM {
+			t.Fatalf("sample is not nearest-first at %d: %v then %v", i, *sample[i-1].DistanceNM, *sample[i].DistanceNM)
+		}
 	}
 }

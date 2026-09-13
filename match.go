@@ -2,6 +2,7 @@ package main
 
 import (
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 )
@@ -40,10 +41,11 @@ type Alert struct {
 
 func cooldownKey(hex, trigger string) string { return hex + "|" + trigger }
 
-// Evaluate decides whether one aircraft is worth alerting on. Rules are the only reason
-// anything alerts: with no rules configured this always returns nil, emergencies included.
-// trk is the aircraft's recent history, nil when there is none.
-func Evaluate(ac Aircraft, db *DB, cfg *Alerts, trk *track) *Alert {
+// newAlert builds the context a rule is matched against: who the aircraft is, and where
+// it is relative to the receiver. Shared by the alert path and the live rule preview, so
+// the preview cannot answer a different question than the save. nil when the aircraft
+// has no usable address or has not reported a position.
+func newAlert(ac Aircraft, db *DB, cfg *Alerts, circling bool) *Alert {
 	hex := normalizeHex(ac.Hex)
 	if hex == "" {
 		return nil
@@ -52,7 +54,7 @@ func Evaluate(ac Aircraft, db *DB, cfg *Alerts, trk *track) *Alert {
 	if !isNonICAO(hex) {
 		plane, _ = db.Lookup(hex)
 	}
-	a := &Alert{Hex: hex, Plane: plane, AC: ac, Circling: trk.circling()}
+	a := &Alert{Hex: hex, Plane: plane, AC: ac, Circling: circling}
 	if cfg.Lat != nil && cfg.Lon != nil && ac.Lat != nil && ac.Lon != nil {
 		a.DistanceNM = haversineNM(*cfg.Lat, *cfg.Lon, *ac.Lat, *ac.Lon)
 		a.HasDistance = true
@@ -67,7 +69,19 @@ func Evaluate(ac Aircraft, db *DB, cfg *Alerts, trk *track) *Alert {
 		slog.Debug("holding alert until a position arrives", "icao", hex)
 		return nil
 	}
-	rule := firstMatch(cfg.Rules, ac, plane, a)
+	return a
+}
+
+// Evaluate decides whether one aircraft is worth alerting on. Rules are the only reason
+// anything alerts: with no rules configured this always returns nil, emergencies included.
+// trk is the aircraft's recent history, nil when there is none.
+func Evaluate(ac Aircraft, db *DB, cfg *Alerts, trk *track) *Alert {
+	a := newAlert(ac, db, cfg, trk.circling())
+	if a == nil {
+		return nil
+	}
+	hex := a.Hex
+	rule := firstMatch(cfg.Rules, ac, a.Plane, a)
 	if rule == nil {
 		return nil
 	}
@@ -237,4 +251,74 @@ func matchesAny(want, got []string) bool {
 		}
 	}
 	return false
+}
+
+// LiveHit is one aircraft overhead right now that a draft rule matches. Identity comes
+// from the database row when there is one and from the feed otherwise, so an unlisted
+// aircraft still shows as something recognisable rather than a bare hex.
+type LiveHit struct {
+	ICAO       string   `json:"icao"`
+	Reg        string   `json:"reg,omitempty"`
+	Type       string   `json:"type,omitempty"`
+	ICAOType   string   `json:"icao_type,omitempty"`
+	Operator   string   `json:"operator,omitempty"`
+	Tags       []string `json:"tags,omitempty"`
+	Flight     string   `json:"flight,omitempty"`
+	AltitudeFt *int     `json:"altitude_ft,omitempty"`
+	DistanceNM *float64 `json:"distance_nm,omitempty"`
+}
+
+// MatchLive reports which of the aircraft overhead right now a draft rule matches. It
+// runs the whole rule — position and flight path included — against the same alert
+// context the poll loop builds, so unlike the database preview this answers "what would
+// this alert on if I saved it now" rather than "what could it ever select".
+//
+// ponytail: one rule in isolation, so a match an earlier rule would claim first still
+// appears here. Pass the preceding rules too if shadowing needs to show.
+func MatchLive(rule Rule, overhead []Aircraft, circling map[string]bool, db *DB, cfg *Alerts, limit int) (total int, sample []LiveHit) {
+	var hits []LiveHit
+	for _, ac := range overhead {
+		a := newAlert(ac, db, cfg, circling[normalizeHex(ac.Hex)])
+		if a == nil || !rule.matches(ac, a.Plane, a) {
+			continue
+		}
+		h := LiveHit{ICAO: a.Hex, Reg: strings.TrimSpace(ac.Reg), ICAOType: strings.TrimSpace(ac.Type),
+			Flight: strings.TrimSpace(ac.Flight)}
+		if p := a.Plane; p != nil {
+			h.Type, h.Operator, h.Tags = p.Type, p.Operator, p.Tags
+			if h.Reg == "" {
+				h.Reg = p.Reg
+			}
+			if h.ICAOType == "" {
+				h.ICAOType = p.ICAOType
+			}
+		}
+		if ac.AltBaro.Present {
+			ft := ac.AltBaro.Feet
+			h.AltitudeFt = &ft
+		}
+		if a.HasDistance {
+			nm := a.DistanceNM
+			h.DistanceNM = &nm
+		}
+		hits = append(hits, h)
+	}
+	// Nearest first: the aircraft a rule is being written for is usually the one closest
+	// to the receiver. Without a distance there is nothing to rank by, so those trail in
+	// a stable order rather than shuffling with map iteration.
+	sort.Slice(hits, func(i, j int) bool {
+		a, b := hits[i], hits[j]
+		if (a.DistanceNM == nil) != (b.DistanceNM == nil) {
+			return b.DistanceNM == nil
+		}
+		if a.DistanceNM != nil && *a.DistanceNM != *b.DistanceNM {
+			return *a.DistanceNM < *b.DistanceNM
+		}
+		return a.ICAO < b.ICAO
+	})
+	total = len(hits)
+	if len(hits) > limit {
+		hits = hits[:limit]
+	}
+	return total, hits
 }

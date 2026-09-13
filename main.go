@@ -221,8 +221,8 @@ func poll(ctx context.Context, cfg *Alerts, src *Source, db *DB, state *State, q
 		h.setPollErr(err)
 		return
 	}
-	h.setPollOK(f)
 	tr.Update(f)
+	h.setPollOK(f, tr)
 
 	cooldown := cfg.Cooldown.Std()
 	for _, ac := range f.Aircraft {
@@ -436,21 +436,55 @@ type health struct {
 	// ponytail: memory only, one entry per aircraft seen since start — a restart
 	// starts the list again, as the tracker does.
 	typeOf map[string]string
+	// The last poll's aircraft, and which of them the tracker called circling at the
+	// time. This is what a rule preview is matched against to say what would alert right
+	// now. The tracker belongs to the poll loop and is not safe to read from a request,
+	// so the one question a rule asks it is answered while the poll loop still holds it.
+	overhead []Aircraft
+	circling map[string]bool
 }
 
-func (h *health) setPollOK(f *feed) {
+// setPollOK records a good poll. tr may be nil; when it is not it must already have
+// been updated with this feed, or the circling flags describe the poll before it.
+func (h *health) setPollOK(f *feed, tr *Tracker) {
 	h.mu.Lock()
 	h.lastFreshPoll, h.lastPollErr, h.aircraft = time.Now(), nil, len(f.Aircraft)
 	if h.typeOf == nil {
 		h.typeOf = map[string]string{}
 	}
+	h.overhead = f.Aircraft
+	h.circling = map[string]bool{}
 	for _, ac := range f.Aircraft {
 		hex, t := normalizeHex(ac.Hex), strings.TrimSpace(ac.Type)
-		if hex != "" && t != "" {
+		if hex == "" {
+			continue
+		}
+		if t != "" {
 			h.typeOf[hex] = t
+		}
+		if tr.get(hex).circling() {
+			h.circling[hex] = true
 		}
 	}
 	h.mu.Unlock()
+}
+
+// pollFresh reports whether the snapshot still describes the sky, by the same staleness
+// rule /healthz uses. A preview drawn from a dead feeder must say so rather than read as
+// an empty sky.
+func (h *health) pollFresh() bool {
+	h.mu.Lock()
+	last := h.lastFreshPoll
+	h.mu.Unlock()
+	return !last.IsZero() && time.Since(last) <= h.live.Get().Source.PollInterval.Std()*3
+}
+
+// snapshot is the last poll's traffic, for matching a draft rule against what is
+// overhead right now.
+func (h *health) snapshot() ([]Aircraft, map[string]bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.overhead, h.circling
 }
 
 // feedTypes is every ICAO type code the receiver has heard, and how many aircraft
@@ -541,6 +575,16 @@ func (h *health) mux(q *queue) http.Handler {
 		body := map[string]any{
 			"total": total, "aircraft": sample, "database": rows,
 			"limit": previewLimit, "offset": offset, "key": rule.Key(),
+		}
+		// What the rule would alert on this second, judged against the last poll rather
+		// than the database: the whole rule applies here, altitude and distance and
+		// flight path included. Not paged — the sky holds a few hundred aircraft, not a
+		// few hundred thousand, so the sample cap is only ever a courtesy.
+		overhead, circling := h.snapshot()
+		liveTotal, liveSample := MatchLive(rule, overhead, circling, h.db, h.live.Get(), previewLimit)
+		body["live"] = map[string]any{
+			"total": liveTotal, "aircraft": liveSample, "overhead": len(overhead),
+			"fresh": h.pollFresh(),
 		}
 		// Faceting scans the whole database once per pickable field, and the facets do
 		// not change as you page through a fixed rule. Only the first page pays for it.

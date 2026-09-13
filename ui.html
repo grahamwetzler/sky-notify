@@ -178,6 +178,7 @@ td{padding:7px 12px;border-bottom:1px solid var(--line);vertical-align:top;
 tbody tr:last-child td{border-bottom:0}
 td.reg{font-weight:600;white-space:nowrap}
 td.tg{color:var(--fg3)}
+td.num{white-space:nowrap;font-variant-numeric:tabular-nums}
 .more{width:calc(100% - 20px);margin:10px}
 
 /* ── Condition cards ──────────────────────────────────────────────────── */
@@ -900,7 +901,7 @@ function conditionPicker(anchor, r, groupId, after) {
       const b = el('button', 'opt'); b.type = 'button';
       const t = el('span', 't', c.label);
       if (c.source !== 'db') t.append(el('small', '', c.source === 'feed'
-        ? 'Live feed only — the preview cannot narrow on it'
+        ? 'Live feed only — narrows what is overhead, not the database figure'
         : 'Matched against the database and the live feed'));
       b.append(t);
       b.onclick = () => {
@@ -1004,12 +1005,16 @@ function conditionCard(r, key) {
   }
 
   if (bad) card.append(el('p', 'help bad', bad));
-  else if (spec.source === 'feed') card.append(el('p', 'help warn',
-    spec.group === 'identity'
-      ? 'Read off the live feed. No database row can answer it, so it does not narrow the figure above.'
+  /* Plain rather than a warning: the figure above cannot see this condition, but the
+     roll call of what is overhead does apply it, so it is a limit of the figure and no
+     longer a blind spot in the rule. */
+  else if (spec.source === 'feed') card.append(el('p', 'help',
+    (spec.group === 'identity'
+      ? 'Read off the live feed. No database row can answer it, so it does not narrow the figure above'
       : spec.group === 'position'
-        ? 'Describes where the aircraft is, not which aircraft it is, so it does not narrow the figure above.'
-        : 'Describes how the aircraft is flying, so it does not narrow the figure above.'));
+        ? 'Describes where the aircraft is, not which aircraft it is, so it does not narrow the figure above'
+        : 'Describes how the aircraft is flying, so it does not narrow the figure above')
+    + ' — only what is overhead right now, further down.'));
   else if (spec.source === 'both') card.append(el('p', 'help',
     'Matched against the database and the live feed, so a value no listed aircraft carries still alerts when one broadcasts it.'));
   if (spec.help && !bad) card.append(el('p', 'help', spec.help));
@@ -1196,9 +1201,8 @@ function renderPane() {
   const y = scrollY;
   /* The table of matches scrolls inside its own box — vertically through the rows, and
      horizontally at phone width. Neither is the window's scroll, and both are where the
-     operator was looking. */
-  const hits = $('#pane .hits');
-  const inner = hits && [hits.scrollTop, hits.scrollLeft];
+     operator was looking, and there are two of them. */
+  const boxes = [...pane.querySelectorAll('.hits')].map(b => [b.scrollTop, b.scrollLeft]);
   paintPane(pane);
   const back = id && document.getElementById(id);
   if (back) {
@@ -1212,8 +1216,9 @@ function renderPane() {
     if (caret) back.setSelectionRange(caret[0], caret[1]);
   }
   /* After the focus, so that the focus cannot have moved either of them. */
-  const again = $('#pane .hits');
-  if (inner && again) [again.scrollTop, again.scrollLeft] = inner;
+  pane.querySelectorAll('.hits').forEach((b, i) => {
+    if (boxes[i]) [b.scrollTop, b.scrollLeft] = boxes[i];
+  });
   if (scrollY !== y) scrollTo(0, y);
 }
 
@@ -1292,6 +1297,9 @@ function paintPane(pane) {
     pane.append(sec);
   }
 
+  const live = liveBand(r);
+  if (live) pane.append(live);
+
   const hits = hitsBand(r, cov);
   if (hits) pane.append(hits);
 
@@ -1310,12 +1318,78 @@ function resultBand(r, cov) {
 
   const blind = blindKeys(r);
   if (blind.length && cov.kind !== 'blind' && cov.kind !== 'wild') {
-    band.append(el('p', 'help warn', 'Not counted above: '
+    band.append(el('p', 'help', 'Not counted above: '
       + list(blind.map(k => BY_KEY[k].short || BY_KEY[k].label.toLowerCase()), ' and ')
-      + ` — the database has no answer for ${blind.length > 1 ? 'those' : 'that'}, so ${blind.length > 1 ? 'they narrow' : 'it narrows'} the alert but not the figure.`));
+      + ` — the database has no answer for ${blind.length > 1 ? 'those' : 'that'}, so ${blind.length > 1 ? 'they narrow' : 'it narrows'} what is overhead right now, further down, and not this figure.`));
   }
 
   return band;
+}
+
+/* ── Overhead right now ───────────────────────────────────────────────────
+   The database band answers what a rule can ever select. This one answers the question
+   actually being asked while a rule is written: if I saved this, what would it alert on?
+   So it runs against the last poll with every condition applied — altitude, distance and
+   flight path included, none of which the database can answer.
+
+   It is shown for every rule, including the ones the database cannot preview at all: a
+   squawk- or altitude-only rule has no figure above it and this is the only check it
+   gets. */
+function liveBand(r) {
+  const p = meta(r).preview;
+  const L = p && !p.error && p.live;
+  if (!L) return null;
+
+  const sec = el('div', 'group');
+  const gh = el('div', 'group-h');
+  const t = el('div', 'group-t');
+  t.append(el('h3', 'lbl', 'Overhead right now'));
+  t.append(el('p', 'help', 'The last poll, matched on the whole rule — where the aircraft is and how it is flying, not only who it is.'));
+  gh.append(t);
+  sec.append(gh);
+
+  if (!L.fresh) {
+    sec.append(el('p', 'help warn', 'No fresh poll from the feeder, so there is nothing to check this rule against. A zero here would not mean an empty sky.'));
+    return sec;
+  }
+  const overhead = `${(L.overhead || 0).toLocaleString()} aircraft overhead`;
+  if (!L.total) {
+    sec.append(el('p', 'help', `None of the ${overhead} match this rule as things stand. That is the normal state for a rule worth having — it says nothing about whether the rule works.`));
+    return sec;
+  }
+  /* Muted is a real answer to "would this alert", not a detail: the rule matches and
+     sends nothing. Said here rather than only next to the priority field, because this
+     is the band that claims an alert. */
+  const muted = r.priority === 0;
+  sec.append(el('p', 'help' + (muted ? ' warn' : ''),
+    `${L.total.toLocaleString()} of the ${overhead} `
+    + (muted ? 'match this rule, but it is muted and would send nothing.'
+             : `would alert the moment this rule is saved${L.total > L.aircraft.length ? `; the nearest ${L.aircraft.length} are listed` : ''}.`)));
+
+  const wrap = el('div', 'hits');
+  const table = el('table');
+  const thead = el('thead'), hr = el('tr');
+  for (const [text, width] of [['Registration', '18%'], ['Callsign', '16%'], ['Type', '30%'],
+                               ['Altitude', '18%'], ['Distance', '18%']]) {
+    const th = el('th', '', text);
+    th.style.width = width;
+    hr.append(th);
+  }
+  thead.append(hr);
+  const tbody = el('tbody');
+  for (const a of L.aircraft) {
+    const tr = el('tr');
+    tr.append(el('td', 'reg', a.reg || a.icao),
+      el('td', '', a.flight || ''),
+      el('td', '', a.type || a.icao_type || ''),
+      el('td', 'num', a.altitude_ft == null ? '—' : a.altitude_ft.toLocaleString() + ' ft'),
+      el('td', 'num', a.distance_nm == null ? '—' : a.distance_nm.toFixed(1) + ' NM'));
+    tbody.append(tr);
+  }
+  table.append(thead, tbody);
+  wrap.append(table);
+  sec.append(wrap);
+  return sec;
 }
 
 /* The roll call sits under the conditions that select it, not above them: the figure is
@@ -1330,7 +1404,7 @@ function hitsBand(r, cov) {
     t.append(el('p', 'help', 'From the database, by the identity conditions above.'));
     gh.append(t);
     sec.append(gh);
-    const wrap = el('div', 'hits');
+    const wrap = el('div', 'hits db');
     const table = el('table');
     const thead = el('thead'), hr = el('tr');
     for (const [text, width] of [['Registration', '20%'], ['Type', '24%'],
@@ -1374,7 +1448,7 @@ function moreButton(r, p) {
    read to the bottom of. Returns false if there is no table to add to, which means the
    pane is showing something else and the caller should paint it properly. */
 function appendHits(r) {
-  const wrap = $('#pane .hits');
+  const wrap = $('#pane .hits.db');
   const tbody = wrap?.querySelector('tbody');
   if (!tbody) return false;
   const p = meta(r).preview;
