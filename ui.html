@@ -1335,6 +1335,23 @@ function resultBand(r, cov) {
    It is shown for every rule, including the ones the database cannot preview at all: a
    squawk- or altitude-only rule has no figure above it and this is the only check it
    gets. */
+/* How old the poll behind an answer is by now: as old as it was when the server said so,
+   plus however long the answer has been sitting on screen. A cached `fresh` cannot be
+   trusted on its own — a feeder that stops after an answer lands would go on reading as
+   an empty sky, which is the one thing this band must never say. Stale by the same rule
+   /healthz uses, mirrored here so it can be applied without asking again. */
+function liveAge(r) {
+  const m = meta(r), L = m.preview?.live;
+  if (!L || L.age_s == null || !m.at) return null;
+  return L.age_s + (Date.now() - m.at) / 1000;
+}
+function liveFresh(r) {
+  const L = meta(r).preview?.live;
+  if (!L?.fresh) return false;
+  const age = liveAge(r), poll = parseDuration(setting('source.poll_interval', doc.source.poll_interval));
+  return age == null || poll == null || age <= poll * 3;
+}
+
 function liveBand(r) {
   const p = meta(r).preview;
   const L = p && !p.error && p.live;
@@ -1348,7 +1365,7 @@ function liveBand(r) {
   gh.append(t);
   sec.append(gh);
 
-  if (!L.fresh) {
+  if (!liveFresh(r)) {
     sec.append(el('p', 'help warn', 'No fresh poll from the feeder, so there is nothing to check this rule against. A zero here would not mean an empty sky.'));
     return sec;
   }
@@ -1636,6 +1653,9 @@ function settingField(f) {
     /* Both of these decide whether a rule's conditions are legal, so every rule's
        warnings move with them. */
     if (f.key === 'lat' || f.key === 'lon' || f.key === 'source.poll_interval') renderList();
+    /* The receiver is what every distance and predicted-pass rule is measured from, so
+       moving it changes what each of them is overhead of. */
+    if (f.key === 'lat' || f.key === 'lon') doc.rules.forEach(schedulePreview);
   };
   wrap.append(input);
   if (f.help) wrap.append(el('span', 'help', f.help));
@@ -1649,7 +1669,7 @@ function settingField(f) {
 function schedulePreview(r) {
   const m = meta(r);
   clearTimeout(m.timer);
-  m.timer = setTimeout(() => runPreview(r), 300);
+  m.timer = setTimeout(() => { m.timer = null; runPreview(r); }, 300);
 }
 
 /* A condition left empty states nothing, so the rule that is previewed — and
@@ -1666,12 +1686,21 @@ function payloadRule(r) {
   return out;
 }
 
-async function runPreview(r, offset = 0) {
+/* The coordinates the preview measures distances from: the ones on screen, which are
+   not yet the saved ones. Sent only as a complete pair — one alone measures nothing —
+   and the server still lets the environment override them, as saving does. */
+function receiver() {
+  const lat = setting('lat', doc.lat), lon = setting('lon', doc.lon);
+  return lat == null || lon == null || lat === '' || lon === '' ? {} : {lat, lon};
+}
+
+async function runPreview(r, offset = 0, refresh = false) {
   const m = meta(r);
   const seq = (m.seq || 0) + 1;
   m.seq = seq;
   try {
-    const res = await fetch('/api/preview?offset=' + offset, {
+    const res = await fetch('/api/preview?' + new URLSearchParams(
+        {offset, ...receiver()}), {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payloadRule(r)),
     });
@@ -1684,7 +1713,13 @@ async function runPreview(r, offset = 0) {
          reaching further into a long list never looks like a fresh result. */
       ? {...prev, ...body, aircraft: [...prev.aircraft, ...body.aircraft],
          facets: prev.facets}
-      : body;
+      /* A timed refresh is asking a live question, not a new one: the database rows the
+         operator has paged through stay where they were. An edit still resets them,
+         because then they are answering a different rule. */
+      : refresh && prev?.aircraft?.length > body.aircraft.length
+        ? {...body, aircraft: prev.aircraft}
+        : body;
+    m.at = Date.now();
     if (body.key) m.key = body.key;
     if (body.database != null && body.database !== dbRows) {
       dbRows = body.database;
@@ -1718,6 +1753,21 @@ function refreshFigures() {
   if (note) note.textContent = cov.note;
   renderList();
 }
+
+/* The band claims "right now", so it has to keep earning it: re-ask for the rule on
+   screen once its answer is older than the feeder's own cadence. Only that rule — a
+   preview nobody is looking at is a request nobody needs — and never over an open
+   popover, whose anchor a repaint would leave detached. */
+function refreshLive() {
+  if (!doc || isSettings() || document.hidden || closePop) return;
+  const r = doc.rules[sel];
+  const poll = parseDuration(setting('source.poll_interval', doc.source.poll_interval));
+  if (r && !meta(r).timer && (liveAge(r) ?? Infinity) > (poll || 15)) runPreview(r, 0, true);
+}
+setInterval(refreshLive, 15000);
+/* A backgrounded tab skips every tick, so its answer is as old as the time away. Ask
+   again the moment it is looked at rather than showing that on a heading saying now. */
+document.addEventListener('visibilitychange', refreshLive);
 
 /* ── Load and save ────────────────────────────────────────────────────── */
 function addRule() {

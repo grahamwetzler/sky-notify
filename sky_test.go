@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -2470,5 +2471,36 @@ func TestLivePreviewListsNearestFirst(t *testing.T) {
 		if *sample[i-1].DistanceNM > *sample[i].DistanceNM {
 			t.Fatalf("sample is not nearest-first at %d: %v then %v", i, *sample[i-1].DistanceNM, *sample[i].DistanceNM)
 		}
+	}
+}
+
+// Receiver coordinates are edited in the same session as the rule that needs them, so a
+// distance rule previewed against the saved ones answers for the wrong place — or, before
+// they are saved at all, for nowhere. The environment still outranks the page, exactly as
+// it does at save.
+func TestPreviewMeasuresFromTheReceiverOnScreen(t *testing.T) {
+	saved, savedLon := 0.0, 0.0
+	cfg := defaultAlerts()
+	cfg.Lat, cfg.Lon = &saved, &savedLon
+	h := &health{live: NewLive(cfg)}
+
+	draft := url.Values{"lat": {"30"}, "lon": {"-95"}}
+	got := h.previewAlerts(draft)
+	if got.Lat == nil || *got.Lat != 30 || got.Lon == nil || *got.Lon != -95 {
+		t.Fatalf("preview receiver = %v/%v, want the coordinates the page is holding", got.Lat, got.Lon)
+	}
+	// Half a pair measures nothing, and neither does a value that is not a number.
+	for _, q := range []url.Values{{"lat": {"30"}}, {"lat": {"30"}, "lon": {"x"}}, {}} {
+		if got := h.previewAlerts(q); got.Lat != cfg.Lat || got.Lon != cfg.Lon {
+			t.Fatalf("%v: preview receiver moved on an unusable pair", q)
+		}
+	}
+	t.Setenv("SKY_LAT", "10")
+	if got := h.previewAlerts(draft); got.Lat != cfg.Lat || got.Lon == nil || *got.Lon != -95 {
+		t.Fatalf("preview receiver = %v/%v, want the environment's latitude and the page's longitude", got.Lat, got.Lon)
+	}
+	// Never through the pointer the running loops read.
+	if *cfg.Lat != 0 || *cfg.Lon != 0 {
+		t.Fatal("the preview mutated the published config")
 	}
 }

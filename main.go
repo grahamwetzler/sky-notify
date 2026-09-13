@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"sort"
@@ -469,14 +470,49 @@ func (h *health) setPollOK(f *feed, tr *Tracker) {
 	h.mu.Unlock()
 }
 
-// pollFresh reports whether the snapshot still describes the sky, by the same staleness
-// rule /healthz uses. A preview drawn from a dead feeder must say so rather than read as
-// an empty sky.
-func (h *health) pollFresh() bool {
+// previewAlerts is the running config with the receiver the page is holding, which is
+// not yet the saved one: coordinates are edited in the same session as the rule that
+// needs them, and matching a distance rule against the old ones answers for the wrong
+// place — or, before they are first saved, for nowhere at all. The environment still
+// wins, exactly as it does at save; a coordinate it sets is not editable in the page
+// either.
+func (h *health) previewAlerts(q url.Values) *Alerts {
+	cfg := h.live.Get()
+	lat, latErr := strconv.ParseFloat(q.Get("lat"), 64)
+	lon, lonErr := strconv.ParseFloat(q.Get("lon"), 64)
+	if latErr != nil || lonErr != nil {
+		return cfg
+	}
+	draft := *cfg
+	draft.Lat, draft.Lon = &lat, &lon
+	env := environMap(os.Environ())
+	for _, b := range alertEnvBindings() {
+		if _, set := env[b.name]; !set {
+			continue
+		}
+		switch b.key {
+		case "lat":
+			draft.Lat = cfg.Lat
+		case "lon":
+			draft.Lon = cfg.Lon
+		}
+	}
+	return &draft
+}
+
+// pollAge is how old the snapshot is, and whether it still describes the sky by the same
+// staleness rule /healthz uses. A preview drawn from a dead feeder must say so rather
+// than read as an empty sky — and the age travels with the answer, so a page holding one
+// can watch it go stale without asking again.
+func (h *health) pollAge() (age time.Duration, ok, fresh bool) {
 	h.mu.Lock()
 	last := h.lastFreshPoll
 	h.mu.Unlock()
-	return !last.IsZero() && time.Since(last) <= h.live.Get().Source.PollInterval.Std()*3
+	if last.IsZero() {
+		return 0, false, false
+	}
+	age = time.Since(last)
+	return age, true, age <= h.live.Get().Source.PollInterval.Std()*3
 }
 
 // snapshot is the last poll's traffic, for matching a draft rule against what is
@@ -581,11 +617,16 @@ func (h *health) mux(q *queue) http.Handler {
 		// flight path included. Not paged — the sky holds a few hundred aircraft, not a
 		// few hundred thousand, so the sample cap is only ever a courtesy.
 		overhead, circling := h.snapshot()
-		liveTotal, liveSample := MatchLive(rule, overhead, circling, h.db, h.live.Get(), previewLimit)
-		body["live"] = map[string]any{
+		liveTotal, liveSample := MatchLive(rule, overhead, circling, h.db, h.previewAlerts(r.URL.Query()), previewLimit)
+		age, seen, fresh := h.pollAge()
+		live := map[string]any{
 			"total": liveTotal, "aircraft": liveSample, "overhead": len(overhead),
-			"fresh": h.pollFresh(),
+			"fresh": fresh,
 		}
+		if seen {
+			live["age_s"] = int(age.Seconds())
+		}
+		body["live"] = live
 		// Faceting scans the whole database once per pickable field, and the facets do
 		// not change as you page through a fixed rule. Only the first page pays for it.
 		if offset == 0 {
