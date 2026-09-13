@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +17,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -2659,5 +2663,435 @@ func TestHistoryPagingSurvivesConcurrentDeliveries(t *testing.T) {
 	}
 	if len(got) != 22 {
 		t.Fatalf("read %d rows, want the 22 surviving ones: %v", len(got), got)
+	}
+}
+
+// ---------- map snapshots ----------
+
+func goldenTile(t *testing.T) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", "tile-11-474-825.pbf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// tileFixture answers every tile request with the same body, which is all the renderer
+// needs: an empty body draws nothing but the background, so the overlay tests can assert
+// on exact pixels, and the golden tile exercises the real decoder.
+type tileFixture struct {
+	mu       sync.Mutex
+	body     []byte
+	hits     int
+	jsonCode int // status for the TileJSON, 0 means 200
+	tileCode int // status for a tile, 0 means 200
+	block    bool
+	srv      *httptest.Server
+}
+
+func (f *tileFixture) start(t *testing.T) *tileStore {
+	t.Helper()
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/planet" {
+			if f.jsonCode != 0 {
+				w.WriteHeader(f.jsonCode)
+				return
+			}
+			fmt.Fprintf(w, `{"tiles":["http://%s/planet/20260906_080001_pt/{z}/{x}/{y}.pbf"]}`, r.Host)
+			return
+		}
+		if f.block {
+			<-r.Context().Done() // a tile server that never answers
+			return
+		}
+		f.mu.Lock()
+		f.hits++
+		body := f.body
+		f.mu.Unlock()
+		if f.tileCode != 0 {
+			w.WriteHeader(f.tileCode)
+			return
+		}
+		w.Write(body)
+	}))
+	t.Cleanup(f.srv.Close)
+	return newTileStore(f.srv.Client(), f.srv.URL+"/planet", t.TempDir())
+}
+
+func (f *tileFixture) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hits
+}
+
+func testRenderer(t *testing.T, f *tileFixture) *mapRenderer {
+	t.Helper()
+	m, err := newMapRenderer(f.start(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// mapAlert is an alert over Garland with a receiver and a short track behind it.
+func mapAlert(gap bool) *Alert {
+	lat, lon, trk := 32.93, -96.60, 90.0
+	a := &Alert{Hex: "adeb2f", Trigger: "listed", Priority: 3,
+		AC:          Aircraft{Hex: "adeb2f", Lat: &lat, Lon: &lon, Track: &trk},
+		HasDistance: true, recvLat: 32.8998, recvLon: -96.6386}
+	base := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	for i := range 10 {
+		at := base.Add(time.Duration(i) * 20 * time.Second)
+		if gap && i >= 5 {
+			at = at.Add(5 * time.Minute)
+		}
+		a.Path = append(a.Path, sample{at, 32.93, -96.66 + float64(i)*0.006, 90})
+	}
+	return a
+}
+
+func decodePNG(t *testing.T, b []byte) image.Image {
+	t.Helper()
+	img, err := png.Decode(bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("snapshot is not a PNG: %v", err)
+	}
+	if img.Bounds().Dx() != mapPx || img.Bounds().Dy() != mapPx {
+		t.Fatalf("image is %v, want %dx%d", img.Bounds(), mapPx, mapPx)
+	}
+	return img
+}
+
+func sameColor(a, b color.Color) bool {
+	r1, g1, b1, _ := a.RGBA()
+	r2, g2, b2, _ := b.RGBA()
+	return r1 == r2 && g1 == g2 && b1 == b2
+}
+
+func TestFitViewFramesTheReceiverAndTheAircraft(t *testing.T) {
+	// 40 NM apart, roughly north-east of the receiver.
+	pts := []latlon{{32.90, -96.64}, {33.47, -96.09}}
+	v := fitView(pts)
+	if v.zoom != 10 {
+		t.Errorf("zoom = %d, want the largest that still fits (10)", v.zoom)
+	}
+	for _, p := range pts {
+		q := v.pixel(p.lat, p.lon)
+		if q.x < 0 || q.x > mapPx || q.y < 0 || q.y > mapPx {
+			t.Errorf("%v landed off the image at %v", p, q)
+		}
+	}
+}
+
+// A pair either side of the antimeridian is two tenths of a degree apart, not 359.8.
+func TestFitViewDoesNotWrapAroundTheWorld(t *testing.T) {
+	v := fitView([]latlon{{10, 179.9}, {10, -179.9}})
+	a, b := v.pixel(10, 179.9), v.pixel(10, -179.9)
+	if v.zoom < 10 {
+		t.Errorf("zoom = %d: the frame spanned the planet instead of the strait", v.zoom)
+	}
+	if math.Abs(a.x-b.x) > mapPx {
+		t.Errorf("points %v and %v are a world apart", a, b)
+	}
+	for _, q := range []pt{a, b} {
+		if q.x < 0 || q.x > mapPx || q.y < 0 || q.y > mapPx {
+			t.Errorf("point landed off the image at %v", q)
+		}
+	}
+}
+
+// A single point has no extent; the minimum span is what stops the zoom clamp dividing
+// by zero and the receiver coinciding with the aircraft blanking the map.
+func TestFitViewGivesADegenerateBoxAMinimumSpan(t *testing.T) {
+	for _, pts := range [][]latlon{{{32.9, -96.6}}, {{32.9, -96.6}, {32.9, -96.6}}} {
+		v := fitView(pts)
+		if v.zoom != maxZoom {
+			t.Errorf("a %d-point box should frame at the closest zoom, got %d", len(pts), v.zoom)
+		}
+		if q := v.pixel(32.9, -96.6); math.Abs(q.x-mapPx/2) > 1 || math.Abs(q.y-mapPx/2) > 1 {
+			t.Errorf("single point should be centred, got %v", q)
+		}
+	}
+}
+
+func TestDecodeGoldenTile(t *testing.T) {
+	layers, err := decodeTile(context.Background(), goldenTile(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]layer{}
+	for _, l := range layers {
+		byName[l.name] = l
+	}
+	for _, want := range []string{"place", "water", "transportation", "transportation_name", "boundary"} {
+		if _, ok := byName[want]; !ok {
+			t.Errorf("layer %q missing; got %v", want, byName)
+		}
+	}
+	place := byName["place"]
+	if place.extent != 4096 {
+		t.Errorf("extent = %d, want 4096", place.extent)
+	}
+	var found *feature
+	for i := range place.features {
+		if name, _ := place.features[i].props["name"].(string); name == "Garland" {
+			found = &place.features[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("no Garland in the place layer")
+	}
+	if found.kind != geomPoint || len(found.rings) != 1 || len(found.rings[0]) != 1 {
+		t.Errorf("Garland should be one point, got kind %d rings %v", found.kind, found.rings)
+	}
+	if class, _ := found.props["class"].(string); class != "city" {
+		t.Errorf("Garland class = %q, want city", class)
+	}
+}
+
+// Tile bytes are third-party input decoded on the alert path. Every mangling of a real
+// tile must come back as an error, never as a panic and never as a wild allocation.
+func TestCorruptTilesAreRejectedNotFatal(t *testing.T) {
+	good := goldenTile(t)
+	for name, b := range map[string][]byte{
+		"truncated":     good[:len(good)/2],
+		"one byte":      good[:1],
+		"garbage":       []byte("this is not a vector tile, not even slightly"),
+		"absurd length": {0x1a, 0xff, 0xff, 0xff, 0xff, 0x7f},
+		"zero field":    {0x00, 0x01},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("decoding panicked: %v", r)
+				}
+			}()
+			if _, err := decodeTile(context.Background(), b); err == nil {
+				t.Error("want an error")
+			}
+		})
+	}
+	// Every single-byte truncation of the real tile, which walks the decoder through
+	// every length and command count it reads.
+	for i := 1; i < len(good); i += 977 {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("truncation at %d panicked: %v", i, r)
+				}
+			}()
+			decodeTile(context.Background(), good[:i])
+		}()
+	}
+}
+
+func TestDrawProducesAMapWithTheOverlaysOnIt(t *testing.T) {
+	f := &tileFixture{body: goldenTile(t)}
+	m := testRenderer(t, f)
+	a := mapAlert(false)
+	b := m.snapshot(context.Background(), a)
+	if b == nil {
+		t.Fatal("no snapshot")
+	}
+	img := decodePNG(t, b)
+
+	v := fitView(framePoints(a))
+	recv := v.pixel(a.recvLat, a.recvLon)
+	if got := img.At(int(recv.x), int(recv.y)); sameColor(got, colBackground) {
+		t.Errorf("nothing drawn at the receiver (%v)", got)
+	}
+	mid := a.Path[len(a.Path)/2]
+	track := v.pixel(mid.lat, mid.lon)
+	if got := img.At(int(track.x), int(track.y)); sameColor(got, colBackground) {
+		t.Errorf("nothing drawn on the track (%v)", got)
+	}
+}
+
+// A dropout is a gap, not a leg: drawing straight through one would invent a course the
+// aircraft never flew.
+func TestATrackWithAHoleIsDrawnAsTwoSegments(t *testing.T) {
+	f := &tileFixture{} // empty tiles, so anything non-background is ours
+	m := testRenderer(t, f)
+	a := mapAlert(true)
+	img := decodePNG(t, m.snapshot(context.Background(), a))
+
+	v := fitView(framePoints(a))
+	before, after := a.Path[4], a.Path[5]
+	p, q := v.pixel(before.lat, before.lon), v.pixel(after.lat, after.lon)
+	if segs := pathSegments(a.Path); len(segs) != 2 {
+		t.Fatalf("want 2 segments, got %d", len(segs))
+	}
+	painted := 0
+	for i := 1; i < 10; i++ {
+		frac := float64(i) / 10
+		x, y := p.x+(q.x-p.x)*frac, p.y+(q.y-p.y)*frac
+		if !sameColor(img.At(int(x), int(y)), colBackground) {
+			painted++
+		}
+	}
+	if painted > 0 {
+		t.Errorf("%d of 9 pixels across the gap were painted; the hole was bridged", painted)
+	}
+}
+
+// With no receiver configured the frame is about the aircraft, and nothing is marked at
+// (0, 0) — which is in the Gulf of Guinea, not in Texas.
+func TestFramingWithoutAReceiverCentresOnTheAircraft(t *testing.T) {
+	f := &tileFixture{}
+	m := testRenderer(t, f)
+	a := mapAlert(false)
+	a.HasDistance, a.recvLat, a.recvLon = false, 0, 0
+	a.Path = nil // a brand-new contact: one position and nothing behind it
+
+	v := fitView(framePoints(a))
+	if q := v.pixel(*a.AC.Lat, *a.AC.Lon); math.Abs(q.x-mapPx/2) > mapPx/4 || math.Abs(q.y-mapPx/2) > mapPx/4 {
+		t.Errorf("aircraft should sit near the middle, got %v", q)
+	}
+	img := decodePNG(t, m.snapshot(context.Background(), a))
+	for y := range mapPx {
+		for x := range mapPx {
+			if sameColor(img.At(x, y), colReceiver) {
+				t.Fatalf("a receiver was drawn at (%d,%d) with none configured", x, y)
+			}
+		}
+	}
+}
+
+func TestSnapshotSurvivesWhatTheTileServerDoes(t *testing.T) {
+	for name, f := range map[string]*tileFixture{
+		"corrupt tile":      {body: []byte("not a tile at all, truly")},
+		"tile server error": {tileCode: http.StatusInternalServerError},
+		"discovery fails":   {jsonCode: http.StatusInternalServerError},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := testRenderer(t, f)
+			if b := m.snapshot(context.Background(), mapAlert(false)); b != nil {
+				t.Errorf("want no image, got %d bytes", len(b))
+			}
+		})
+	}
+}
+
+// One failure silences the fetcher for a while. Without it, a tile outage would add the
+// whole render budget to every alert, and the notifier is one goroutine.
+func TestOneTileFailureStopsTheNextAlertFromWaiting(t *testing.T) {
+	f := &tileFixture{tileCode: http.StatusInternalServerError}
+	store := f.start(t)
+	if _, err := store.tiles(context.Background(), fitView([]latlon{{32.9, -96.6}})); err == nil {
+		t.Fatal("want an error")
+	}
+	hits := f.count()
+	if _, err := store.tiles(context.Background(), fitView([]latlon{{32.9, -96.6}})); err == nil {
+		t.Fatal("want an error while the breaker is open")
+	}
+	if f.count() != hits {
+		t.Errorf("the breaker should have answered without asking the server again")
+	}
+}
+
+func TestCachedTilesAreReusedRefreshedAndRepaired(t *testing.T) {
+	f := &tileFixture{body: goldenTile(t)}
+	store := f.start(t)
+	v := fitView([]latlon{{32.9, -96.6}})
+
+	if _, err := store.tiles(context.Background(), v); err != nil {
+		t.Fatal(err)
+	}
+	first := f.count()
+	if first == 0 {
+		t.Fatal("nothing was fetched")
+	}
+	if _, err := store.tiles(context.Background(), v); err != nil {
+		t.Fatal(err)
+	}
+	if f.count() != first {
+		t.Errorf("a second look should come from disk, got %d extra fetches", f.count()-first)
+	}
+
+	var cached []string
+	filepath.WalkDir(store.dir, func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			cached = append(cached, path)
+		}
+		return nil
+	})
+	if len(cached) == 0 {
+		t.Fatal("nothing was cached")
+	}
+
+	// A file scribbled on by a half-finished write is thrown away, not decoded.
+	if err := os.WriteFile(cached[0], []byte("rubbish"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.tiles(context.Background(), v); err != nil {
+		t.Fatal(err)
+	}
+	if f.count() <= first {
+		t.Error("a corrupt cached tile should have been refetched")
+	}
+
+	// Past its TTL it is refetched even though it is perfectly good.
+	second := f.count()
+	old := time.Now().Add(-tileCacheTTL - time.Hour)
+	for _, p := range cached {
+		os.Chtimes(p, old, old)
+	}
+	if _, err := store.tiles(context.Background(), v); err != nil {
+		t.Fatal(err)
+	}
+	if f.count() <= second {
+		t.Error("a stale cached tile should have been refetched")
+	}
+}
+
+// The cache key carries the planet build the tiles came from, so a refreshed template
+// cannot keep serving tiles the server has already replaced.
+func TestTemplateVersionKeysTheCache(t *testing.T) {
+	for template, want := range map[string]string{
+		"https://tiles.example/planet/20260906_080001_pt/{z}/{x}/{y}.pbf": "20260906_080001_pt",
+		"https://tiles.example/planet/{z}/{x}/{y}.pbf":                    "planet",
+		"https://tiles.example/{z}/{x}/{y}.pbf":                           "tiles.example",
+		"https://tiles.example/planet/../{z}/{x}/{y}.pbf":                 "unversioned",
+	} {
+		if got := templateVersion(template); got != want {
+			t.Errorf("templateVersion(%q) = %q, want %q", template, got, want)
+		}
+	}
+}
+
+// Evaluate is where the path is copied: the Tracker belongs to pollLoop and is unlocked,
+// so the renderer must never be handed a live slice.
+func TestAlertCarriesACopyOfTheTrack(t *testing.T) {
+	cfg := testConfig(t)
+	alerts := defaultAlerts()
+	alerts.Lat, alerts.Lon = &testLat, &testLon
+	alerts.Rules = []Rule{{Name: "listed", Listed: boolp(true)}}
+	db := dbWith(t, cfg, mustParse(t, sampleCSV))
+
+	lat, lon, hdg := testLat, testLon, 90.0
+	tr := NewTracker()
+	for i := range 3 {
+		tr.Update(&feed{Now: float64(1000 + i*10), Aircraft: []Aircraft{
+			{Hex: "adeb2f", Lat: &lat, Lon: &lon, Track: &hdg, SeenPos: float64(-i * 10)}}})
+	}
+	a := Evaluate(at(Aircraft{Hex: "adeb2f"}), db, alerts, tr.get("adeb2f"))
+	if a == nil {
+		t.Fatal("no alert")
+	}
+	if len(a.Path) != 3 {
+		t.Fatalf("want the three samples the tracker holds, got %d", len(a.Path))
+	}
+	a.Path[0].lat = 0
+	if tr.get("adeb2f").samples[0].lat == 0 {
+		t.Error("the alert shares the Tracker's slice; a render would race the poll loop")
+	}
+	// The preview path has no map and no use for a path.
+	if hits := func() []LiveHit {
+		_, h := MatchLive(alerts.Rules[0], []Aircraft{at(Aircraft{Hex: "adeb2f"})},
+			map[string]bool{}, db, alerts, 10)
+		return h
+	}(); len(hits) != 1 {
+		t.Fatalf("the live preview should still match, got %d", len(hits))
 	}
 }

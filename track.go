@@ -65,6 +65,16 @@ func (tr *Tracker) Update(f *feed) {
 	}
 }
 
+// path copies the samples out for the renderer. Tracker belongs to pollLoop and is
+// deliberately unlocked, so the map must be handed a snapshot rather than a live slice.
+// nil-safe like circling: an aircraft first heard this poll has no track at all.
+func (tk *track) path() []sample {
+	if tk == nil {
+		return nil
+	}
+	return append([]sample(nil), tk.samples...)
+}
+
 // circling reports whether the aircraft has turned a full circle without leaving a small
 // area. The area limit is what separates an orbit from a holding pattern, which turns
 // just as far but over several miles. Only samples since the last gap count.

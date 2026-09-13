@@ -37,6 +37,11 @@ type Alert struct {
 	HasPass bool
 	// The receiver, valid when HasDistance is.
 	recvLat, recvLon float64
+	// Path is the aircraft's recent positions, copied out of the Tracker at match time
+	// because the renderer runs on another goroutine. It keeps the sample timestamps:
+	// the map breaks the drawn line wherever the feed went quiet, and a bare coordinate
+	// list could not say where that was. Empty on the preview path, which has no map.
+	Path []sample
 }
 
 func cooldownKey(hex, trigger string) string { return hex + "|" + trigger }
@@ -93,7 +98,7 @@ func Evaluate(ac Aircraft, db *DB, cfg *Alerts, trk *track) *Alert {
 		slog.Debug("rule matched but muted", "rule", rule.Key(), "icao", hex)
 		return nil
 	}
-	a.Trigger, a.Priority = rule.Key(), priority
+	a.Trigger, a.Priority, a.Path = rule.Key(), priority, trk.path()
 	// Derived from the squawk itself, never from which rule fired: the queue's eviction
 	// and ordering (main.go) and the notification's framing (notify.go) must treat a 7700
 	// as urgent however the operator happened to write the rule that caught it.
