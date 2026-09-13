@@ -71,6 +71,9 @@ func run() error {
 	var logLevel slog.LevelVar
 	logLevel.Set(parseLevel(alerts.LogLevel))
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: &logLevel})))
+	if cfg.Tar1090URL == "" {
+		slog.Warn("tar1090_url unset: notifications will carry no link to your map (set SKY_TAR1090_URL)")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
