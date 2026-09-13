@@ -2096,6 +2096,11 @@ func TestClickURLPrefersTar1090(t *testing.T) {
 	if got := s.bodies[0].Click; got != "https://tar1090.example.com/?icao=adeb2f" {
 		t.Errorf("click url: got %q", got)
 	}
+	// A click alone is invisible; the button is what the user can actually see and tap.
+	if acts := s.bodies[0].Actions; len(acts) != 1 || acts[0].Action != "view" ||
+		acts[0].URL != "https://tar1090.example.com/?icao=adeb2f" || acts[0].Label == "" {
+		t.Errorf("view action: got %+v", acts)
+	}
 }
 
 func TestAuthHeaders(t *testing.T) {

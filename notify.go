@@ -23,6 +23,15 @@ type ntfyMessage struct {
 	Priority int      `json:"priority,omitempty"`
 	Tags     []string `json:"tags,omitempty"`
 	Click    string   `json:"click,omitempty"`
+	Actions  []action `json:"actions,omitempty"`
+}
+
+// ntfy renders click as an invisible tap target: the notification opens the map but
+// says nothing about it. A view action is the same URL with a button the user can see.
+type action struct {
+	Action string `json:"action"`
+	Label  string `json:"label"`
+	URL    string `json:"url"`
 }
 
 type Notifier struct {
@@ -255,32 +264,40 @@ func (n *Notifier) render(a *Alert) ntfyMessage {
 		tags = append(tags, "rotating_light")
 	}
 
+	click, label := n.clickURL(a)
+	var actions []action
+	if click != "" {
+		actions = []action{{Action: "view", Label: label, URL: click}}
+	}
+
 	return ntfyMessage{
 		Topic:    n.cfg.Ntfy.Topic,
 		Title:    title,
 		Message:  strings.TrimRight(b.String(), "\n"),
 		Priority: a.Priority,
 		Tags:     tags,
-		Click:    n.clickURL(a),
+		Click:    click,
+		Actions:  actions,
 	}
 }
 
-func (n *Notifier) clickURL(a *Alert) string {
+// clickURL returns where the notification leads and what to call the button.
+func (n *Notifier) clickURL(a *Alert) (string, string) {
 	if n.cfg.Tar1090URL != "" {
 		if u, err := url.Parse(n.cfg.Tar1090URL); err == nil {
 			q := u.Query()
 			q.Set("icao", a.Hex)
 			u.RawQuery = q.Encode()
-			return u.String()
+			return u.String(), "Open map"
 		}
 	}
 	// plane-alert-db links are untrusted third-party data: accept http(s) only.
 	if a.Plane != nil && a.Plane.Link != "" {
 		if u, err := url.Parse(a.Plane.Link); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
-			return u.String()
+			return u.String(), "Aircraft info"
 		}
 	}
-	return ""
+	return "", ""
 }
 
 func describeDBFlags(f int) string {
