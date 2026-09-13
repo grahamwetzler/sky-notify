@@ -221,8 +221,10 @@ The archive is a star schema. It covers every aircraft readsb hears, not only li
 | `fact_visit` | one row per pass (a 10-minute gap starts a new one) | `day`, `icao`, callsign, first and last seen, altitude range, points, tar1090 `replay_url` |
 | `interesting` (view) | | `fact_visit` joined to `dim_plane`, listed aircraft only |
 
-Enable both in [`docker-compose.yml`](docker-compose.yml): the two ultrafeeder settings
-and the `sky-archive` service share the `globe-history` volume.
+Enable both in [`docker-compose.yml`](docker-compose.yml): set `READSB_ENABLE_TRACES=true`
+and `MAX_GLOBE_HISTORY` on ultrafeeder, and give `sky-archive` its `/var/globe_history`
+directory. sky-archive reads those files directly, so it has to run where that directory
+is reachable — on the feeder host, or over a share. A tar1090 URL alone is not enough.
 
 ### Storage
 

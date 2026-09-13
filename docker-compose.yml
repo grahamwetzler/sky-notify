@@ -3,11 +3,14 @@ services:
     image: ghcr.io/grahamwetzler/sky-notify:latest
     container_name: sky-notify
     restart: unless-stopped
+    ports:
+      - "8080:8080"
     environment:
       # --- required: nothing here has a default, the service refuses to start without it ---
       # Where to read aircraft from. An http(s) URL, or an absolute path if you
-      # bind-mount ultrafeeder's data directory.
-      SKY_SOURCE_URL: http://ultrafeeder/data/aircraft.json
+      # bind-mount the feeder's data directory. Point this at the feeder itself: if your
+      # map sits behind a reverse proxy with auth, sky-notify sends no credentials.
+      SKY_SOURCE_URL: http://feeder.lan/data/aircraft.json
       # Which ntfy server, and the topic on it. On public ntfy.sh the topic name is
       # the only secret.
       SKY_NTFY_URL: https://ntfy.sh
@@ -23,7 +26,7 @@ services:
       # SKY_NTFY_TOKEN: tk_...                   # or SKY_NTFY_USER + SKY_NTFY_PASSWORD
       # SKY_NTFY_PRIORITY: "3"
       # Makes each notification click through to your own map.
-      # SKY_TAR1090_URL: http://ultrafeeder/
+      SKY_TAR1090_URL: https://adsb.example.com/
       # SKY_COOLDOWN: 24h
       # SKY_LOG_LEVEL: info
 
@@ -43,48 +46,31 @@ services:
       # A read-only bind mount makes alerts.yaml yours to hand-edit and read-only to the
       # UI — saves will fail. Use the named volume above if you want to edit in the browser.
       # - ./alerts.yaml:/config/alerts.yaml:ro
-    networks:
-      - adsb
-    depends_on:
-      - ultrafeeder
 
   # Optional: archives every aircraft's flight path for later review and replay. See
-  # "History and replay" in the README. Needs the two ultrafeeder settings below.
-  sky-archive:
-    image: ghcr.io/grahamwetzler/sky-archive:latest
-    container_name: sky-archive
-    restart: unless-stopped
-    environment:
-      # Fills dim_plane's plane-alert-db columns, which drive the `interesting` view. Unset to skip.
-      PLANE_ALERT_CSV_URL: https://raw.githubusercontent.com/sdr-enthusiasts/plane-alert-db/main/plane-alert-db.csv
-      # Makes each visit's replay_url open in your own map.
-      TAR1090_URL: http://ultrafeeder/
-      # ARCHIVE_INTERVAL: "21600"   # seconds between passes
-      # SETTLE_HOURS: "2"           # wait this long after UTC midnight before loading a day
-    volumes:
-      - globe-history:/globe_history:ro
-      - sky-archive-lake:/lake
-
-  # Your existing ultrafeeder service — shown only so the example resolves.
-  ultrafeeder:
-    image: ghcr.io/sdr-enthusiasts/docker-adsb-ultrafeeder:latest
-    container_name: ultrafeeder
-    restart: unless-stopped
-    environment:
-      # For sky-archive: readsb records every aircraft's full trace, one file per aircraft
-      # per UTC day. tar1090 can replay them for as many days as are kept.
-      READSB_ENABLE_TRACES: "true"
-      MAX_GLOBE_HISTORY: "90"
-    volumes:
-      - globe-history:/var/globe_history
-    networks:
-      - adsb
+  # "History and replay" in the README.
+  #
+  # This reads the trace files readsb writes, so it only works where you can reach
+  # ultrafeeder's /var/globe_history as a directory — on the feeder host itself, or over
+  # a network share. Over HTTP to a remote feeder you cannot, so leave this out unless
+  # you are running the stack next to the feeder. On the feeder host, set
+  # READSB_ENABLE_TRACES=true and MAX_GLOBE_HISTORY=90 on ultrafeeder first.
+  # sky-archive:
+  #   image: ghcr.io/grahamwetzler/sky-archive:latest
+  #   container_name: sky-archive
+  #   restart: unless-stopped
+  #   environment:
+  #     # Fills dim_plane's plane-alert-db columns, which drive the `interesting` view. Unset to skip.
+  #     PLANE_ALERT_CSV_URL: https://raw.githubusercontent.com/sdr-enthusiasts/plane-alert-db/main/plane-alert-db.csv
+  #     # Makes each visit's replay_url open in your own map.
+  #     TAR1090_URL: https://adsb.example.com/
+  #     # ARCHIVE_INTERVAL: "21600"   # seconds between passes
+  #     # SETTLE_HOURS: "2"           # wait this long after UTC midnight before loading a day
+  #   volumes:
+  #     - /var/globe_history:/globe_history:ro
+  #     - sky-archive-lake:/lake
 
 volumes:
   sky-notify-data:
   sky-notify-config:
-  globe-history:
-  sky-archive-lake:
-
-networks:
-  adsb:
+  # sky-archive-lake:
