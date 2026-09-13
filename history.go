@@ -2,8 +2,10 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +27,15 @@ const historyRetention = 90 * 24 * time.Hour
 // stay under the old key rather than being claimed by a rule that never sent them.
 type History struct {
 	db *sql.DB
+}
+
+// HistoryPage is one page of a rule's history and the cursor that continues it.
+type HistoryPage struct {
+	Total  int          `json:"total"`
+	Limit  int          `json:"limit"`
+	Alerts []HistoryRow `json:"alerts"`
+	// Next is the cursor for the page below this one, absent when there is none.
+	Next string `json:"next,omitempty"`
 }
 
 type HistoryRow struct {
@@ -91,34 +102,67 @@ func (h *History) Add(rule string, m ntfyMessage, at time.Time) {
 }
 
 // List returns one page of a rule's history, newest first, and the total behind it.
-func (h *History) List(rule string, limit, offset int) (int, []HistoryRow, error) {
-	rows := []HistoryRow{}
+//
+// A page is taken from below a cursor rather than at an offset. Deliveries arrive while
+// the list is on screen, and each one pushes every row down: an offset counted from what
+// is already displayed would then re-serve the last row of it. The cursor is a position
+// in the list, not a count into it, so nothing arriving above it can move it.
+func (h *History) List(rule, after string, limit int) (HistoryPage, error) {
+	page := HistoryPage{Limit: limit, Alerts: []HistoryRow{}}
 	if h == nil {
-		return 0, rows, nil
+		return page, nil
 	}
-	var total int
-	if err := h.db.QueryRow(`SELECT COUNT(*) FROM alerts WHERE rule = ?`, rule).Scan(&total); err != nil {
-		return 0, rows, err
+	if err := h.db.QueryRow(`SELECT COUNT(*) FROM alerts WHERE rule = ?`, rule).Scan(&page.Total); err != nil {
+		return page, err
 	}
+	where, args := "rule = ?", []any{rule}
+	if at, id, ok := parseCursor(after); ok {
+		// A row value compares left to right in exactly the order the index is built in,
+		// so "everything below the last row handed out" is one comparison against it.
+		where += " AND (sent_at, id) < (?, ?)"
+		args = append(args, at, id)
+	}
+	// One more row than asked for, to learn whether a page follows this one without
+	// having to trust a total that is still moving.
+	args = append(args, limit+1)
 	q, err := h.db.Query(
-		`SELECT sent_at, title, message, priority, tags, click FROM alerts
-		 WHERE rule = ? ORDER BY sent_at DESC, id DESC LIMIT ? OFFSET ?`, rule, limit, offset)
+		`SELECT id, sent_at, title, message, priority, tags, click FROM alerts
+		 WHERE `+where+` ORDER BY sent_at DESC, id DESC LIMIT ?`, args...)
 	if err != nil {
-		return 0, rows, err
+		return page, err
 	}
 	defer q.Close()
+	var lastAt, lastID int64
 	for q.Next() {
 		var r HistoryRow
-		var ms int64
+		var at, id int64
 		var tags string
-		if err := q.Scan(&ms, &r.Title, &r.Message, &r.Priority, &tags, &r.Click); err != nil {
-			return 0, rows, err
+		if err := q.Scan(&id, &at, &r.Title, &r.Message, &r.Priority, &tags, &r.Click); err != nil {
+			return page, err
 		}
-		r.SentAt = time.UnixMilli(ms).UTC()
+		if len(page.Alerts) == limit {
+			page.Next = fmt.Sprintf("%d.%d", lastAt, lastID)
+			break
+		}
+		r.SentAt = time.UnixMilli(at).UTC()
 		if tags != "" {
 			r.Tags = strings.Split(tags, ",")
 		}
-		rows = append(rows, r)
+		page.Alerts = append(page.Alerts, r)
+		lastAt, lastID = at, id
 	}
-	return total, rows, q.Err()
+	return page, q.Err()
+}
+
+// parseCursor reads a "<sent_at>.<id>" cursor. Anything else is no cursor at all and so
+// the first page: it can only come from our own page, and the top of the list is a better
+// answer than an error.
+func parseCursor(s string) (at, id int64, ok bool) {
+	a, b, found := strings.Cut(s, ".")
+	if !found {
+		return 0, 0, false
+	}
+	at, errAt := strconv.ParseInt(a, 10, 64)
+	id, errID := strconv.ParseInt(b, 10, 64)
+	return at, id, errAt == nil && errID == nil
 }

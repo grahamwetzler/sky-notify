@@ -2543,53 +2543,121 @@ func TestHistoryRecordsPagesAndPrunes(t *testing.T) {
 	}
 	h.Add("other rule", ntfyMessage{Title: "not ours"}, now)
 
-	total, rows, err := h.List("overhead", 20, 0)
+	page, err := h.List("overhead", "", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if total != 25 || len(rows) != 20 {
-		t.Fatalf("first page: total %d, %d rows; want 25 and 20", total, len(rows))
+	if page.Total != 25 || len(page.Alerts) != 20 || page.Next == "" {
+		t.Fatalf("first page: total %d, %d rows, next %q; want 25, 20 and a cursor",
+			page.Total, len(page.Alerts), page.Next)
 	}
 	// Newest first, and every field the notification carried survives the round trip.
-	if rows[0].Title != "alert 24" {
-		t.Fatalf("newest first: got %q", rows[0].Title)
+	first := page.Alerts[0]
+	if first.Title != "alert 24" {
+		t.Fatalf("newest first: got %q", first.Title)
 	}
-	if rows[0].Priority != 3 || rows[0].Click != "https://map/" ||
-		strings.Join(rows[0].Tags, ",") != "airplane,rotating_light" ||
-		rows[0].Message != "Registration: N1234" {
-		t.Fatalf("fields not preserved: %+v", rows[0])
+	if first.Priority != 3 || first.Click != "https://map/" ||
+		strings.Join(first.Tags, ",") != "airplane,rotating_light" ||
+		first.Message != "Registration: N1234" {
+		t.Fatalf("fields not preserved: %+v", first)
 	}
-	if want := now.Add(24 * time.Minute).UnixMilli(); rows[0].SentAt.UnixMilli() != want {
-		t.Fatalf("sent_at %v, want %v", rows[0].SentAt, time.UnixMilli(want))
+	if want := now.Add(24 * time.Minute).UnixMilli(); first.SentAt.UnixMilli() != want {
+		t.Fatalf("sent_at %v, want %v", first.SentAt, time.UnixMilli(want))
 	}
 
-	total, rows, err = h.List("overhead", 20, 20)
+	second, err := h.List("overhead", page.Next, 20)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if total != 25 || len(rows) != 5 || rows[0].Title != "alert 4" {
-		t.Fatalf("second page: total %d, %d rows, first %q", total, len(rows), rows[0].Title)
+	if second.Total != 25 || len(second.Alerts) != 5 || second.Alerts[0].Title != "alert 4" {
+		t.Fatalf("second page: total %d, %d rows, first %q",
+			second.Total, len(second.Alerts), second.Alerts[0].Title)
+	}
+	// The list ends where the rows do: nothing offers a page that is not there.
+	if second.Next != "" {
+		t.Fatalf("last page still offers a cursor %q", second.Next)
 	}
 
 	// A rule only ever sees its own deliveries.
-	if total, _, _ := h.List("other rule", 20, 0); total != 1 {
-		t.Fatalf("other rule has %d, want 1", total)
+	if other, _ := h.List("other rule", "", 20); other.Total != 1 {
+		t.Fatalf("other rule has %d, want 1", other.Total)
 	}
 
 	// An insert past the retention window takes the old rows with it.
 	h.Add("overhead", ntfyMessage{Title: "much later"}, now.Add(historyRetention+time.Hour))
-	total, rows, err = h.List("overhead", 20, 0)
+	page, err = h.List("overhead", "", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if total != 1 || rows[0].Title != "much later" {
-		t.Fatalf("after prune: total %d, rows %+v", total, rows)
+	if page.Total != 1 || page.Alerts[0].Title != "much later" {
+		t.Fatalf("after prune: total %d, rows %+v", page.Total, page.Alerts)
 	}
 
 	// A store that failed to open is still safe to record to and read from.
 	var absent *History
 	absent.Add("overhead", ntfyMessage{Title: "x"}, now)
-	if total, rows, err := absent.List("overhead", 20, 0); err != nil || total != 0 || len(rows) != 0 {
-		t.Fatalf("nil history: %d, %v, %v", total, rows, err)
+	if p, err := absent.List("overhead", "", 20); err != nil || p.Total != 0 || len(p.Alerts) != 0 {
+		t.Fatalf("nil history: %+v, %v", p, err)
+	}
+}
+
+// Paging is a cursor and not an offset because the list grows at the head while it is
+// being read. A delivery landing between two page requests used to push every row down
+// one, and the second page then re-served the last row of the first.
+func TestHistoryPagingSurvivesConcurrentDeliveries(t *testing.T) {
+	h, err := NewHistory(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	now := time.Now()
+	for i := 0; i < 25; i++ {
+		h.Add("overhead", ntfyMessage{Title: fmt.Sprintf("alert %02d", i)},
+			now.Add(time.Duration(i)*time.Minute))
+	}
+
+	first, err := h.List("overhead", "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Two more arrive while the reader is looking at the first page, and the retention
+	// prune the second one runs takes the oldest three with it.
+	h.Add("overhead", ntfyMessage{Title: "arrived 1"}, now.Add(30*time.Minute))
+	h.Add("overhead", ntfyMessage{Title: "arrived 2"}, now.Add(31*time.Minute))
+	if _, err := h.db.Exec(`DELETE FROM alerts WHERE title IN ('alert 00','alert 01','alert 02')`); err != nil {
+		t.Fatal(err)
+	}
+
+	seen := map[string]bool{}
+	got := []string{}
+	for _, r := range first.Alerts {
+		seen[r.Title], got = true, append(got, r.Title)
+	}
+	for cursor := first.Next; cursor != ""; {
+		p, err := h.List("overhead", cursor, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range p.Alerts {
+			if seen[r.Title] {
+				t.Fatalf("%q served twice; pages so far: %v", r.Title, got)
+			}
+			seen[r.Title], got = true, append(got, r.Title)
+		}
+		cursor = p.Next
+	}
+
+	// Every row that was there when the read started and is still there at the end was
+	// served exactly once. The two that arrived above the cursor are legitimately missed
+	// — they were never below it — and the three pruned away are gone.
+	for i := 3; i < 25; i++ {
+		if title := fmt.Sprintf("alert %02d", i); !seen[title] {
+			t.Fatalf("%q was skipped; pages: %v", title, got)
+		}
+	}
+	if len(got) != 22 {
+		t.Fatalf("read %d rows, want the 22 surviving ones: %v", len(got), got)
 	}
 }

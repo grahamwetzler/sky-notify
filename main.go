@@ -667,20 +667,15 @@ func (h *health) mux(q *queue) http.Handler {
 	mux.HandleFunc("GET /api/history", func(w http.ResponseWriter, r *http.Request) {
 		// The rule's cooldown key, which is what deliveries were filed under. Blank is
 		// an empty page, not an error: a rule the page has not saved yet has no history.
-		key := r.URL.Query().Get("key")
-		offset, err := strconv.Atoi(r.URL.Query().Get("offset"))
-		if err != nil || offset < 0 {
-			offset = 0
-		}
-		total, rows, err := h.history.List(key, historyPage, offset)
+		// `after` is the cursor a previous page handed back, absent on the first.
+		q := r.URL.Query()
+		page, err := h.history.List(q.Get("key"), q.Get("after"), historyPage)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, err)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"total": total, "alerts": rows, "limit": historyPage, "offset": offset,
-		})
+		json.NewEncoder(w).Encode(page)
 	})
 	mux.HandleFunc("PUT /api/alerts", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)

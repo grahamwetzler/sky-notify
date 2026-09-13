@@ -1562,11 +1562,11 @@ function historyBand(r) {
     return sec;
   }
   sec.append(el('p', 'help', `${h.total.toLocaleString()} sent`
-    + (h.alerts.length < h.total ? `; the most recent ${h.alerts.length} are listed.` : '.')));
+    + (h.next ? `; the most recent ${h.alerts.length} are listed.` : '.')));
 
   const wrap = el('div', 'hits sent');
   for (const a of h.alerts) wrap.append(sentItem(a));
-  if (h.alerts.length < h.total) wrap.append(moreSent(r, h));
+  if (h.next) wrap.append(moreSent(r, h));
   sec.append(wrap);
   return sec;
 }
@@ -1600,26 +1600,33 @@ function moreSent(r, h) {
   const b = el('button', 'btn more');
   b.id = 'more-sent';
   b.type = 'button';
-  const remaining = h.total - h.alerts.length;
+  /* The count is the one thing here that can go slightly stale — the total is read at
+     the moment of asking and deliveries keep arriving — so it is a label, not a promise,
+     and the page below it is taken from the cursor either way. */
+  const remaining = Math.max(h.total - h.alerts.length, 1);
   b.textContent = `Show ${Math.min(remaining, h.limit || 20).toLocaleString()} more`;
-  b.onclick = () => { b.onclick = null; b.textContent = 'Loading…'; loadHistory(r, h.alerts.length); };
+  b.onclick = () => { b.onclick = null; b.textContent = 'Loading…'; loadHistory(r, h.next); };
   return b;
 }
 
 /* One page of a rule's history. Paging appends; anything else replaces, so a timed
-   reload cannot duplicate rows already on screen. */
-async function loadHistory(r, offset = 0) {
+   reload cannot duplicate rows already on screen.
+
+   The page below is asked for by the cursor the last one handed back rather than by how
+   many rows are on screen: an alert delivered while the list is open pushes every row
+   down, and a count into it would fetch the last row already displayed a second time. */
+async function loadHistory(r, after = '') {
   const m = meta(r), key = m.savedKey;
   if (!key || m.histLoading) return;
   m.histLoading = true;
   m.histAt = Date.now();
   try {
-    const res = await fetch('/api/history?' + new URLSearchParams({key, offset}));
+    const res = await fetch('/api/history?' + new URLSearchParams({key, after}));
     const body = await res.json();
     if (!res.ok) throw Error(body.error || `HTTP ${res.status}`);
     /* A save between the asking and the answer refiles the rule under a new key. */
     if (m.savedKey !== key) return;
-    m.history = offset > 0 && m.history?.alerts
+    m.history = after && m.history?.alerts
       ? {...body, alerts: [...m.history.alerts, ...body.alerts]}
       : body;
   } catch (err) {
