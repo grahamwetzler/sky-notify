@@ -2786,8 +2786,8 @@ func decodePNG(t *testing.T, b []byte) image.Image {
 	if err != nil {
 		t.Fatalf("snapshot is not a PNG: %v", err)
 	}
-	if img.Bounds().Dx() != mapPx || img.Bounds().Dy() != mapPx {
-		t.Fatalf("image is %v, want %dx%d", img.Bounds(), mapPx, mapPx)
+	if d := img.Bounds(); d.Dx() <= 0 || d.Dy() <= 0 || d.Dx() > mapPx || d.Dy() > mapPx {
+		t.Fatalf("image is %v, want each edge within 1..%d", d, mapPx)
 	}
 	return img
 }
@@ -2805,10 +2805,22 @@ func TestFitViewFramesTheReceiverAndTheAircraft(t *testing.T) {
 	if v.zoom != 10 {
 		t.Errorf("zoom = %d, want the largest that still fits (10)", v.zoom)
 	}
-	for _, p := range pts {
-		q := v.pixel(p.lat, p.lon)
-		if q.x < 0 || q.x > mapPx || q.y < 0 || q.y > mapPx {
-			t.Errorf("%v landed off the image at %v", p, q)
+	// The image is cropped to the two points plus a 10% margin, so each of them sits
+	// 5/110ths of the way in from its edge.
+	const inset = 0.05 / (1 + padding)
+	a, b := v.pixel(pts[0].lat, pts[0].lon), v.pixel(pts[1].lat, pts[1].lon)
+	for _, e := range []struct {
+		name   string
+		lo, hi float64
+		edge   int
+	}{
+		{"x", math.Min(a.x, b.x), math.Max(a.x, b.x), v.w},
+		{"y", math.Min(a.y, b.y), math.Max(a.y, b.y), v.h},
+	} {
+		want := float64(e.edge) * inset
+		if math.Abs(e.lo-want) > 2 || math.Abs(float64(e.edge)-e.hi-want) > 2 {
+			t.Errorf("%s: points span %.1f..%.1f of %d, want a %.1fpx margin each side",
+				e.name, e.lo, e.hi, e.edge, want)
 		}
 	}
 }
@@ -2824,7 +2836,7 @@ func TestFitViewDoesNotWrapAroundTheWorld(t *testing.T) {
 		t.Errorf("points %v and %v are a world apart", a, b)
 	}
 	for _, q := range []pt{a, b} {
-		if q.x < 0 || q.x > mapPx || q.y < 0 || q.y > mapPx {
+		if q.x < 0 || q.x > float64(v.w) || q.y < 0 || q.y > float64(v.h) {
 			t.Errorf("point landed off the image at %v", q)
 		}
 	}
@@ -2838,7 +2850,7 @@ func TestFitViewGivesADegenerateBoxAMinimumSpan(t *testing.T) {
 		if v.zoom != maxZoom {
 			t.Errorf("a %d-point box should frame at the closest zoom, got %d", len(pts), v.zoom)
 		}
-		if q := v.pixel(32.9, -96.6); math.Abs(q.x-mapPx/2) > 1 || math.Abs(q.y-mapPx/2) > 1 {
+		if q := v.pixel(32.9, -96.6); math.Abs(q.x-float64(v.w)/2) > 1 || math.Abs(q.y-float64(v.h)/2) > 1 {
 			t.Errorf("single point should be centred, got %v", q)
 		}
 	}
@@ -2974,12 +2986,12 @@ func TestFramingWithoutAReceiverCentresOnTheAircraft(t *testing.T) {
 	a.Path = nil // a brand-new contact: one position and nothing behind it
 
 	v := fitView(framePoints(a))
-	if q := v.pixel(*a.AC.Lat, *a.AC.Lon); math.Abs(q.x-mapPx/2) > mapPx/4 || math.Abs(q.y-mapPx/2) > mapPx/4 {
+	if q := v.pixel(*a.AC.Lat, *a.AC.Lon); math.Abs(q.x-float64(v.w)/2) > float64(v.w)/4 || math.Abs(q.y-float64(v.h)/2) > float64(v.h)/4 {
 		t.Errorf("aircraft should sit near the middle, got %v", q)
 	}
 	img := decodePNG(t, m.snapshot(context.Background(), a))
-	for y := range mapPx {
-		for x := range mapPx {
+	for y := range img.Bounds().Dy() {
+		for x := range img.Bounds().Dx() {
 			if sameColor(img.At(x, y), colReceiver) {
 				t.Fatalf("a receiver was drawn at (%d,%d) with none configured", x, y)
 			}

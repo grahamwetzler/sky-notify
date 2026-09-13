@@ -100,16 +100,14 @@ func (m *mapRenderer) snapshot(ctx context.Context, a *Alert) (b []byte) {
 	return img
 }
 
-// framePoints is everything the map has to contain: the aircraft always, its recent path
-// when there is one, and the receiver only when one is configured. Reading recvLat/recvLon
-// unconditionally would plant a receiver at (0, 0) and drag the frame into the Atlantic.
+// framePoints is everything the map has to contain: the aircraft, and the receiver only
+// when one is configured. Reading recvLat/recvLon unconditionally would plant a receiver
+// at (0, 0) and drag the frame into the Atlantic. The path is deliberately not framed —
+// a long tail would shrink the two things the alert is about; it just runs off the edge.
 func framePoints(a *Alert) []latlon {
 	var pts []latlon
 	if a.AC.Lat != nil && a.AC.Lon != nil {
 		pts = append(pts, latlon{*a.AC.Lat, *a.AC.Lon})
-	}
-	for _, s := range a.Path {
-		pts = append(pts, latlon{s.lat, s.lon})
 	}
 	if a.HasDistance {
 		pts = append(pts, latlon{a.recvLat, a.recvLon})
@@ -118,7 +116,7 @@ func framePoints(a *Alert) []latlon {
 }
 
 func (m *mapRenderer) draw(ctx context.Context, v view, tiles []placedTile, a *Alert) ([]byte, error) {
-	dc := gg.NewContext(mapPx, mapPx)
+	dc := gg.NewContext(v.w, v.h)
 	dc.SetColor(colBackground)
 	dc.Clear()
 
@@ -369,7 +367,7 @@ func (m *mapRenderer) drawLabels(ctx context.Context, dc *gg.Context, v view, ti
 
 	var placed []labelBox
 	for _, c := range cands {
-		if c.at.x < 0 || c.at.x > mapPx || c.at.y < 0 || c.at.y > mapPx-footerHeight {
+		if c.at.x < 0 || c.at.x > float64(v.w) || c.at.y < 0 || c.at.y > float64(v.h-footerHeight) {
 			continue
 		}
 		dc.SetFontFace(m.face(c.size))
@@ -419,7 +417,7 @@ func (m *mapRenderer) drawFooter(dc *gg.Context, v view, a *Alert) {
 	}
 	barPx := barNM / nmPerPx
 
-	y := float64(mapPx - 14)
+	y := float64(v.h - 14)
 	dc.SetColor(colHalo)
 	dc.SetLineWidth(5)
 	dc.DrawLine(16, y, 16+barPx, y)
@@ -433,7 +431,7 @@ func (m *mapRenderer) drawFooter(dc *gg.Context, v view, a *Alert) {
 
 	dc.SetFontFace(m.face(11))
 	haloTextAnchored(dc, fmt.Sprintf("%.0f NM", barNM), 22+barPx, y, 0, 0.4, colFooter)
-	haloTextAnchored(dc, "© OpenStreetMap contributors · OpenFreeMap", mapPx-14, y, 1, 0.4, colFooter)
+	haloTextAnchored(dc, "© OpenStreetMap contributors · OpenFreeMap", float64(v.w-14), y, 1, 0.4, colFooter)
 }
 
 // ---------- drawing helpers ----------

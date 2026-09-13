@@ -3,14 +3,14 @@ package main
 import "math"
 
 const (
-	// One size, baked in. The tile cover, the label density and the marker sizes are all
-	// tuned to it; an operator-supplied number would have to re-derive all three to mean
-	// anything, and nobody has asked for a different one.
+	// The long edge of the image, baked in. The tile cover, the label density and the
+	// marker sizes are all tuned to it; an operator-supplied number would have to
+	// re-derive all three to mean anything, and nobody has asked for a different one.
 	mapPx     = 800
 	tilePx    = 256
 	minZoom   = 4
 	maxZoom   = 14 // OpenFreeMap's planet tiles stop here
-	padding   = 0.12
+	padding   = 0.10
 	minSpanNM = 2.0
 	// Web Mercator cannot represent the poles; this is where the square world ends.
 	maxMercatorLat = 85.05112878
@@ -18,20 +18,21 @@ const (
 
 type latlon struct{ lat, lon float64 }
 
-// view is the frame: which zoom the tiles come from, and where the top-left corner of the
-// image sits in that zoom's world-pixel plane.
+// view is the frame: which zoom the tiles come from, how big the image is, and where its
+// top-left corner sits in that zoom's world-pixel plane. The image is cropped to what it
+// has to show, so it is only square when the thing it frames is.
 type view struct {
 	zoom             int
+	w, h             int
 	originX, originY float64
 }
 
 // fitView frames every point it is given. Callers pass whatever exists — the aircraft
-// always, its path when there is one, the receiver only when one is configured — so an
-// unconfigured receiver simply frames the aircraft rather than dragging the map towards
-// (0, 0).
+// always, the receiver only when one is configured — so an unconfigured receiver simply
+// frames the aircraft rather than dragging the map towards (0, 0).
 func fitView(pts []latlon) view {
 	if len(pts) == 0 {
-		return view{zoom: minZoom}
+		return view{zoom: minZoom, w: mapPx, h: mapPx}
 	}
 	// Longitudes are measured relative to the first point, so a pair straddling the
 	// antimeridian spans the few degrees between them rather than the 359 the other way.
@@ -70,10 +71,19 @@ func fitView(pts []latlon) view {
 			break
 		}
 	}
+	// Crop to the box rather than padding it out to a square: mapPx is the long edge, not
+	// the picture. A receiver and an aircraft nearly in line would make a letterbox strip,
+	// so the short edge stops at half the long one.
+	w := worldX(maxLon, zoom) - worldX(minLon, zoom)
+	h := worldY(minLat, zoom) - worldY(maxLat, zoom)
+	long := math.Max(w, h)
+	w, h = math.Max(w, long/2), math.Max(h, long/2)
 	return view{
 		zoom:    zoom,
-		originX: worldX(centreLon, zoom) - mapPx/2,
-		originY: worldY(centreLat, zoom) - mapPx/2,
+		w:       int(math.Round(w)),
+		h:       int(math.Round(h)),
+		originX: worldX(centreLon, zoom) - w/2,
+		originY: worldY(centreLat, zoom) - h/2,
 	}
 }
 
@@ -104,13 +114,13 @@ func (v view) pixel(lat, lon float64) pt {
 	return pt{x, worldY(lat, v.zoom) - v.originY}
 }
 
-// tileRange is the block of tiles the image covers: at most five across, since 800px is
-// 3.125 tiles and the frame need not be tile-aligned.
+// tileRange is the block of tiles the image covers: at most five across, since the 800px
+// long edge is 3.125 tiles and the frame need not be tile-aligned.
 func (v view) tileRange() (x0, y0, x1, y1 int) {
 	x0 = int(math.Floor(v.originX / tilePx))
 	y0 = int(math.Floor(v.originY / tilePx))
-	x1 = int(math.Floor((v.originX + mapPx - 1) / tilePx))
-	y1 = int(math.Floor((v.originY + mapPx - 1) / tilePx))
+	x1 = int(math.Floor((v.originX + float64(v.w) - 1) / tilePx))
+	y1 = int(math.Floor((v.originY + float64(v.h) - 1) / tilePx))
 	// Above the north pole or below the south there are no tiles; sideways there always
 	// are, because the world repeats.
 	n := int(math.Exp2(float64(v.zoom)))
@@ -124,7 +134,7 @@ func (v view) tileOrigin(x, y int) pt {
 	wrapped := math.Mod(math.Mod(float64(x), n)+n, n)
 	px := wrapped*tilePx - v.originX
 	world := worldSize(v.zoom)
-	for px > mapPx {
+	for px > float64(v.w) {
 		px -= world
 	}
 	for px+tilePx < 0 {
