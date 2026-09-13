@@ -2983,8 +2983,11 @@ func TestATrackWithAHoleIsDrawnAsTwoSegments(t *testing.T) {
 	if segs := pathSegments(a.Path); len(segs) != 2 {
 		t.Fatalf("want 2 segments, got %d", len(segs))
 	}
+	// The ends of the hole belong to the round caps of the two segments — at this line
+	// width they reach about a tenth of the way in — so the question is whether the
+	// middle of it is clear, not whether every pixel between the samples is.
 	painted := 0
-	for i := 1; i < 10; i++ {
+	for i := 2; i <= 8; i++ {
 		frac := float64(i) / 10
 		x, y := p.x+(q.x-p.x)*frac, p.y+(q.y-p.y)*frac
 		if !sameColor(img.At(int(x), int(y)), colBackground) {
@@ -2992,7 +2995,7 @@ func TestATrackWithAHoleIsDrawnAsTwoSegments(t *testing.T) {
 		}
 	}
 	if painted > 0 {
-		t.Errorf("%d of 9 pixels across the gap were painted; the hole was bridged", painted)
+		t.Errorf("%d of 7 pixels across the middle of the gap were painted; the hole was bridged", painted)
 	}
 }
 
@@ -3016,6 +3019,35 @@ func TestFramingWithoutAReceiverCentresOnTheAircraft(t *testing.T) {
 				t.Fatalf("a receiver was drawn at (%d,%d) with none configured", x, y)
 			}
 		}
+	}
+}
+
+// The overlay is the subject of the picture, so nothing from the map may be drawn over it.
+// Place names sit right where this aircraft is, and they used to cross it: the same alert
+// over a blank map and over a real one has to show the same amount of aircraft.
+func TestLabelsDoNotPaintOverTheAircraft(t *testing.T) {
+	a := mapAlert(false)
+	v := fitView(framePoints(a))
+	p := v.pixel(*a.AC.Lat, *a.AC.Lon)
+
+	aircraftPixels := func(f *tileFixture) int {
+		m := testRenderer(t, f)
+		img := decodePNG(t, m.snapshot(context.Background(), a))
+		n := 0
+		for y := max(int(p.y)-40, 0); y <= min(int(p.y)+40, img.Bounds().Dy()-1); y++ {
+			for x := max(int(p.x)-40, 0); x <= min(int(p.x)+40, img.Bounds().Dx()-1); x++ {
+				if sameColor(img.At(x, y), colAircraft) {
+					n++
+				}
+			}
+		}
+		return n
+	}
+
+	over, blank := aircraftPixels(&tileFixture{body: goldenTile(t)}), aircraftPixels(&tileFixture{})
+	if over != blank {
+		t.Errorf("the aircraft is %d pixels over a map and %d over nothing; the map is drawn on top of it",
+			over, blank)
 	}
 }
 

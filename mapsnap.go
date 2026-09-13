@@ -143,13 +143,13 @@ func (m *mapRenderer) draw(ctx context.Context, v view, tiles []placedTile, a *A
 		{layer: "aeroway", col: colRoadInner},
 		{layer: "aeroway", col: colRoadCasing, width: 3, pick: classIs("runway")},
 		{layer: "aeroway", col: colRoadInner, width: 1.6, pick: classIs("runway")},
+		// Residential streets only close in. Further out they stop saying which suburb
+		// this is and just cover the frame in a hairball.
+		{layer: "transportation", col: colRoadMinor, width: 1, minZoom: 12, pick: classIs("minor")},
 		{layer: "transportation", col: colRoadCasing, width: 3.4, pick: classIs("trunk", "primary", "secondary")},
 		{layer: "transportation", col: colRoadMajor, width: 1.8, pick: classIs("trunk", "primary", "secondary")},
 		{layer: "transportation", col: colRoadCasing, width: 5.5, pick: classIs("motorway")},
 		{layer: "transportation", col: colMotorway, width: 3, pick: classIs("motorway")},
-		// Residential streets only close in. Further out they stop saying which suburb
-		// this is and just cover the frame in a hairball.
-		{layer: "transportation", col: colRoadMinor, width: 1, minZoom: 12, pick: classIs("minor")},
 		{layer: "boundary", col: colBoundary, width: 1.4, pick: adminLevel(4)},
 	} {
 		if v.zoom < p.minZoom {
@@ -174,10 +174,13 @@ func (m *mapRenderer) draw(ctx context.Context, v view, tiles []placedTile, a *A
 		}
 	}
 
-	m.drawOverlays(dc, v, a)
+	// Labels first, then the overlay: the aircraft, its path and the receiver are what
+	// the alert is about, and a place name is not allowed to cross them. The footer is
+	// last because the credit has to stay legible whatever it lands on.
 	if err := m.drawLabels(ctx, dc, v, tiles); err != nil {
 		return nil, err
 	}
+	m.drawOverlays(dc, v, a)
 	m.drawFooter(dc, v, a)
 
 	var buf bytes.Buffer
@@ -196,7 +199,7 @@ func (m *mapRenderer) drawOverlays(dc *gg.Context, v view, a *Alert) {
 		for _, w := range []struct {
 			col   color.Color
 			width float64
-		}{{colHalo, 6}, {colTrack, 3}} {
+		}{{colHalo, 15}, {colTrack, 8}} {
 			for i, s := range seg {
 				p := v.pixel(s.lat, s.lon)
 				if i == 0 {
@@ -214,14 +217,14 @@ func (m *mapRenderer) drawOverlays(dc *gg.Context, v view, a *Alert) {
 	if a.HasDistance {
 		p := v.pixel(a.recvLat, a.recvLon)
 		dc.SetColor(colHalo)
-		dc.DrawCircle(p.x, p.y, 9)
-		dc.SetLineWidth(5)
+		dc.DrawCircle(p.x, p.y, 18)
+		dc.SetLineWidth(10)
 		dc.Stroke()
 		dc.SetColor(colReceiver)
-		dc.DrawCircle(p.x, p.y, 9)
-		dc.SetLineWidth(2)
+		dc.DrawCircle(p.x, p.y, 18)
+		dc.SetLineWidth(6)
 		dc.Stroke()
-		dc.DrawCircle(p.x, p.y, 3)
+		dc.DrawCircle(p.x, p.y, 8)
 		dc.Fill()
 	}
 
@@ -233,17 +236,17 @@ func (m *mapRenderer) drawOverlays(dc *gg.Context, v view, a *Alert) {
 		// No heading, so no direction to point: a dot says where without claiming which
 		// way. One sample, no samples and no heading are all ordinary.
 		dc.SetColor(colHalo)
-		dc.DrawCircle(p.x, p.y, 8)
+		dc.DrawCircle(p.x, p.y, 14)
 		dc.Fill()
 		dc.SetColor(colAircraft)
-		dc.DrawCircle(p.x, p.y, 5)
+		dc.DrawCircle(p.x, p.y, 9)
 		dc.Fill()
 		return
 	}
 	dc.Push()
 	dc.Translate(p.x, p.y)
 	dc.Rotate(gg.Radians(*a.AC.Track)) // 0° is north, and so is -Y on the canvas
-	dc.Scale(1.5, 1.5)                 // the shape is drawn at its natural size; this is the size it is shown at
+	dc.Scale(3.0, 3.0)                 // the shape is drawn at its natural size; this is the size it is shown at
 	plane := [][2]float64{{0, -11}, {2.5, -3}, {11, 4}, {11, 6.5}, {2.5, 4}, {2.5, 8},
 		{5, 10.5}, {5, 12}, {0, 10.5}, {-5, 12}, {-5, 10.5}, {-2.5, 8}, {-2.5, 4},
 		{-11, 6.5}, {-11, 4}, {-2.5, -3}}
