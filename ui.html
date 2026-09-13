@@ -614,8 +614,13 @@ function problem(r, key) {
   if (key === 'max_altitude_ft' && hasValue(r.min_altitude_ft) && hasValue(r.max_altitude_ft)
       && +r.max_altitude_ft <= +r.min_altitude_ft)
     return 'Must be above the lowest altitude, or no aircraft can be between the two.';
-  if (key === 'passes_within' && hasValue(r.passes_within) && !parseDuration(r.passes_within))
-    return 'Must be a duration like 5m or 30s.';
+  if (key === 'passes_within' && hasValue(r.passes_within)) {
+    /* Signed durations parse, so a negative one is a number rather than a refusal, and
+       the server rejects it on a rule that would otherwise have looked fine here. */
+    const ahead = parseDuration(r.passes_within);
+    if (ahead === null) return 'Must be a duration like 5m or 30s.';
+    if (ahead <= 0) return 'Must be longer than zero — the prediction needs a stretch of time to look ahead into.';
+  }
   return null;
 }
 /* The environment overrides the file, and the server validates the overlay, so a check
@@ -1119,18 +1124,20 @@ function renderPane() {
   const hits = $('#pane .hits');
   const inner = hits && [hits.scrollTop, hits.scrollLeft];
   paintPane(pane);
-  const again = $('#pane .hits');
-  if (inner && again) [again.scrollTop, again.scrollLeft] = inner;
   const back = id && document.getElementById(id);
   if (back) {
     /* "1." and "1" are the same number but not the same half-typed value, and the rebuild
        reads the number. Only ever put back a string that means what is already there:
        anything else and the pane is showing a different rule, where it does not belong. */
     if (raw !== null && back.value !== raw && Number(back.value) === Number(raw)) back.value = raw;
-    back.focus();
+    /* preventScroll: bringing the element into view is the browser scrolling every box
+       between it and the window, which is every position this function is restoring. */
+    back.focus({preventScroll: true});
     if (caret) back.setSelectionRange(caret[0], caret[1]);
   }
-  /* Last, because focusing can scroll the element into view on its own. */
+  /* After the focus, so that the focus cannot have moved either of them. */
+  const again = $('#pane .hits');
+  if (inner && again) [again.scrollTop, again.scrollLeft] = inner;
   if (scrollY !== y) scrollTo(0, y);
 }
 

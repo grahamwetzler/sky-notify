@@ -1479,6 +1479,7 @@ func TestRuleValidationNamesRule(t *testing.T) {
 		{"overhead without coordinates", "rules:\n  - name: overhead\n    passes_within_nm: 1\n"},
 		{"horizon without distance", "lat: 0\nlon: 0\nrules:\n  - name: overhead\n    listed: true\n    passes_within: 5m\n"},
 		{"zero horizon", "lat: 0\nlon: 0\nrules:\n  - name: overhead\n    passes_within_nm: 1\n    passes_within: 0s\n"},
+		{"backwards horizon", "lat: 0\nlon: 0\nrules:\n  - name: overhead\n    passes_within_nm: 1\n    passes_within: -1m\n"},
 		{"non-finite overhead", "lat: 0\nlon: 0\nrules:\n  - name: overhead\n    passes_within_nm: .nan\n"},
 		{"circling with slow polls", "source:\n  poll_interval: 45s\nrules:\n  - name: orbit\n    circling: true\n"},
 	} {
