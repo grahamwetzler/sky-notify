@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -1907,6 +1908,9 @@ type ntfyServer struct {
 	retryHdr string
 	bodies   []ntfyMessage
 	paths    []string
+	methods  []string
+	headers  []http.Header
+	files    [][]byte // the attachment body, for the PUT path
 	hits     int
 }
 
@@ -1914,9 +1918,17 @@ func (n *ntfyServer) start(t *testing.T, cfg *Config) *Notifier {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var m ntfyMessage
-		json.NewDecoder(r.Body).Decode(&m)
+		if r.Method == http.MethodPut {
+			body, _ := io.ReadAll(r.Body)
+			n.files = append(n.files, body)
+		} else {
+			json.NewDecoder(r.Body).Decode(&m)
+			n.files = append(n.files, nil)
+		}
 		n.bodies = append(n.bodies, m)
 		n.paths = append(n.paths, r.URL.Path)
+		n.methods = append(n.methods, r.Method)
+		n.headers = append(n.headers, r.Header.Clone())
 		st := http.StatusOK
 		if n.hits < len(n.statuses) {
 			st = n.statuses[n.hits]
@@ -3057,6 +3069,151 @@ func TestTemplateVersionKeysTheCache(t *testing.T) {
 		if got := templateVersion(template); got != want {
 			t.Errorf("templateVersion(%q) = %q, want %q", template, got, want)
 		}
+	}
+}
+
+func TestNotifyPutsTheImageWithTheSameMessageInHeaders(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Tar1090URL = "https://tar1090.example.com/"
+	s := &ntfyServer{}
+	n := s.start(t, cfg)
+	n.maps = testRenderer(t, &tileFixture{body: goldenTile(t)})
+
+	a := mapAlert(false)
+	a.Plane = &Plane{ICAO: "adeb2f", Reg: "N12345", Operator: "US Air Force", Type: "C-17"}
+	if err := n.Publish(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.methods) != 1 || s.methods[0] != http.MethodPut {
+		t.Fatalf("want one PUT, got %v", s.methods)
+	}
+	// ntfy takes an attachment only at /<topic>, not at the root the JSON path uses.
+	if s.paths[0] != "/"+cfg.Ntfy.Topic {
+		t.Errorf("attachment path = %q, want /%s", s.paths[0], cfg.Ntfy.Topic)
+	}
+	if len(s.files[0]) == 0 || !bytes.HasPrefix(s.files[0], []byte("\x89PNG")) {
+		t.Errorf("body is not a PNG (%d bytes)", len(s.files[0]))
+	}
+	h := s.headers[0]
+	if h.Get("X-Title") != "US Air Force C-17" {
+		t.Errorf("X-Title = %q", h.Get("X-Title"))
+	}
+	if h.Get("X-Priority") != "3" {
+		t.Errorf("X-Priority = %q", h.Get("X-Priority"))
+	}
+	if !strings.Contains(h.Get("X-Tags"), "airplane") {
+		t.Errorf("X-Tags = %q", h.Get("X-Tags"))
+	}
+	if h.Get("X-Click") != "https://tar1090.example.com/?icao=adeb2f" {
+		t.Errorf("X-Click = %q", h.Get("X-Click"))
+	}
+	if !strings.Contains(h.Get("X-Actions"), "view") || !strings.Contains(h.Get("X-Actions"), "tar1090") {
+		t.Errorf("X-Actions = %q", h.Get("X-Actions"))
+	}
+	if h.Get("X-Filename") == "" {
+		t.Error("X-Filename must be set or ntfy will not treat the body as a file")
+	}
+	// A header is one line, so the body's newlines travel as the literal escape ntfy
+	// turns back into newlines. Nothing may be lost on the way.
+	msg := h.Get("X-Message")
+	if strings.Contains(msg, "\n") || !strings.Contains(msg, `\n`) {
+		t.Errorf("X-Message should carry escaped newlines: %q", msg)
+	}
+	if !strings.Contains(msg, "N12345") || !strings.Contains(msg, "Registration") {
+		t.Errorf("X-Message lost the body: %q", msg)
+	}
+}
+
+// Without an image nothing about delivery changes, so the no-snapshot case cannot regress.
+func TestNotifyWithoutAnImagePostsExactlyAsBefore(t *testing.T) {
+	for name, f := range map[string]*tileFixture{
+		"render fails": {tileCode: http.StatusInternalServerError},
+		"maps off":     nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := testConfig(t)
+			s := &ntfyServer{}
+			n := s.start(t, cfg)
+			if f != nil {
+				n.maps = testRenderer(t, f)
+			}
+			if err := n.Publish(context.Background(), mapAlert(false)); err != nil {
+				t.Fatal(err)
+			}
+			if len(s.methods) != 1 || s.methods[0] != http.MethodPost || s.paths[0] != "/" {
+				t.Fatalf("want one POST to the root, got %v %v", s.methods, s.paths)
+			}
+			if s.bodies[0].Topic != cfg.Ntfy.Topic {
+				t.Errorf("the JSON publish document lost its topic: %+v", s.bodies[0])
+			}
+		})
+	}
+}
+
+// A server that will not take the attachment must cost the alert its picture, not the
+// alert: notifyLoop answers a permanent rejection by backing off without a cooldown.
+func TestAnAttachmentTooBigStillDeliversTheAlert(t *testing.T) {
+	cfg := testConfig(t)
+	s := &ntfyServer{statuses: []int{http.StatusRequestEntityTooLarge, http.StatusOK}}
+	n := s.start(t, cfg)
+	n.maps = testRenderer(t, &tileFixture{body: goldenTile(t)})
+	hist, err := NewHistory(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hist.Close()
+	n.history = hist
+
+	if err := n.Publish(context.Background(), mapAlert(false)); err != nil {
+		t.Fatalf("the alert must survive its picture being refused: %v", err)
+	}
+	if len(s.methods) != 2 || s.methods[0] != http.MethodPut || s.methods[1] != http.MethodPost {
+		t.Fatalf("want a PUT then a POST, got %v", s.methods)
+	}
+	if n.LastErr() != nil {
+		t.Errorf("a delivered alert must not degrade health: %v", n.LastErr())
+	}
+	page, err := hist.List("listed", "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 {
+		t.Errorf("want exactly one history row for one delivered alert, got %d", page.Total)
+	}
+}
+
+// notifyCtx is cancelled only after the drain window, so a render hung on it would eat
+// the drain and then have its own delivery cancelled. Shutdown drops the picture instead.
+func TestShutdownAbandonsTheRenderAndStillSendsTheAlert(t *testing.T) {
+	cfg := testConfig(t)
+	s := &ntfyServer{}
+	n := s.start(t, cfg)
+	n.maps = testRenderer(t, &tileFixture{block: true})
+	shutdown, stop := context.WithCancel(context.Background())
+	n.shutdown = shutdown
+
+	done := make(chan error, 1)
+	go func() { done <- n.Publish(context.Background(), mapAlert(false)) }()
+	time.Sleep(50 * time.Millisecond)
+	stop()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("the alert should still go out: %v", err)
+		}
+	case <-time.After(drainTimeout):
+		t.Fatal("the alert did not land inside the drain window")
+	}
+	if len(s.methods) != 1 || s.methods[0] != http.MethodPost {
+		t.Errorf("want the plain JSON publish, got %v", s.methods)
+	}
+	// And once it is shutting down, nothing even starts drawing.
+	s2 := &ntfyServer{}
+	n2 := s2.start(t, cfg)
+	n2.maps, n2.shutdown = n.maps, shutdown
+	if b := n2.snapshot(context.Background(), mapAlert(false)); b != nil {
+		t.Error("a render should not begin during shutdown")
 	}
 }
 

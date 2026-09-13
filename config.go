@@ -148,6 +148,15 @@ type Config struct {
 		BaseURL string   `yaml:"base_url"`
 	} `yaml:"db"`
 
+	// Map is the snapshot attached to each notification. Startup-only, like the rest of
+	// Config: the renderer's tile client is built once.
+	Map struct {
+		// Enabled is a pointer so "map.enabled: false" in the file can be told apart
+		// from the key being absent, which is what makes the default true.
+		Enabled  *bool  `yaml:"enabled,omitempty"`
+		TilesURL string `yaml:"tiles_url"`
+	} `yaml:"map"`
+
 	CacheDir   string `yaml:"cache_dir"`
 	Tar1090URL string `yaml:"tar1090_url"`
 	Listen     string `yaml:"listen"`
@@ -192,6 +201,10 @@ func defaultConfig() *Config {
 	c := &Config{}
 	c.Source.MaxAge = Duration(60 * time.Second)
 	c.Listen = ":8080"
+	// Unlike the other endpoints, this one is not a statement about someone else's
+	// deployment: OpenFreeMap is a free public service with no key and no account, so a
+	// default here misconfigures nothing. Point it at a self-hosted planet to change that.
+	c.Map.TilesURL = "https://tiles.openfreemap.org/planet"
 	return c
 }
 
@@ -232,6 +245,9 @@ func envBindings() []envBinding {
 		{"SKY_DB_FILES", func(c *Config, v string) error { c.DB.Files = splitList(v); return nil }},
 		{"SKY_DB_BASE_URL", func(c *Config, v string) error { c.DB.BaseURL = v; return nil }},
 
+		{"SKY_MAP_ENABLED", func(c *Config, v string) error { return setBoolPtr(&c.Map.Enabled, v) }},
+		{"SKY_MAP_TILES_URL", func(c *Config, v string) error { c.Map.TilesURL = v; return nil }},
+
 		{"SKY_CACHE_DIR", func(c *Config, v string) error { c.CacheDir = v; return nil }},
 		{"SKY_TAR1090_URL", func(c *Config, v string) error { c.Tar1090URL = v; return nil }},
 		{"SKY_LISTEN", func(c *Config, v string) error { c.Listen = v; return nil }},
@@ -271,6 +287,15 @@ func setInt(i *int, v string) error {
 		return err
 	}
 	*i = p
+	return nil
+}
+
+func setBoolPtr(b **bool, v string) error {
+	p, err := strconv.ParseBool(v)
+	if err != nil {
+		return err
+	}
+	*b = &p
 	return nil
 }
 
@@ -560,6 +585,9 @@ func (w *configWatcher) run(ctx context.Context, live *Live, environ []string, i
 
 var dbFileRe = regexp.MustCompile(`^[A-Za-z0-9._-]+\.csv$`)
 
+// mapEnabled reports whether notifications should carry a map. Absent means on.
+func (c *Config) mapEnabled() bool { return c.Map.Enabled == nil || *c.Map.Enabled }
+
 func (c *Config) validate() error {
 	for _, r := range []struct{ name, env, val string }{
 		{"source.url", "SKY_SOURCE_URL", c.Source.URL},
@@ -588,6 +616,11 @@ func (c *Config) validate() error {
 	}
 	if c.Tar1090URL != "" {
 		if err := checkHTTPURL("tar1090_url", c.Tar1090URL); err != nil {
+			return err
+		}
+	}
+	if c.mapEnabled() {
+		if err := checkHTTPURL("map.tiles_url", c.Map.TilesURL); err != nil {
 			return err
 		}
 	}

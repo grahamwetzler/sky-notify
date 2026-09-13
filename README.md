@@ -94,6 +94,19 @@ inside 2 NM during the last 10 minutes, which is how news and police helicopters
 needs several minutes of positions before it can match, and that history is held in
 memory only, so a restart starts it again. It needs `source.poll_interval` of 30s or less.
 
+## The map
+
+Every notification carries a PNG of where the aircraft is: the receiver marked, the
+aircraft pointed along its heading, and the last ten minutes of its track drawn behind
+it, on [OpenFreeMap](https://openfreemap.org) tiles in the `fiord` style. It is rendered
+here — vector tiles decoded and drawn in Go, no browser and no cgo — and cached on disk
+under `cache_dir`, so a familiar patch of sky costs no network at all.
+
+The map is always optional. Tiles down, a slow fetch, a render error, or an ntfy server
+that will not take the attachment all cost the notification its picture and nothing else:
+the alert still goes out, as text, on the same path it always used. Set
+`SKY_MAP_ENABLED=false` to turn it off.
+
 ## Configuration
 
 Configure with environment variables and two optional YAML files — **environment wins
@@ -116,6 +129,8 @@ config path. Missing files are fine. See both example files for the exact split.
 | `SKY_COOLDOWN` | `24h` | how long to stay quiet about an aircraft after alerting |
 | `SKY_DB_REFRESH_INTERVAL` | `24h` | |
 | `SKY_TAR1090_URL` | — | makes notifications click through to your map |
+| `SKY_MAP_ENABLED` | `true` | attach a map snapshot to each notification |
+| `SKY_MAP_TILES_URL` | `https://tiles.openfreemap.org/planet` | TileJSON endpoint; point at your own OpenFreeMap |
 | `SKY_LAT` / `SKY_LON` | — | your receiver; needed by rules with `max_distance_nm` or `passes_within_nm` |
 | `SKY_LOG_LEVEL` | `info` | |
 | `SKY_LISTEN` | `:8080` | serves `/healthz` |

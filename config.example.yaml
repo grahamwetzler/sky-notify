@@ -34,4 +34,13 @@ cache_dir: ""
 # Optional: makes each notification click through to your own map.
 tar1090_url: ""
 
+# Every notification carries a PNG map of where the aircraft is. Unlike the endpoints
+# above this one has a default: OpenFreeMap is a free public service with no key and no
+# account, so nothing here is a guess about your deployment. Tiles are cached under
+# cache_dir. A map that cannot be drawn or cannot be delivered costs the notification its
+# picture, never the notification.
+map:
+  enabled: true
+  # tiles_url: https://tiles.openfreemap.org/planet   # or your own OpenFreeMap
+
 listen: ":8080"

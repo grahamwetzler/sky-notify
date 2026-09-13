@@ -38,6 +38,16 @@ type Notifier struct {
 	cfg    *Config
 	client *http.Client
 	url    string
+	// fileURL is the same server one path deeper. ntfy takes an attachment only as the
+	// raw body of a PUT to /<topic>; the JSON publish document has no room for bytes,
+	// only for a URL it would have to fetch, which our :8080 is not reachable at.
+	fileURL string
+	// maps renders the snapshot, nil when map.enabled is false.
+	maps *mapRenderer
+	// shutdown is the root signal context, held purely to know when Ctrl-C has been
+	// pressed. Delivery still runs on the caller's context and keeps its drain window;
+	// this only takes the picture away.
+	shutdown context.Context
 	// history is optional: set when a store is open, nil in tests and if it failed to
 	// open. Recording is never a reason for a delivery to fail.
 	history *History
@@ -55,8 +65,9 @@ func NewNotifier(cfg *Config) (*Notifier, error) {
 	// document at the root. POSTing this JSON to /<topic> "succeeds" with a 200 and
 	// delivers the raw JSON text as the message body. The topic travels in the payload.
 	return &Notifier{
-		cfg: cfg,
-		url: base.String(),
+		cfg:     cfg,
+		url:     base.String(),
+		fileURL: base.JoinPath(cfg.Ntfy.Topic).String(),
 		client: &http.Client{
 			Timeout: 15 * time.Second,
 			// Go's default would silently downgrade a redirected POST to a GET and hand
@@ -91,6 +102,10 @@ func (n *Notifier) Publish(ctx context.Context, a *Alert) error {
 		return err
 	}
 
+	// Rendered once, before the delivery clock starts, and reused across retries: the
+	// map is an attachment to this alert, not a thing to redraw each attempt.
+	img := n.snapshot(ctx, a)
+
 	// The budget must bound the whole operation, not just the sleeps between attempts:
 	// three 15s HTTP attempts would otherwise block every later alert for 45s+,
 	// emergencies included.
@@ -99,7 +114,16 @@ func (n *Notifier) Publish(ctx context.Context, a *Alert) error {
 
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
-		retryable, wait, err := n.attempt(ctx, blob)
+		retryable, wait, err := n.send(ctx, msg, blob, img)
+		// A server that will not take the attachment — a size cap, or a self-hosted ntfy
+		// with its attachment cache off — rejects it permanently, and notifyLoop answers
+		// a permanent rejection by backing off without a cooldown. The alert would be
+		// lost for the sake of its picture. So drop the picture and say it plainly.
+		if err != nil && !retryable && img != nil {
+			slog.Warn("ntfy refused the map image, sending the alert without it", "icao", a.Hex, "err", err)
+			img = nil
+			retryable, wait, err = n.send(ctx, msg, blob, nil)
+		}
 		if err == nil {
 			n.setErr(nil)
 			n.history.Add(a.Trigger, msg, time.Now())
@@ -139,12 +163,94 @@ func (n *Notifier) Publish(ctx context.Context, a *Alert) error {
 	return lastErr
 }
 
-func (n *Notifier) attempt(ctx context.Context, blob []byte) (retryable bool, wait time.Duration, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.url, bytes.NewReader(blob))
+// snapshot renders the map for one alert, or returns nil when there is not going to be
+// one. Every failure is silent by design: the alert is the point, the picture is not.
+func (n *Notifier) snapshot(ctx context.Context, a *Alert) []byte {
+	if n.maps == nil {
+		return nil
+	}
+	shutdown := n.shutdown
+	if shutdown == nil {
+		shutdown = context.Background()
+	}
+	// Already stopping: the drain window exists to get queued alerts out, not to finish
+	// drawing. Skipping outright is the difference between a late alert and no alert.
+	if shutdown.Err() != nil {
+		return nil
+	}
+	rctx, cancel := context.WithTimeout(ctx, snapshotBudget)
+	defer cancel()
+	defer context.AfterFunc(shutdown, cancel)()
+	return n.maps.snapshot(rctx, a)
+}
+
+// send makes one delivery attempt: an attachment PUT when there is an image, and
+// otherwise the JSON publish this service has always used, unchanged.
+func (n *Notifier) send(ctx context.Context, msg ntfyMessage, blob, img []byte) (retryable bool, wait time.Duration, err error) {
+	var req *http.Request
+	if img != nil {
+		req, err = n.putRequest(ctx, msg, img)
+	} else {
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, n.url, bytes.NewReader(blob))
+		if err == nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+	}
 	if err != nil {
 		return false, 0, err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	return n.attempt(req)
+}
+
+// putRequest carries the very same ntfyMessage render() produced, spelled as headers.
+// render stays the one source of truth for what a notification says; only the transport
+// differs, so the two paths cannot drift into describing an alert differently.
+func (n *Notifier) putRequest(ctx context.Context, msg ntfyMessage, img []byte) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, n.fileURL, bytes.NewReader(img))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "image/png")
+	req.Header.Set("X-Filename", "map.png")
+	// A header holds one line, and ntfy turns a literal backslash-n back into a newline.
+	req.Header.Set("X-Message", headerSafe(strings.ReplaceAll(msg.Message, "\n", `\n`)))
+	if msg.Title != "" {
+		req.Header.Set("X-Title", headerSafe(msg.Title))
+	}
+	if msg.Priority != 0 {
+		req.Header.Set("X-Priority", strconv.Itoa(msg.Priority))
+	}
+	if len(msg.Tags) > 0 {
+		req.Header.Set("X-Tags", headerSafe(strings.Join(msg.Tags, ",")))
+	}
+	if msg.Click != "" {
+		req.Header.Set("X-Click", headerSafe(msg.Click))
+	}
+	if len(msg.Actions) > 0 {
+		// Quoted, because a label or a URL may contain the comma that separates fields;
+		// semicolons separate one action from the next.
+		parts := make([]string, 0, len(msg.Actions))
+		for _, a := range msg.Actions {
+			parts = append(parts, fmt.Sprintf("%s, %q, %q", a.Action, a.Label, a.URL))
+		}
+		req.Header.Set("X-Actions", headerSafe(strings.Join(parts, "; ")))
+	}
+	return req, nil
+}
+
+// headerSafe strips what cannot travel in an HTTP header. Titles and tags are built from
+// plane-alert-db rows, which are third-party CSV: a stray newline in one would otherwise
+// be a header injection rather than a cosmetic problem.
+func headerSafe(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+func (n *Notifier) attempt(req *http.Request) (retryable bool, wait time.Duration, err error) {
 	switch {
 	case n.cfg.Ntfy.Token != "":
 		req.Header.Set("Authorization", "Bearer "+n.cfg.Ntfy.Token)

@@ -94,6 +94,21 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// The signal context, not notifyCtx: the notifier needs to know when Ctrl-C was
+	// pressed so it can stop drawing maps, while still delivering on notifyCtx for the
+	// whole drain window below.
+	notifier.shutdown = ctx
+	if cfg.mapEnabled() {
+		tiles := newTileStore(httpClient, cfg.Map.TilesURL, cfg.CacheDir)
+		go tiles.prune()
+		if maps, err := newMapRenderer(tiles); err != nil {
+			slog.Warn("map snapshots unavailable", "err", err)
+		} else {
+			notifier.maps = maps
+		}
+	} else {
+		slog.Info("map snapshots disabled: notifications will carry no image")
+	}
 	// A store that will not open is a warning, not an outage: sky-notify alerts fine
 	// without a record of having done so.
 	hist, err := NewHistory(cfg.CacheDir)
