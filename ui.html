@@ -1706,9 +1706,25 @@ function receiver() {
   return lat && lon ? {lat, lon} : {lat: '', lon: ''};
 }
 
+/* An answer is usable unless the question has moved on, or a later answer to the same
+   question already landed. Marking the landing here is what stops the older of two
+   answers in flight from painting over the newer one. */
+function stale(m, seq, req) {
+  if (m.seq !== seq || req < (m.landed || 0)) return true;
+  m.landed = req;
+  return false;
+}
+
 async function runPreview(r, offset = 0, refresh = false) {
   const m = meta(r);
-  const seq = (m.seq || 0) + 1;
+  /* Two numbers, because "superseded" and "out of date" are not the same thing. seq is
+     the question: an edit asks a new one, so answers to the old one are wrong and must
+     be dropped. req is the asking: a timed refresh re-asks the same question, so its
+     predecessor's answer is still an answer to it — only staler. Discarding those too
+     would starve the band on any page whose answers outlive the retry. */
+  const req = (m.req || 0) + 1;
+  m.req = req;
+  const seq = refresh ? m.seq || 0 : (m.seq || 0) + 1;
   m.seq = seq;
   /* When this rule was last asked about, and whether it is still waiting. The ticker
      paces itself on these rather than on how old the answer is: a feeder that has
@@ -1724,7 +1740,7 @@ async function runPreview(r, offset = 0, refresh = false) {
       body: JSON.stringify(payloadRule(r)),
     });
     const body = await res.json();
-    if (m.seq !== seq) return;          // a newer edit is already in flight
+    if (stale(m, seq, req)) return;
     if (!res.ok) throw Error(body.error || `HTTP ${res.status}`);
     const prev = m.preview;
     m.preview = offset > 0 && prev
@@ -1745,12 +1761,12 @@ async function runPreview(r, offset = 0, refresh = false) {
       $('#dbrows').textContent = dbRows.toLocaleString() + ' aircraft in the database';
     }
   } catch (err) {
-    if (m.seq !== seq) return;
+    if (stale(m, seq, req)) return;
     m.preview = {error: err.message, total: 0, aircraft: []};
   } finally {
     /* Only the newest request may say the page is idle: an older one finishing while it
        is still in flight would let the ticker ask again on top of it. */
-    if (m.seq === seq) m.pending = false;
+    if (m.req === req) m.pending = false;
   }
   /* The rule may have been deleted while its answer was in flight. */
   if (!doc.rules.includes(r)) return;
@@ -1804,8 +1820,8 @@ function refreshLive() {
   if (document.hidden || closePop || m.timer) return;
   const every = liveEvery() * 1000, since = Date.now() - (m.asked ?? 0);
   /* Outstanding is advisory, not a lock: nothing times a fetch out, and a hung one must
-     not be the last request this page ever makes. Its answer is discarded on arrival by
-     the sequence check either way. */
+     not be the last request this page ever makes. If it does answer after the retry has
+     gone out, it still lands — whichever of the two arrives last is the one kept. */
   if (m.pending && since < every * 3) return;
   if (since >= every) runPreview(r, 0, true);
 }
