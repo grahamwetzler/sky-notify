@@ -2524,3 +2524,72 @@ func TestPreviewMeasuresFromTheReceiverOnScreen(t *testing.T) {
 		t.Fatal("the preview mutated the published config")
 	}
 }
+
+/* ── Alert history ─────────────────────────────────────────────────────── */
+
+func TestHistoryRecordsPagesAndPrunes(t *testing.T) {
+	h, err := NewHistory(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	now := time.Now()
+	for i := 0; i < 25; i++ {
+		h.Add("overhead", ntfyMessage{
+			Title: fmt.Sprintf("alert %d", i), Message: "Registration: N1234",
+			Priority: 3, Tags: []string{"airplane", "rotating_light"}, Click: "https://map/",
+		}, now.Add(time.Duration(i)*time.Minute))
+	}
+	h.Add("other rule", ntfyMessage{Title: "not ours"}, now)
+
+	total, rows, err := h.List("overhead", 20, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 25 || len(rows) != 20 {
+		t.Fatalf("first page: total %d, %d rows; want 25 and 20", total, len(rows))
+	}
+	// Newest first, and every field the notification carried survives the round trip.
+	if rows[0].Title != "alert 24" {
+		t.Fatalf("newest first: got %q", rows[0].Title)
+	}
+	if rows[0].Priority != 3 || rows[0].Click != "https://map/" ||
+		strings.Join(rows[0].Tags, ",") != "airplane,rotating_light" ||
+		rows[0].Message != "Registration: N1234" {
+		t.Fatalf("fields not preserved: %+v", rows[0])
+	}
+	if want := now.Add(24 * time.Minute).UnixMilli(); rows[0].SentAt.UnixMilli() != want {
+		t.Fatalf("sent_at %v, want %v", rows[0].SentAt, time.UnixMilli(want))
+	}
+
+	total, rows, err = h.List("overhead", 20, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 25 || len(rows) != 5 || rows[0].Title != "alert 4" {
+		t.Fatalf("second page: total %d, %d rows, first %q", total, len(rows), rows[0].Title)
+	}
+
+	// A rule only ever sees its own deliveries.
+	if total, _, _ := h.List("other rule", 20, 0); total != 1 {
+		t.Fatalf("other rule has %d, want 1", total)
+	}
+
+	// An insert past the retention window takes the old rows with it.
+	h.Add("overhead", ntfyMessage{Title: "much later"}, now.Add(historyRetention+time.Hour))
+	total, rows, err = h.List("overhead", 20, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || rows[0].Title != "much later" {
+		t.Fatalf("after prune: total %d, rows %+v", total, rows)
+	}
+
+	// A store that failed to open is still safe to record to and read from.
+	var absent *History
+	absent.Add("overhead", ntfyMessage{Title: "x"}, now)
+	if total, rows, err := absent.List("overhead", 20, 0); err != nil || total != 0 || len(rows) != 0 {
+		t.Fatalf("nil history: %d, %v, %v", total, rows, err)
+	}
+}

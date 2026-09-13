@@ -38,6 +38,9 @@ type Notifier struct {
 	cfg    *Config
 	client *http.Client
 	url    string
+	// history is optional: set when a store is open, nil in tests and if it failed to
+	// open. Recording is never a reason for a delivery to fail.
+	history *History
 
 	mu      sync.Mutex
 	lastErr error
@@ -99,6 +102,7 @@ func (n *Notifier) Publish(ctx context.Context, a *Alert) error {
 		retryable, wait, err := n.attempt(ctx, blob)
 		if err == nil {
 			n.setErr(nil)
+			n.history.Add(a.Trigger, msg, time.Now())
 			return nil
 		}
 		lastErr = err

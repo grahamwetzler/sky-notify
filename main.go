@@ -33,6 +33,8 @@ const (
 	// How many matching aircraft a rule preview shows. The count it reports is the
 	// real total; only the sample is capped.
 	previewLimit = 20
+	// How many sent alerts one page of a rule's history holds.
+	historyPage = 20
 )
 
 func main() {
@@ -92,8 +94,17 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// A store that will not open is a warning, not an outage: sky-notify alerts fine
+	// without a record of having done so.
+	hist, err := NewHistory(cfg.CacheDir)
+	if err != nil {
+		slog.Warn("alert history unavailable", "dir", cfg.CacheDir, "err", err)
+	} else {
+		defer hist.Close()
+		notifier.history = hist
+	}
 	source := NewSource(cfg, httpClient)
-	h := &health{live: live, db: db, state: state, notifier: notifier}
+	h := &health{live: live, db: db, state: state, notifier: notifier, history: hist}
 
 	// Cold start needs a complete list. Running with a partial or empty one would look
 	// healthy while silently matching nothing.
@@ -425,6 +436,7 @@ type health struct {
 	db       *DB
 	state    *State
 	notifier *Notifier
+	history  *History
 
 	mu            sync.Mutex
 	lastFreshPoll time.Time
@@ -651,6 +663,24 @@ func (h *health) mux(q *queue) http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(body)
+	})
+	mux.HandleFunc("GET /api/history", func(w http.ResponseWriter, r *http.Request) {
+		// The rule's cooldown key, which is what deliveries were filed under. Blank is
+		// an empty page, not an error: a rule the page has not saved yet has no history.
+		key := r.URL.Query().Get("key")
+		offset, err := strconv.Atoi(r.URL.Query().Get("offset"))
+		if err != nil || offset < 0 {
+			offset = 0
+		}
+		total, rows, err := h.history.List(key, historyPage, offset)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"total": total, "alerts": rows, "limit": historyPage, "offset": offset,
+		})
 	})
 	mux.HandleFunc("PUT /api/alerts", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)

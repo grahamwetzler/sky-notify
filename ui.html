@@ -181,6 +181,22 @@ td.tg{color:var(--fg3)}
 td.num{white-space:nowrap;font-variant-numeric:tabular-nums}
 .more{width:calc(100% - 20px);margin:10px}
 
+/* ── Sent alerts ──────────────────────────────────────────────────────────
+   Reuses the .hits scroll box: a taller one, because a notification is a paragraph and
+   not a row. */
+.hits.sent{max-height:340px;min-width:0}
+.sent-i{padding:10px 12px;border-bottom:1px solid var(--line);display:grid;gap:5px}
+.sent-i:last-of-type{border-bottom:0}
+.sent-h{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.sent-h .t{font-weight:600;font-size:13px;overflow-wrap:anywhere}
+.sent-h .when{font-size:12px;color:var(--fg3);white-space:nowrap;
+  font-variant-numeric:tabular-nums;flex:none}
+.sent-m{font-size:12.5px;line-height:1.5;color:var(--fg2);white-space:pre-wrap;
+  overflow-wrap:anywhere;margin:0}
+.sent-f{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;font-size:11.5px;
+  color:var(--fg3)}
+.sent-f a{color:var(--fg3);text-decoration:underline;overflow-wrap:anywhere}
+
 /* ── Condition cards ──────────────────────────────────────────────────── */
 .cond{border:1px solid var(--line);border-radius:var(--r);padding:10px 12px 11px;
   display:grid;gap:7px}
@@ -451,7 +467,7 @@ let dirty = false;
 const RULE = new WeakMap();
 function meta(r) {
   let m = RULE.get(r);
-  if (!m) { m = {preview: null, key: '', shown: new Set(stated(r))}; RULE.set(r, m); }
+  if (!m) { m = {preview: null, key: '', savedKey: '', shown: new Set(stated(r))}; RULE.set(r, m); }
   return m;
 }
 const openKeys = r => CONDITIONS.filter(c => meta(r).shown.has(c.key)).map(c => c.key);
@@ -1303,6 +1319,12 @@ function paintPane(pane) {
   const hits = hitsBand(r, cov);
   if (hits) pane.append(hits);
 
+  pane.append(historyBand(r));
+  /* Fetched when the band is first drawn rather than when the page loads: history is
+     read one rule at a time, and previewing every rule on arrival is already enough
+     work for a page that has just opened. */
+  if (meta(r).savedKey && !meta(r).history) loadHistory(r);
+
   pane.append(labelBand(r, i));
 }
 
@@ -1499,6 +1521,114 @@ function hitRow(a) {
     el('td', '', a.operator || ''),
     el('td', 'tg', (a.tags || []).join(', ')));
   return tr;
+}
+
+/* ── Sent alerts ──────────────────────────────────────────────────────────
+   The bands above answer what a rule would do. This one answers what it did: the
+   service's own record of every notification it delivered, as ntfy received it, plus
+   the time it went out.
+
+   Filed under the rule's cooldown key — the same string the log and the ledger use — so
+   a rule renamed, or an unnamed one re-conditioned, starts a fresh list. The old
+   deliveries stay under the key they were sent as rather than being claimed by a rule
+   that never sent them. */
+function historyBand(r) {
+  const m = meta(r), h = m.history;
+  const sec = el('div', 'group');
+  const gh = el('div', 'group-h');
+  const t = el('div', 'group-t');
+  t.append(el('h3', 'lbl', 'Sent alerts'));
+  t.append(el('p', 'help', 'What this rule has actually delivered, newest first.'));
+  gh.append(t);
+  sec.append(gh);
+
+  if (!m.savedKey) {
+    sec.append(el('p', 'help', 'This rule has never been saved, so nothing has been sent under it yet.'));
+    return sec;
+  }
+  if (!h) {
+    sec.append(el('p', 'help', 'Loading…'));
+    return sec;
+  }
+  if (h.error) {
+    sec.append(el('p', 'help bad', 'The history could not be read: ' + h.error));
+    return sec;
+  }
+  if (!h.total) {
+    sec.append(el('p', 'help', 'Nothing sent yet.'
+      + (m.key && m.key !== m.savedKey
+        ? ' This rule has been edited since it was saved; anything it sent before is filed under what it used to be.'
+        : '')));
+    return sec;
+  }
+  sec.append(el('p', 'help', `${h.total.toLocaleString()} sent`
+    + (h.alerts.length < h.total ? `; the most recent ${h.alerts.length} are listed.` : '.')));
+
+  const wrap = el('div', 'hits sent');
+  for (const a of h.alerts) wrap.append(sentItem(a));
+  if (h.alerts.length < h.total) wrap.append(moreSent(r, h));
+  sec.append(wrap);
+  return sec;
+}
+
+function sentItem(a) {
+  const box = el('div', 'sent-i');
+  const head = el('div', 'sent-h');
+  head.append(el('div', 't', a.title || '(no title)'));
+  const when = el('time', 'when', new Date(a.sent_at).toLocaleString());
+  when.dateTime = a.sent_at;
+  head.append(when);
+  box.append(head);
+  if (a.message) box.append(el('p', 'sent-m', a.message));
+
+  const foot = el('div', 'sent-f');
+  const named = PRIORITIES.find(([v]) => v === a.priority);
+  foot.append(el('span', '', `Priority ${a.priority}` + (named ? ` — ${named[1]}` : '')));
+  if (a.tags?.length) foot.append(el('span', '', 'Tags: ' + a.tags.join(', ')));
+  if (a.click) {
+    const link = el('a', '', a.click);
+    link.href = a.click;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    foot.append(link);
+  }
+  box.append(foot);
+  return box;
+}
+
+function moreSent(r, h) {
+  const b = el('button', 'btn more');
+  b.id = 'more-sent';
+  b.type = 'button';
+  const remaining = h.total - h.alerts.length;
+  b.textContent = `Show ${Math.min(remaining, h.limit || 20).toLocaleString()} more`;
+  b.onclick = () => { b.onclick = null; b.textContent = 'Loading…'; loadHistory(r, h.alerts.length); };
+  return b;
+}
+
+/* One page of a rule's history. Paging appends; anything else replaces, so a timed
+   reload cannot duplicate rows already on screen. */
+async function loadHistory(r, offset = 0) {
+  const m = meta(r), key = m.savedKey;
+  if (!key || m.histLoading) return;
+  m.histLoading = true;
+  m.histAt = Date.now();
+  try {
+    const res = await fetch('/api/history?' + new URLSearchParams({key, offset}));
+    const body = await res.json();
+    if (!res.ok) throw Error(body.error || `HTTP ${res.status}`);
+    /* A save between the asking and the answer refiles the rule under a new key. */
+    if (m.savedKey !== key) return;
+    m.history = offset > 0 && m.history?.alerts
+      ? {...body, alerts: [...m.history.alerts, ...body.alerts]}
+      : body;
+  } catch (err) {
+    m.history = {error: err.message};
+  } finally {
+    m.histLoading = false;
+  }
+  /* renderPane puts the scroll position of every .hits box back, this one included. */
+  if (doc.rules.includes(r) && doc.rules[sel] === r) renderPane();
 }
 
 function labelBand(r, i) {
@@ -1814,6 +1944,11 @@ function refreshLive() {
   const r = doc.rules[sel];
   if (!r) return;
   const m = meta(r);
+  /* The record of what was sent is refreshed on the same clock: a rule that fires while
+     it is on screen should not need a reload to show it. Only the first page — reloading
+     a list somebody has paged deeper into would throw away their place in it. */
+  if (m.savedKey && !m.histLoading && Date.now() - (m.histAt ?? 0) >= liveEvery() * 1000
+      && (m.history?.alerts?.length ?? 0) <= (m.history?.limit ?? 20)) loadHistory(r);
   /* Repainting under an open popover leaves its anchor detached, which costs the focus
      return — a stale sky claiming to be current costs more. */
   if (m.shownFresh !== undefined && m.shownFresh !== liveFresh(r)) return renderPane();
@@ -1903,7 +2038,9 @@ async function load() {
   feedTypes = body.feed_types || [];
   locks = Object.fromEntries((body.locked || []).map(l => [l.key, l]));
   const keys = body.rule_keys || [];
-  doc.rules.forEach((r, i) => { meta(r).key = keys[i] || ''; });
+  /* key follows the draft as it is edited; savedKey is what the running service filed
+     its deliveries under, and is the only one history can be asked for. */
+  doc.rules.forEach((r, i) => { meta(r).key = meta(r).savedKey = keys[i] || ''; });
   /* The path can be long and its tail is the part that identifies it. */
   const parts = body.path.split('/');
   $('#path').textContent = parts.length > 3 ? '…/' + parts.slice(-2).join('/') : body.path;

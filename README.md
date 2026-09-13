@@ -4,7 +4,7 @@ Watches ultrafeeder's `aircraft.json` and sends an [ntfy](https://ntfy.sh) notif
 when an interesting aircraft shows up overhead — matched against the
 [sdr-enthusiasts/plane-alert-db](https://github.com/sdr-enthusiasts/plane-alert-db) list.
 
-One static Go binary, one dependency, one container.
+One static Go binary, no cgo, one container.
 
 ```
 US Air Force C-17 Globemaster III
@@ -47,9 +47,9 @@ refuses to start instead of quietly talking to somewhere you did not choose.
 Subscribe to that topic in the ntfy app and you're done. On public ntfy.sh **the topic
 name is the only secret**, so pick something unguessable.
 
-The `/data` volume matters: it holds the cached aircraft list and the alert cooldown
-ledger. Without it you re-download the list on every restart and re-alert on everything
-currently overhead.
+The `/data` volume matters: it holds the cached aircraft list, the alert cooldown ledger
+and the record of what has been sent. Without it you re-download the list on every restart,
+re-alert on everything currently overhead, and lose the history.
 
 `/config` is where `alerts.yaml` lives, and the web UI writes it. It has to be writable by
 the container's non-root user, which a named volume is — a read-only bind mount is not, and
@@ -155,6 +155,14 @@ Conditions that would be rejected on save say so where they are built: a distanc
 receiver `lat`/`lon`, a `circling` rule with `source.poll_interval` above 30s, a maximum
 altitude below the minimum. Fields an environment variable has claimed are disabled and
 name the variable. The page follows the browser's light or dark setting and has a toggle.
+
+Each rule carries its own **sent alerts** list: every notification it has delivered, as
+ntfy received it — title, body, priority, tags and link — with the time it went out,
+newest first and paged twenty at a time. It is stored in `history.db` (SQLite) on the
+`/data` volume and kept for 90 days. Deliveries are filed under the rule's cooldown key,
+which is its name, or a fingerprint of its conditions if it has none — so renaming a rule,
+or re-conditioning an unnamed one, starts a fresh list rather than claiming alerts it
+never sent.
 
 The file remains authoritative, hand edits still work, and environment variables still win
 over it. Saved changes are picked up within the next 5-second reload tick. Comments do not
