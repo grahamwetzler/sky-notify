@@ -243,6 +243,7 @@ func (m *mapRenderer) drawOverlays(dc *gg.Context, v view, a *Alert) {
 	dc.Push()
 	dc.Translate(p.x, p.y)
 	dc.Rotate(gg.Radians(*a.AC.Track)) // 0° is north, and so is -Y on the canvas
+	dc.Scale(1.5, 1.5)                 // the shape is drawn at its natural size; this is the size it is shown at
 	plane := [][2]float64{{0, -11}, {2.5, -3}, {11, 4}, {11, 6.5}, {2.5, 4}, {2.5, 8},
 		{5, 10.5}, {5, 12}, {0, 10.5}, {-5, 12}, {-5, 10.5}, {-2.5, 8}, {-2.5, 4},
 		{-11, 6.5}, {-11, 4}, {-2.5, -3}}

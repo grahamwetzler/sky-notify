@@ -10,7 +10,7 @@ const (
 	tilePx    = 256
 	minZoom   = 4
 	maxZoom   = 14 // OpenFreeMap's planet tiles stop here
-	padding   = 0.10
+	padding   = 0.30
 	minSpanNM = 2.0
 	// The attribution is ~229px of the footer line and cannot be dropped, so a frame
 	// narrower than this would wrap the ODbL credit off its own left edge. Narrow frames
@@ -23,8 +23,8 @@ const (
 type latlon struct{ lat, lon float64 }
 
 // view is the frame: which zoom the tiles come from, how big the image is, and where its
-// top-left corner sits in that zoom's world-pixel plane. The image is cropped to what it
-// has to show, so it is only square when the thing it frames is.
+// top-left corner sits in that zoom's world-pixel plane. The image is square and cropped
+// to what it has to show, so its side is the longer side of that box.
 type view struct {
 	zoom             int
 	w, h             int
@@ -75,16 +75,15 @@ func fitView(pts []latlon) view {
 			break
 		}
 	}
-	// Crop to the box rather than padding it out to a square: mapPx is the long edge, not
-	// the picture. A receiver and an aircraft nearly in line would make a letterbox strip,
-	// so the short edge stops at half the long one, and mapPx still caps both — when even
-	// minZoom could not fit the box, the frame is a crop of it rather than a 4096px mural.
+	// A square crop, sized to the box rather than fixed at mapPx: the longer side of the
+	// box is the side of the image, so the frame is as tight as a square can be around
+	// what it has to show. mapPx caps it — when even minZoom could not hold the box, the
+	// frame is a crop of it rather than a 4096px mural — and minWidthPx floors it, since
+	// the footer's credit has to fit.
 	x0, x1 := worldX(minLon, zoom), worldX(maxLon, zoom)
 	y0, y1 := worldY(maxLat, zoom), worldY(minLat, zoom)
-	w, h := x1-x0, y1-y0
-	long := math.Max(w, h)
-	w = math.Min(math.Max(w, math.Max(long/2, minWidthPx)), mapPx)
-	h = math.Min(math.Max(h, long/2), mapPx)
+	size := math.Min(math.Max(math.Max(x1-x0, y1-y0), minWidthPx), mapPx)
+	w, h := size, size
 	// Centre on the projected box, not on the mean latitude: Mercator stretches towards
 	// the poles, so the two are not the same point and a tight crop would drop the
 	// northern edge off a frame centred the naive way.

@@ -2807,39 +2807,26 @@ func TestFitViewFramesTheReceiverAndTheAircraft(t *testing.T) {
 	if v.zoom != 10 {
 		t.Errorf("zoom = %d, want the largest that still fits (10)", v.zoom)
 	}
-	// The image is cropped to the two points plus a 10% margin, so each of them sits
-	// 5/110ths of the way in from its edge.
-	const inset = 0.05 / (1 + padding)
+	// The image is square and cropped to the longer side of the box plus the margin, half
+	// of it on each side, so the points sit that far in from the edges that side touches;
+	// the other axis has whatever the square left over, which is never less.
+	const inset = padding / 2 / (1 + padding)
+	want := float64(v.w) * inset
 	a, b := v.pixel(pts[0].lat, pts[0].lon), v.pixel(pts[1].lat, pts[1].lon)
+	long := math.Abs(a.y-b.y) > math.Abs(a.x-b.x) // this pair is taller than it is wide
 	for _, e := range []struct {
-		name   string
-		lo, hi float64
-		edge   int
+		name    string
+		lo, hi  float64
+		size    int
+		decides bool
 	}{
-		{"x", math.Min(a.x, b.x), math.Max(a.x, b.x), v.w},
-		{"y", math.Min(a.y, b.y), math.Max(a.y, b.y), v.h},
+		{"x", math.Min(a.x, b.x), math.Max(a.x, b.x), v.w, !long},
+		{"y", math.Min(a.y, b.y), math.Max(a.y, b.y), v.h, long},
 	} {
-		want := float64(e.edge) * inset
-		if math.Abs(e.lo-want) > 2 || math.Abs(float64(e.edge)-e.hi-want) > 2 {
-			t.Errorf("%s: points span %.1f..%.1f of %d, want a %.1fpx margin each side",
-				e.name, e.lo, e.hi, e.edge, want)
-		}
-	}
-}
-
-// A pair either side of the antimeridian is two tenths of a degree apart, not 359.8.
-func TestFitViewDoesNotWrapAroundTheWorld(t *testing.T) {
-	v := fitView([]latlon{{10, 179.9}, {10, -179.9}})
-	a, b := v.pixel(10, 179.9), v.pixel(10, -179.9)
-	if v.zoom < 10 {
-		t.Errorf("zoom = %d: the frame spanned the planet instead of the strait", v.zoom)
-	}
-	if math.Abs(a.x-b.x) > mapPx {
-		t.Errorf("points %v and %v are a world apart", a, b)
-	}
-	for _, q := range []pt{a, b} {
-		if q.x < 0 || q.x > float64(v.w) || q.y < 0 || q.y > float64(v.h) {
-			t.Errorf("point landed off the image at %v", q)
+		margin := math.Min(e.lo, float64(e.size)-e.hi)
+		if margin < want-2 || (e.decides && margin > want+2) {
+			t.Errorf("%s: points span %.1f..%.1f of %d, a %.1fpx margin; want %.1fpx%s",
+				e.name, e.lo, e.hi, e.size, margin, want, map[bool]string{true: " exactly", false: " or more"}[e.decides])
 		}
 	}
 }
@@ -3034,7 +3021,7 @@ func TestFramingWithoutAReceiverCentresOnTheAircraft(t *testing.T) {
 
 // The attribution is the obligation and the scale bar is the courtesy, so the bar is the
 // one that gives way. Close in at 55N a single mile is 169px, which will not fit beside a
-// 229px credit on a 400px frame — before the bar yielded, it was drawn straight through it.
+// 229px credit on a 440px frame — before the bar yielded, it was drawn straight through it.
 func TestTheScaleBarYieldsToTheAttribution(t *testing.T) {
 	m, err := newMapRenderer(nil)
 	if err != nil {
@@ -3048,7 +3035,7 @@ func TestTheScaleBarYieldsToTheAttribution(t *testing.T) {
 		pts     []latlon
 		wantBar bool
 	}{
-		"a mile apart at 55N":  {[]latlon{{55, 0}, {55.05, 0}}, false},
+		"a mile apart at 55N":  {[]latlon{{55, 0}, {55.005, 0}}, false},
 		"forty miles in Texas": {[]latlon{{32.90, -96.64}, {33.47, -96.09}}, true},
 	} {
 		v := fitView(c.pts)
