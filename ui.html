@@ -136,10 +136,9 @@ code{font:500 .92em/1 ui-monospace,SFMono-Regular,Menlo,monospace;
 .badge.wait{color:var(--fg3)}
 .list-f{padding:11px 15px;display:grid;gap:8px}
 .list-f .btn{width:100%}
-.row.settings{grid-template-columns:20px minmax(0,1fr);border-top:1px solid var(--line);
-  border-bottom:0}
-.row.settings .r-name{font-weight:550;color:var(--fg2)}
-.row.settings[aria-current=true] .r-name{color:var(--acc)}
+.row{cursor:grab}
+.row.drag{opacity:.4}
+.btn.icon[aria-pressed=true]{background:var(--acc-soft);border-color:var(--acc);color:var(--acc)}
 
 /* ── Detail pane ──────────────────────────────────────────────────────── */
 .pane{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
@@ -292,6 +291,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
     <span id="dbrows" class="ltr"></span>
   </div>
   <div class="acts">
+    <button class="btn icon" id="settings" aria-pressed="false" aria-label="Settings"></button>
     <button class="btn icon" id="theme" aria-label="Switch between light and dark"></button>
     <button class="btn primary" id="save" disabled>Save</button>
   </div>
@@ -1051,8 +1051,54 @@ function valueChips(r, key) {
 }
 
 /* ── The rule list ────────────────────────────────────────────────────── */
+/* Dragging reorders the rules in place. The up/down buttons on the pane stay: a keyboard
+   reader cannot drag, and the same move has to be reachable without a pointer. */
+let dragEl = null;
+function dragHandlers(box) {
+  box.ondragstart = e => {
+    const row = e.target.closest('.row');
+    if (!row) return;
+    dragEl = row;
+    row.classList.add('drag');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', row.dataset.i);   // Firefox drags nothing without it
+  };
+  /* The row is moved in the DOM as it is dragged rather than re-rendered: a rebuild would
+     destroy the element being dragged and the browser would abort the drag with it. The
+     array is only touched once, on drop, from where the row actually came to rest. */
+  box.ondragover = e => {
+    if (!dragEl) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const row = e.target.closest('.row');
+    if (!row || row === dragEl) return;
+    const box2 = row.getBoundingClientRect();
+    box.insertBefore(dragEl, e.clientY > box2.top + box2.height / 2 ? row.nextSibling : row);
+  };
+  box.ondrop = e => { e.preventDefault(); dropped(box); };
+  box.ondragend = () => dropped(box);
+}
+function dropped(box) {
+  if (!dragEl) return;
+  const from = +dragEl.dataset.i, to = [...box.children].indexOf(dragEl);
+  dragEl.classList.remove('drag');
+  dragEl = null;
+  if (to < 0 || to === from) return renderList();
+  const [moved] = doc.rules.splice(from, 1);
+  doc.rules.splice(to, 0, moved);
+  if (sel === from) sel = to;
+  else if (typeof sel === 'number') {
+    if (from < sel && to >= sel) sel--;
+    else if (from > sel && to <= sel) sel++;
+  }
+  markDirty(); renderList(); renderPane();
+}
+
 function renderList() {
+  /* A preview answer landing mid-drag would replace the row under the cursor. */
+  if (dragEl) return;
   const box = $('#rows');
+  dragHandlers(box);
   const hadFocus = document.activeElement?.closest?.('.row');
   const focusIndex = hadFocus ? [...box.children].indexOf(hadFocus) : -1;
   box.replaceChildren();
@@ -1062,6 +1108,8 @@ function renderList() {
     const cov = coverage(r);
     const b = el('button', 'row' + (shadowed ? ' shadowed' : ''));
     b.type = 'button';
+    b.draggable = true;
+    b.dataset.i = i;
     b.setAttribute('aria-current', String(sel === i));
     b.onclick = () => select(i);
     b.append(el('span', 'n', String(i + 1)));
@@ -1087,12 +1135,7 @@ function renderList() {
     box.append(p);
   }
 
-  const s = el('button', 'row settings'); s.type = 'button';
-  s.setAttribute('aria-current', String(isSettings()));
-  s.onclick = () => select('settings');
-  const ic = el('span', 'n'); ic.innerHTML = svg(I.sliders, 14);
-  s.append(ic, el('span', 'r-name', 'Settings'));
-  box.append(s);
+  $('#settings').setAttribute('aria-pressed', String(isSettings()));
 
   if (focusIndex >= 0 && box.children[focusIndex]) box.children[focusIndex].focus();
 }
@@ -1216,6 +1259,9 @@ function paintPane(pane) {
     pane.append(sec);
   }
 
+  const hits = hitsBand(r, cov);
+  if (hits) pane.append(hits);
+
   pane.append(labelBand(r, i));
 }
 
@@ -1236,8 +1282,21 @@ function resultBand(r, cov) {
       + ` — the database has no answer for ${blind.length > 1 ? 'those' : 'that'}, so ${blind.length > 1 ? 'they narrow' : 'it narrows'} the alert but not the figure.`));
   }
 
+  return band;
+}
+
+/* The roll call sits under the conditions that select it, not above them: the figure is
+   what the rule is read by, the rows are what you check it against once it is written. */
+function hitsBand(r, cov) {
   const p = meta(r).preview;
   if (p && !p.error && p.aircraft?.length && cov.kind !== 'blind' && cov.kind !== 'wild') {
+    const sec = el('div', 'group');
+    const gh = el('div', 'group-h');
+    const t = el('div', 'group-t');
+    t.append(el('h3', 'lbl', 'Aircraft this selects'));
+    t.append(el('p', 'help', 'From the database, by the identity conditions above.'));
+    gh.append(t);
+    sec.append(gh);
     const wrap = el('div', 'hits');
     const table = el('table');
     const thead = el('thead'), hr = el('tr');
@@ -1256,9 +1315,10 @@ function resultBand(r, cov) {
     /* Inside the scroll region, not below it: the button belongs where the rows run out
        rather than pinned under a list you have not reached the end of. */
     if (p.aircraft.length < p.total) wrap.append(moreButton(r, p));
-    band.append(wrap);
+    sec.append(wrap);
+    return sec;
   }
-  return band;
+  return null;
 }
 
 function moreButton(r, p) {
@@ -1621,6 +1681,8 @@ async function load() {
   doc.rules.forEach(r => runPreview(r));
 }
 
+$('#settings').innerHTML = svg(I.sliders, 15);
+$('#settings').onclick = () => select('settings');
 $('#add').onclick = addRule;
 $('#save').onclick = save;
 addEventListener('keydown', e => {
