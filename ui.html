@@ -1076,7 +1076,15 @@ function dragHandlers(box) {
     box.insertBefore(dragEl, e.clientY > box2.top + box2.height / 2 ? row.nextSibling : row);
   };
   box.ondrop = e => { e.preventDefault(); dropped(box); };
-  box.ondragend = () => dropped(box);
+  /* Only a drop commits. A drag called off — Escape, or released outside the list — still
+     ends here, with the row sitting where it was dragged to and the array never touched;
+     rebuilding from the array is what puts it back. A drop has already cleared dragEl. */
+  box.ondragend = () => {
+    if (!dragEl) return;
+    dragEl.classList.remove('drag');
+    dragEl = null;
+    renderList();
+  };
 }
 function dropped(box) {
   if (!dragEl) return;
