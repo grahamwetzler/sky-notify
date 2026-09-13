@@ -2975,13 +2975,47 @@ func TestSnapshotSurvivesWhatTheTileServerDoes(t *testing.T) {
 		"corrupt tile":      {body: []byte("not a tile at all, truly")},
 		"tile server error": {tileCode: http.StatusInternalServerError},
 		"discovery fails":   {jsonCode: http.StatusInternalServerError},
+		// A 404 used to take the same mutex twice and hang the alert, everything queued
+		// behind it, and shutdown — with no context able to break the wait.
+		"discovery 404": {jsonCode: http.StatusNotFound},
 	} {
 		t.Run(name, func(t *testing.T) {
 			m := testRenderer(t, f)
-			if b := m.snapshot(context.Background(), mapAlert(false)); b != nil {
-				t.Errorf("want no image, got %d bytes", len(b))
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			done := make(chan []byte, 1)
+			go func() { done <- m.snapshot(ctx, mapAlert(false)) }()
+			select {
+			case b := <-done:
+				if b != nil {
+					t.Errorf("want no image, got %d bytes", len(b))
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("snapshot never returned")
 			}
 		})
+	}
+}
+
+// A tile the server does not have is ordinary — empty ocean, or past the dataset edge —
+// so the map is still drawn, and the template is dropped in case it was the stale one.
+func TestAMissingTileIsNotAMissingMap(t *testing.T) {
+	f := &tileFixture{tileCode: http.StatusNotFound}
+	store := f.start(t)
+	if _, _, err := store.urlTemplate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newMapRenderer(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := m.snapshot(context.Background(), mapAlert(false)); b == nil {
+		t.Fatal("a tile that does not exist should still leave a map")
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.template != "" {
+		t.Error("a 404 should drop the template, in case it named a retired planet build")
 	}
 }
 
@@ -3251,4 +3285,51 @@ func TestAlertCarriesACopyOfTheTrack(t *testing.T) {
 	}(); len(hits) != 1 {
 		t.Fatalf("the live preview should still match, got %d", len(hits))
 	}
+}
+
+// A tile is a compression format, so the byte limit the fetcher applies is not a memory
+// limit. These are the compact inputs that used to blow past it.
+func TestCompactTilesCannotInflateIntoMemory(t *testing.T) {
+	for name, tile := range map[string][]byte{
+		// Two bytes per feature, and each becomes a struct plus a slice header.
+		"a flood of empty features": mvtTile(bytes.Repeat([]byte{0x12, 0x00}, maxTileFeatures+1)),
+		// One byte per ClosePath, and each appends another point to the ring.
+		"a flood of closed rings": mvtTile(mvtFeature(append(
+			[]byte{9, 0, 0}, // MoveTo(1) at the origin, so there is a ring to close
+			bytes.Repeat([]byte{15}, maxTilePoints+1)...))),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := decodeTile(context.Background(), tile); err == nil {
+				t.Error("want the tile rejected before it is allocated")
+			} else if !strings.Contains(err.Error(), "in one tile") {
+				t.Errorf("want a budget error, got %v", err)
+			}
+		})
+	}
+	// And the real thing still decodes, so the ceilings are not set below reality.
+	if _, err := decodeTile(context.Background(), goldenTile(t)); err != nil {
+		t.Errorf("a real tile must still decode: %v", err)
+	}
+}
+
+// mvtTile wraps layer bytes as Tile.layers, and mvtFeature wraps a geometry command
+// stream as one Layer.feature. Enough protobuf to build a hostile tile by hand.
+func mvtTile(layer []byte) []byte {
+	body := append([]byte{0x0a, 0x01, 'x'}, layer...) // Layer.name = "x"
+	return append(append([]byte{0x1a}, varint(len(body))...), body...)
+}
+
+func mvtFeature(geometry []byte) []byte {
+	geom := append(append([]byte{0x22}, varint(len(geometry))...), geometry...) // Feature.geometry
+	body := append([]byte{0x18, 0x03}, geom...)                                 // Feature.type = POLYGON
+	return append(append([]byte{0x12}, varint(len(body))...), body...)
+}
+
+func varint(n int) []byte {
+	var out []byte
+	for n >= 0x80 {
+		out = append(out, byte(n)|0x80)
+		n >>= 7
+	}
+	return append(out, byte(n))
 }

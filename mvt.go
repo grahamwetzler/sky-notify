@@ -14,12 +14,38 @@ import (
 // Tile bytes arrive from a third party and are decoded on the alert path, so nothing here
 // trusts a length: every count is checked against what is left of the buffer before it is
 // used, and the two limits below cap what a well-formed but hostile tile can allocate.
+// A vector tile is a compression format, so a byte limit is not a memory limit: two bytes
+// of feature header become a 40-byte struct, and one packed geometry array becomes points
+// at 16 bytes each. Without these a 4 MB tile the fetcher was happy to accept could cost
+// hundreds of megabytes, four tiles at a time, on the alert path. A dense city tile at the
+// deepest zoom measures ~5k features and ~56k points, so the ceilings sit an order of
+// magnitude above anything real.
 const (
-	maxTileLayers  = 64
-	maxLayerPoints = 200_000
+	maxTileLayers   = 64
+	maxTileFeatures = 100_000
+	maxTilePoints   = 1_000_000
 	// The schema default when a layer omits extent. Tile coordinates run [0,extent).
 	defaultExtent = 4096
 )
+
+// budget is what is left of a tile's allowance. It is spent at the moment of allocation,
+// not counted up afterwards: a limit checked once the memory is already committed is a
+// report, not a limit.
+type budget struct{ featuresLeft, pointsLeft int }
+
+func (b *budget) feature() error {
+	if b.featuresLeft--; b.featuresLeft < 0 {
+		return fmt.Errorf("%w: over %d features in one tile", errMalformed, maxTileFeatures)
+	}
+	return nil
+}
+
+func (b *budget) points(n int) error {
+	if b.pointsLeft -= n; b.pointsLeft < 0 {
+		return fmt.Errorf("%w: over %d points in one tile", errMalformed, maxTilePoints)
+	}
+	return nil
+}
 
 var errMalformed = errors.New("mvt: malformed tile")
 
@@ -55,6 +81,7 @@ type layer struct {
 // any effect on a large tile.
 func decodeTile(ctx context.Context, b []byte) ([]layer, error) {
 	var out []layer
+	left := &budget{featuresLeft: maxTileFeatures, pointsLeft: maxTilePoints}
 	p := &pbuf{b: b}
 	for p.more() {
 		field, wire, err := p.key()
@@ -77,7 +104,7 @@ func decodeTile(ctx context.Context, b []byte) ([]layer, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		l, err := decodeLayer(raw)
+		l, err := decodeLayer(raw, left)
 		if err != nil {
 			return nil, err
 		}
@@ -89,7 +116,7 @@ func decodeTile(ctx context.Context, b []byte) ([]layer, error) {
 // decodeLayer collects the features raw and resolves them at the end: keys and values are
 // field 3 and 4 while features are field 2, so a feature's tags name a key table that has
 // not been read yet when the feature itself arrives.
-func decodeLayer(b []byte) (layer, error) {
+func decodeLayer(b []byte, left *budget) (layer, error) {
 	l := layer{extent: defaultExtent}
 	var (
 		raws   [][]byte
@@ -112,6 +139,11 @@ func decodeLayer(b []byte) (layer, error) {
 		case field == 2 && wire == wireBytes: // features
 			v, err := p.bytes()
 			if err != nil {
+				return l, err
+			}
+			// Charged here, where the slice grows, rather than after decoding: a feature
+			// carrying no geometry costs nothing in points and would otherwise be free.
+			if err := left.feature(); err != nil {
 				return l, err
 			}
 			raws = append(raws, v)
@@ -147,22 +179,18 @@ func decodeLayer(b []byte) (layer, error) {
 		return l, fmt.Errorf("%w: layer %q extent %d", errMalformed, l.name, l.extent)
 	}
 
-	points := 0
 	l.features = make([]feature, 0, len(raws))
 	for _, raw := range raws {
-		f, n, err := decodeFeature(raw, keys, values)
+		f, err := decodeFeature(raw, keys, values, left)
 		if err != nil {
 			return l, err
-		}
-		if points += n; points > maxLayerPoints {
-			return l, fmt.Errorf("%w: layer %q over %d points", errMalformed, l.name, maxLayerPoints)
 		}
 		l.features = append(l.features, f)
 	}
 	return l, nil
 }
 
-func decodeFeature(b []byte, keys []string, values []any) (feature, int, error) {
+func decodeFeature(b []byte, keys []string, values []any, left *budget) (feature, error) {
 	var (
 		f    feature
 		tags []uint32
@@ -173,7 +201,7 @@ func decodeFeature(b []byte, keys []string, values []any) (feature, int, error) 
 	for p.more() {
 		field, wire, err := p.key()
 		if err != nil {
-			return f, 0, err
+			return f, err
 		}
 		switch {
 		case field == 2: // tags, packed or not
@@ -189,17 +217,17 @@ func decodeFeature(b []byte, keys []string, values []any) (feature, int, error) 
 			err = p.skip(wire)
 		}
 		if err != nil {
-			return f, 0, err
+			return f, err
 		}
 	}
 
 	if len(tags)%2 != 0 {
-		return f, 0, fmt.Errorf("%w: odd tag count", errMalformed)
+		return f, fmt.Errorf("%w: odd tag count", errMalformed)
 	}
 	for i := 0; i+1 < len(tags); i += 2 {
 		k, v := int(tags[i]), int(tags[i+1])
 		if k >= len(keys) || v >= len(values) {
-			return f, 0, fmt.Errorf("%w: tag index out of range", errMalformed)
+			return f, fmt.Errorf("%w: tag index out of range", errMalformed)
 		}
 		if f.props == nil {
 			f.props = make(map[string]any, len(tags)/2)
@@ -207,18 +235,18 @@ func decodeFeature(b []byte, keys []string, values []any) (feature, int, error) 
 		f.props[keys[k]] = values[v]
 	}
 
-	rings, n, err := decodeGeometry(geom)
+	rings, err := decodeGeometry(geom, left)
 	if err != nil {
-		return f, 0, err
+		return f, err
 	}
 	f.rings = rings
-	return f, n, nil
+	return f, nil
 }
 
 // decodeGeometry runs the MoveTo/LineTo/ClosePath command stream. A MoveTo starts a new
 // part, so a multipoint's points land in one part, a multilinestring's lines in one part
 // each, and a polygon's rings likewise — which is all the drawing side needs.
-func decodeGeometry(g []uint32) (rings [][]pt, count int, err error) {
+func decodeGeometry(g []uint32, left *budget) (rings [][]pt, err error) {
 	var cur []pt
 	var x, y int32
 	flush := func() {
@@ -235,7 +263,10 @@ func decodeGeometry(g []uint32) (rings [][]pt, count int, err error) {
 			// The guard is the whole point: a count claiming more pairs than the buffer
 			// holds is the obvious way to make a decoder read past its slice.
 			if n == 0 || n > (len(g)-i)/2 {
-				return nil, 0, fmt.Errorf("%w: geometry runs past the buffer", errMalformed)
+				return nil, fmt.Errorf("%w: geometry runs past the buffer", errMalformed)
+			}
+			if err := left.points(n); err != nil {
+				return nil, err
 			}
 			if cmd == 1 {
 				flush()
@@ -245,20 +276,22 @@ func decodeGeometry(g []uint32) (rings [][]pt, count int, err error) {
 				y += zigzag(g[i+1])
 				i += 2
 				cur = append(cur, pt{float64(x), float64(y)})
-				count++
 			}
 		case 7: // ClosePath
 			if n != 1 || len(cur) == 0 {
-				return nil, 0, fmt.Errorf("%w: bad ClosePath", errMalformed)
+				return nil, fmt.Errorf("%w: bad ClosePath", errMalformed)
+			}
+			// One byte of input, one more point: the cheapest way to inflate a tile.
+			if err := left.points(1); err != nil {
+				return nil, err
 			}
 			cur = append(cur, cur[0])
-			count++
 		default:
-			return nil, 0, fmt.Errorf("%w: unknown geometry command %d", errMalformed, cmd)
+			return nil, fmt.Errorf("%w: unknown geometry command %d", errMalformed, cmd)
 		}
 	}
 	flush()
-	return rings, count, nil
+	return rings, nil
 }
 
 func zigzag(v uint32) int32 { return int32(v>>1) ^ -int32(v&1) }

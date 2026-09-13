@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -124,6 +125,14 @@ func (s *tileStore) tile(ctx context.Context, template, version string, z, x, y 
 
 	url := strings.NewReplacer("{z}", fmt.Sprint(z), "{x}", fmt.Sprint(x), "{y}", fmt.Sprint(y)).Replace(template)
 	b, err := s.get(ctx, url, tileFetchTimeout)
+	if errors.Is(err, errNotFound) {
+		// Either a tile that does not exist or a template naming a planet build the
+		// server has retired. Dropping the template costs one extra request and fixes
+		// the second case; an absent tile is not an error, the canvas just has nothing
+		// to draw there.
+		s.expireTemplate()
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +175,13 @@ func (s *tileStore) urlTemplate(ctx context.Context) (template, version string, 
 	}
 	// ponytail: the fetch happens under the lock. The notifier is the only caller, so
 	// there is nothing to contend with; split it if a second caller ever appears.
+	// Not while holding s.mu on the 404 path: expireTemplate takes the same mutex, and
+	// a sync.Mutex is not reentrant — that self-deadlock hung the alert, every alert
+	// behind it, and shutdown, with no context able to break it.
 	b, err := s.get(ctx, s.tileJSON, tileFetchTimeout)
+	if errors.Is(err, errNotFound) {
+		return "", "", fmt.Errorf("tiles: %s has no TileJSON (404); check map.tiles_url", s.tileJSON)
+	}
 	if err != nil {
 		return "", "", err
 	}
@@ -183,6 +198,11 @@ func (s *tileStore) urlTemplate(ctx context.Context) (template, version string, 
 	slog.Debug("tile template", "url", s.template, "version", s.version)
 	return s.template, s.version, nil
 }
+
+// errNotFound is a 404, which means different things to the two callers of get and so is
+// decided by them rather than inside it. An absent tile is ordinary; an absent TileJSON
+// is a misconfigured endpoint.
+var errNotFound = errors.New("tiles: not found")
 
 var unsafePathSegment = regexp.MustCompile(`[^A-Za-z0-9_.-]`)
 
@@ -215,10 +235,7 @@ func (s *tileStore) get(ctx context.Context, url string, timeout time.Duration) 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		// Either a tile that does not exist or a template that has expired. Dropping the
-		// template costs one extra request and fixes the second case.
-		s.expireTemplate()
-		return nil, nil
+		return nil, errNotFound
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("tiles: %s returned %s", url, resp.Status)
