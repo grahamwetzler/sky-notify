@@ -1658,7 +1658,7 @@ function labelBand(r, i) {
   const sayLabel = () => {
     const key = ruleKey(r);
     note.textContent = r.name
-      ? 'Cooldowns and log lines use this. It never appears in the notification.'
+      ? 'The notification is titled with this. Cooldowns and log lines use it too.'
       : (key ? `Cooldowns key on ${key}, a fingerprint of the conditions above. Reordering the rules leaves it alone; changing what this rule matches does not.`
              : 'Cooldowns key on a fingerprint of the conditions above. Reordering the rules leaves it alone; changing what this rule matches does not.');
   };

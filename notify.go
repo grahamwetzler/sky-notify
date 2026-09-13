@@ -308,6 +308,9 @@ func (n *Notifier) render(a *Alert) ntfyMessage {
 	case a.AC.Reg != "":
 		title = a.AC.Reg
 	}
+	if a.RuleName != "" {
+		title = a.RuleName
+	}
 	if a.Emergency {
 		title = "SQUAWK " + a.Squawk + " — " + title
 	}
@@ -342,18 +345,6 @@ func (n *Notifier) render(a *Alert) ntfyMessage {
 	if p != nil {
 		line("Category", p.Category)
 		line("Tags", strings.Join(p.Tags, ", "))
-	}
-	switch {
-	case a.AC.AltBaro.Ground:
-		line("Altitude", "on ground")
-	case a.AC.AltBaro.Present:
-		line("Altitude", fmt.Sprintf("%d ft", a.AC.AltBaro.Feet))
-	}
-	if a.AC.GS > 0 {
-		line("Ground speed", fmt.Sprintf("%.0f kt", a.AC.GS))
-	}
-	if a.HasDistance {
-		line("Distance", fmt.Sprintf("%.1f NM", a.DistanceNM))
 	}
 	if a.HasPass {
 		when := "now"

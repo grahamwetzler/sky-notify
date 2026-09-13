@@ -21,7 +21,8 @@ var emergencySquawks = map[string]string{
 // Alert is one thing worth notifying about.
 type Alert struct {
 	Hex         string
-	Trigger     string // the name of the rule that matched
+	Trigger     string // the cooldown key of the rule that matched
+	RuleName    string // the rule's label, when it has one: the notification's title
 	Emergency   bool
 	Squawk      string
 	SquawkMeans string
@@ -98,7 +99,7 @@ func Evaluate(ac Aircraft, db *DB, cfg *Alerts, trk *track) *Alert {
 		slog.Debug("rule matched but muted", "rule", rule.Key(), "icao", hex)
 		return nil
 	}
-	a.Trigger, a.Priority, a.Path = rule.Key(), priority, trk.path()
+	a.Trigger, a.RuleName, a.Priority, a.Path = rule.Key(), rule.Name, priority, trk.path()
 	// Derived from the squawk itself, never from which rule fired: the queue's eviction
 	// and ordering (main.go) and the notification's framing (notify.go) must treat a 7700
 	// as urgent however the operator happened to write the rule that caught it.

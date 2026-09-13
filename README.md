@@ -9,12 +9,11 @@ One static Go binary, no cgo, one container.
 ```
 US Air Force C-17 Globemaster III
 Registration: N12345
-ICAO: adeb2f
 Callsign: RCH451
+Operator: US Air Force
+Type: C-17 Globemaster III
 Category: Zoomies
 Tags: Cargo, Heavy Lift
-Altitude: 31000 ft
-Ground speed: 420 kt
 ```
 
 ## Quick start

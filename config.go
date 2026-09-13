@@ -95,9 +95,8 @@ type Rule struct {
 	PassesWithin   *Duration `yaml:"passes_within,omitempty" json:"passes_within,omitempty"`
 }
 
-// Key is what the cooldown ledger and the logs call this rule. A name is optional: it
-// never reaches a notification, so requiring one only made the operator invent labels for
-// rules whose conditions already say what they are.
+// Key is what the cooldown ledger and the logs call this rule. A name is optional: a
+// named rule titles its own notifications, an unnamed one lets the aircraft do it.
 //
 // An unnamed rule is keyed by a fingerprint of its own conditions rather than by its
 // position, so reordering the list leaves its cooldowns alone — and editing what it

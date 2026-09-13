@@ -2007,9 +2007,13 @@ func TestNotifySuccess(t *testing.T) {
 	if m.Priority != 2 {
 		t.Errorf("priority = %d, want alert priority 2", m.Priority)
 	}
-	if !strings.Contains(m.Message, "N12345") || !strings.Contains(m.Message, "31000 ft") ||
-		!strings.Contains(m.Message, "12.3 NM") {
+	if !strings.Contains(m.Message, "N12345") || !strings.Contains(m.Message, "Type: C-17") {
 		t.Errorf("body missing detail: %q", m.Message)
+	}
+	// Telemetry the phone cannot act on: the map and the click target say where it is.
+	if strings.Contains(m.Message, "Altitude") || strings.Contains(m.Message, "Ground speed") ||
+		strings.Contains(m.Message, "Distance") {
+		t.Errorf("body should not carry altitude, speed or distance: %q", m.Message)
 	}
 	// The hex is phone-screen noise: it identifies nothing a human reads, and the
 	// click target already carries it to tar1090.
@@ -2099,6 +2103,19 @@ func TestNotifyEmergencyFraming(t *testing.T) {
 	}
 	if !strings.HasPrefix(m.Title, "SQUAWK 7700") {
 		t.Errorf("title should lead with the squawk, got %q", m.Title)
+	}
+}
+
+func TestNamedRuleTitlesTheNotification(t *testing.T) {
+	n := &Notifier{cfg: testConfig(t)}
+	a := testAlert()
+	a.RuleName = "Overhead the house"
+	if got := n.render(a).Title; got != "Overhead the house" {
+		t.Errorf("title = %q, want the rule name", got)
+	}
+	a.Emergency, a.Squawk = true, "7700"
+	if got := n.render(a).Title; got != "SQUAWK 7700 — Overhead the house" {
+		t.Errorf("title = %q, want the squawk ahead of the rule name", got)
 	}
 }
 

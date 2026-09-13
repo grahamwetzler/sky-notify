@@ -77,8 +77,9 @@ reported one.
 `priority: 0` mutes and stops evaluation. A rule without `priority` follows `ntfy.priority`
 and must keep following it — the UI must never bake today's default into a rule.
 
-Rule names are **optional** (decided 2026-09-12). The name never reaches the notification;
-it is the cooldown key and the log label. A nameless rule is keyed by a fingerprint of its
+Rule names are **optional** (decided 2026-09-12). A named rule titles its own notification
+(decided 2026-09-13); the name is also the cooldown key and the log label. An unnamed rule
+lets the aircraft title the notification, as before. A nameless rule is keyed by a fingerprint of its
 own conditions, so reordering rules does not reset cooldowns and editing a rule's conditions
 does. Named rules still must be unique.
 
