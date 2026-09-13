@@ -208,13 +208,21 @@ func (n *Notifier) render(a *Alert) ntfyMessage {
 	}
 	line("Registration", reg)
 	line("Callsign", strings.TrimSpace(a.AC.Flight))
+	// The same fallback the registration above takes. A listed aircraft is not a typed
+	// one — plane-alert-pia.csv rows carry an ICAO and little else — and asking only the
+	// row would describe a listed aircraft with less than an unlisted one, dropping the
+	// type code the feed did broadcast.
+	acType := a.AC.Type
+	if p != nil && p.Type != "" {
+		acType = p.Type
+	}
 	if p != nil {
 		line("Operator", p.Operator)
-		line("Type", p.Type)
+	}
+	line("Type", acType)
+	if p != nil {
 		line("Category", p.Category)
 		line("Tags", strings.Join(p.Tags, ", "))
-	} else if a.AC.Type != "" {
-		line("Type", a.AC.Type)
 	}
 	switch {
 	case a.AC.AltBaro.Ground:

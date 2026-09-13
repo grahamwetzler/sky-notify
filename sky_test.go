@@ -1951,6 +1951,23 @@ func testAlert() *Alert {
 	}
 }
 
+// A listed aircraft is not a typed one: plane-alert-pia.csv rows carry an ICAO and
+// little else, and the type the aircraft broadcast is still worth saying.
+func TestNotifyFallsBackToTheBroadcastType(t *testing.T) {
+	cfg := testConfig(t)
+	s := &ntfyServer{}
+	n := s.start(t, cfg)
+	a := testAlert()
+	a.Plane = &Plane{ICAO: "adeb2f", Reg: "N12345"} // a bare row, as PIA rows are
+	a.AC.Type = "C17"
+	if err := n.Publish(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(s.bodies[0].Message, "Type: C17") {
+		t.Errorf("body should carry the broadcast type: %q", s.bodies[0].Message)
+	}
+}
+
 func TestNotifySuccess(t *testing.T) {
 	cfg := testConfig(t)
 	s := &ntfyServer{}
