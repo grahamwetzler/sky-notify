@@ -2489,11 +2489,31 @@ func TestPreviewMeasuresFromTheReceiverOnScreen(t *testing.T) {
 	if got.Lat == nil || *got.Lat != 30 || got.Lon == nil || *got.Lon != -95 {
 		t.Fatalf("preview receiver = %v/%v, want the coordinates the page is holding", got.Lat, got.Lon)
 	}
-	// Half a pair measures nothing, and neither does a value that is not a number.
-	for _, q := range []url.Values{{"lat": {"30"}}, {"lat": {"30"}, "lon": {"x"}}, {}} {
+	// Nothing drafted at all — anyone but the page — answers from the saved receiver.
+	for _, q := range []url.Values{{}, {"lat": {"30"}}, {"lon": {"-95"}}} {
 		if got := h.previewAlerts(q); got.Lat != cfg.Lat || got.Lon != cfg.Lon {
-			t.Fatalf("%v: preview receiver moved on an unusable pair", q)
+			t.Fatalf("%v: preview receiver moved without a drafted pair", q)
 		}
+	}
+	// A receiver cleared on screen is a receiver, not a missing parameter: falling back
+	// to the saved pair would measure from a place this configuration no longer knows.
+	// Half a pair, and a half-typed number, say the same thing.
+	for _, q := range []url.Values{
+		{"lat": {""}, "lon": {""}},
+		{"lat": {"30"}, "lon": {""}},
+		{"lat": {"-"}, "lon": {"-95"}},
+	} {
+		if got := h.previewAlerts(q); got.Lat != nil || got.Lon != nil {
+			t.Fatalf("%v: preview receiver = %v/%v, want no receiver at all", q, got.Lat, got.Lon)
+		}
+	}
+	// And a cleared receiver leaves a distance rule matching nothing, rather than
+	// matching from wherever the receiver used to be.
+	near := 5.0
+	overhead := []Aircraft{{Hex: "abc123", Lat: &saved, Lon: &savedLon}}
+	cleared := h.previewAlerts(url.Values{"lat": {""}, "lon": {""}})
+	if total, _ := MatchLive(Rule{Name: "near", MaxDistanceNM: &near}, overhead, nil, &DB{}, cleared, 10); total != 0 {
+		t.Fatalf("a distance rule matched %d aircraft with no receiver", total)
 	}
 	t.Setenv("SKY_LAT", "10")
 	if got := h.previewAlerts(draft); got.Lat != cfg.Lat || got.Lon == nil || *got.Lon != -95 {

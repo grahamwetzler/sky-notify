@@ -470,6 +470,16 @@ func (h *health) setPollOK(f *feed, tr *Tracker) {
 	h.mu.Unlock()
 }
 
+// coord reads one drafted coordinate. Blank is a cleared receiver, and so is anything
+// unparseable: the page sends what is in the box, and a half-typed "-" is not a place.
+func coord(v string) *float64 {
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return nil
+	}
+	return &f
+}
+
 // previewAlerts is the running config with the receiver the page is holding, which is
 // not yet the saved one: coordinates are edited in the same session as the rule that
 // needs them, and matching a distance rule against the old ones answers for the wrong
@@ -478,13 +488,20 @@ func (h *health) setPollOK(f *feed, tr *Tracker) {
 // either.
 func (h *health) previewAlerts(q url.Values) *Alerts {
 	cfg := h.live.Get()
-	lat, latErr := strconv.ParseFloat(q.Get("lat"), 64)
-	lon, lonErr := strconv.ParseFloat(q.Get("lon"), 64)
-	if latErr != nil || lonErr != nil {
+	// Absent is not blank. Only the page sends these, and it sends both or neither, so
+	// nothing here means nothing is being drafted; a blank one means the receiver has
+	// been cleared on screen, and answering that from the saved pair would show
+	// distances from a place this configuration no longer knows.
+	if !q.Has("lat") || !q.Has("lon") {
 		return cfg
 	}
 	draft := *cfg
-	draft.Lat, draft.Lon = &lat, &lon
+	draft.Lat, draft.Lon = coord(q.Get("lat")), coord(q.Get("lon"))
+	if draft.Lat == nil || draft.Lon == nil {
+		// Half a pair measures nothing. Both go, or a rule with a distance would be
+		// matched against a receiver at a longitude the page never gave.
+		draft.Lat, draft.Lon = nil, nil
+	}
 	env := environMap(os.Environ())
 	for _, b := range alertEnvBindings() {
 		if _, set := env[b.name]; !set {

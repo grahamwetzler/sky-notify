@@ -1348,9 +1348,14 @@ function liveAge(r) {
 function liveFresh(r) {
   const L = meta(r).preview?.live;
   if (!L?.fresh) return false;
-  const age = liveAge(r), poll = parseDuration(setting('source.poll_interval', doc.source.poll_interval));
-  return age == null || poll == null || age <= poll * 3;
+  const age = liveAge(r), poll = pollEvery();
+  if (age == null) return true;
+  /* Never call the sky stale sooner than the page is allowed to ask again, or a very
+     short poll interval spends half its time warning about an answer it has not been
+     permitted to fetch yet. */
+  return age <= Math.max(poll * 3, liveEvery() + poll);
 }
+const pollEvery = () => parseDuration(setting('source.poll_interval', doc.source.poll_interval)) || 15;
 
 function liveBand(r) {
   const p = meta(r).preview;
@@ -1365,7 +1370,10 @@ function liveBand(r) {
   gh.append(t);
   sec.append(gh);
 
-  if (!liveFresh(r)) {
+  /* What the band is currently claiming, so the ticker can notice the claim expiring
+     without an answer having to arrive to tell it. */
+  meta(r).shownFresh = liveFresh(r);
+  if (!meta(r).shownFresh) {
     sec.append(el('p', 'help warn', 'No fresh poll from the feeder, so there is nothing to check this rule against. A zero here would not mean an empty sky.'));
     return sec;
   }
@@ -1687,11 +1695,15 @@ function payloadRule(r) {
 }
 
 /* The coordinates the preview measures distances from: the ones on screen, which are
-   not yet the saved ones. Sent only as a complete pair — one alone measures nothing —
-   and the server still lets the environment override them, as saving does. */
+   not yet the saved ones. Both are always sent, blank included — a page that has had its
+   receiver cleared is saying something, and saying nothing would let the server answer
+   from the saved pair and show distances from a place this configuration no longer
+   knows. One alone measures nothing, so a half pair reads as cleared too. The server
+   still lets the environment override them, as saving does. */
 function receiver() {
-  const lat = setting('lat', doc.lat), lon = setting('lon', doc.lon);
-  return lat == null || lon == null || lat === '' || lon === '' ? {} : {lat, lon};
+  const send = v => Number.isFinite(Number(v)) && v !== null && v !== '' ? String(v) : '';
+  const lat = send(setting('lat', doc.lat)), lon = send(setting('lon', doc.lon));
+  return lat && lon ? {lat, lon} : {lat: '', lon: ''};
 }
 
 async function runPreview(r, offset = 0, refresh = false) {
@@ -1754,17 +1766,32 @@ function refreshFigures() {
   renderList();
 }
 
-/* The band claims "right now", so it has to keep earning it: re-ask for the rule on
-   screen once its answer is older than the feeder's own cadence. Only that rule — a
-   preview nobody is looking at is a request nobody needs — and never over an open
-   popover, whose anchor a repaint would leave detached. */
+/* The band claims "right now", so it has to keep earning it. Two things do that on
+   separate clocks, which is why the ticker is fast and what it does is not:
+
+     the claim   expiring is local arithmetic and has to keep up with the freshness
+                 window however short the poll is, so it is checked every second and
+                 repainted the moment it stops being true — waiting on an answer that
+                 may never come is exactly the failure it exists to show;
+     the answer  costs a database scan, so it is paced by the feeder instead, and never
+                 faster than LIVE_MIN_FETCH_S however often the feeder is polled.
+
+   Only the rule on screen: a preview nobody is looking at is a request nobody needs. */
+const LIVE_TICK_MS = 1000;
+const LIVE_MIN_FETCH_S = 5;
+const liveEvery = () => Math.max(pollEvery(), LIVE_MIN_FETCH_S);
 function refreshLive() {
-  if (!doc || isSettings() || document.hidden || closePop) return;
+  if (!doc || isSettings()) return;
   const r = doc.rules[sel];
-  const poll = parseDuration(setting('source.poll_interval', doc.source.poll_interval));
-  if (r && !meta(r).timer && (liveAge(r) ?? Infinity) > (poll || 15)) runPreview(r, 0, true);
+  if (!r) return;
+  const m = meta(r);
+  /* Repainting under an open popover leaves its anchor detached, which costs the focus
+     return — a stale sky claiming to be current costs more. */
+  if (m.shownFresh !== undefined && m.shownFresh !== liveFresh(r)) return renderPane();
+  if (document.hidden || closePop || m.timer) return;
+  if ((liveAge(r) ?? Infinity) > liveEvery()) runPreview(r, 0, true);
 }
-setInterval(refreshLive, 15000);
+setInterval(refreshLive, LIVE_TICK_MS);
 /* A backgrounded tab skips every tick, so its answer is as old as the time away. Ask
    again the moment it is looked at rather than showing that on a heading saying now. */
 document.addEventListener('visibilitychange', refreshLive);
