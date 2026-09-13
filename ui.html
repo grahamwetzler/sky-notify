@@ -721,13 +721,17 @@ function valuePicker(anchor, r, key, after) {
        offered beside it, marked, and the database's own count is kept where both know a
        code. Every other field is a database column and has nothing to fold in. */
     const extra = key === 'icao_type' ? feedTypes : [];
+    const known = new Set((vocab[key] || []).map(v => v.value.toLowerCase()));
     const dbPool = () => meta(r).preview?.facets?.[key] || vocab[key] || [];
+    /* A code the pool above does not reach is out for one of two reasons, and they are
+       not the same thing to say: the database has never heard of it, or it has but no
+       aircraft matching this rule's other conditions carries it. inDb keeps them apart. */
     const pool = () => {
       const db = dbPool();
       if (!extra.length) return db;
       const have = new Set(db.map(v => v.value.toLowerCase()));
       return db.concat(extra.filter(v => !have.has(v.value.toLowerCase()))
-                            .map(v => ({...v, feed: true})));
+                            .map(v => ({...v, feed: true, inDb: known.has(v.value.toLowerCase())})));
     };
     const narrowed = () => dbPool().length < (vocab[key] || []).length;
     let shown = [], rendered = 0, active = -1, body = null;
@@ -757,8 +761,10 @@ function valuePicker(anchor, r, key, after) {
         b.append(box, el('span', 't', item.value),
           el('span', 'n', item.feed ? item.count.toLocaleString() + ' on your feed'
                                     : item.count.toLocaleString()));
-        if (item.feed) b.title = 'No aircraft in the database carries this code; '
-          + 'your receiver has heard it.';
+        if (item.feed) b.title = item.inDb
+          ? 'No aircraft matching this rule’s other conditions carries this code in the '
+            + 'database; your receiver has heard it.'
+          : 'No aircraft in the database carries this code; your receiver has heard it.';
         batch.append(b);
       }
       body.append(batch);
