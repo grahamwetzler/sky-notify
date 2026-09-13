@@ -1297,6 +1297,24 @@ func TestVocabularyDedupesAndSorts(t *testing.T) {
 	}
 }
 
+// The type picker must work on a receiver whose sky the database has never heard of,
+// so the codes come off aircraft.json and are counted by aircraft, not by sighting.
+func TestFeedTypesCountAircraftSeen(t *testing.T) {
+	h := &health{}
+	h.setPollOK(&feed{Aircraft: []Aircraft{
+		{Hex: "ABC123", Type: "B738"}, {Hex: "def456", Type: "B738"},
+		{Hex: "aaa111", Type: " A320 "}, {Hex: "bbb222"}, {Hex: "", Type: "C172"},
+	}})
+	// Same aircraft again, and one that has changed what it broadcasts.
+	h.setPollOK(&feed{Aircraft: []Aircraft{
+		{Hex: "abc123", Type: "B738"}, {Hex: "aaa111", Type: "A321"},
+	}})
+	want := []FacetValue{{Value: "A321", Count: 1}, {Value: "B738", Count: 2}}
+	if got := h.feedTypes(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("feedTypes = %#v, want %#v", got, want)
+	}
+}
+
 func TestEmptyConfigFilesUseDefaults(t *testing.T) {
 	dir := t.TempDir()
 	config := filepath.Join(dir, "config.yaml")

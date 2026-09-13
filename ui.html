@@ -433,7 +433,7 @@ const LIST_KEYS = CONDITIONS.filter(c => c.kind === 'pick' || c.kind === 'free' 
 /* ── State ────────────────────────────────────────────────────────────────
    `doc` is the alerts document exactly as it will be PUT back — nothing else is
    ever added to it, so saving is a serialisation and not a reconstruction.   */
-let doc = null, vocab = {}, locks = {}, dbRows = null, alertsPath = '';
+let doc = null, vocab = {}, feedTypes = [], locks = {}, dbRows = null, alertsPath = '';
 let sel = 0;            // rule index, or 'settings'
 let dirty = false;
 
@@ -716,8 +716,20 @@ function valuePicker(anchor, r, key, after) {
     const listEl = el('div', 'pop-l');
     pop.append(listEl);
 
-    const pool = () => meta(r).preview?.facets?.[key] || vocab[key] || [];
-    const narrowed = () => pool().length < (vocab[key] || []).length;
+    /* aircraft.json carries a type code for every aircraft overhead, listed or not, so
+       the type picker is not the database's to bound: whatever the receiver has heard is
+       offered beside it, marked, and the database's own count is kept where both know a
+       code. Every other field is a database column and has nothing to fold in. */
+    const extra = key === 'icao_type' ? feedTypes : [];
+    const dbPool = () => meta(r).preview?.facets?.[key] || vocab[key] || [];
+    const pool = () => {
+      const db = dbPool();
+      if (!extra.length) return db;
+      const have = new Set(db.map(v => v.value.toLowerCase()));
+      return db.concat(extra.filter(v => !have.has(v.value.toLowerCase()))
+                            .map(v => ({...v, feed: true})));
+    };
+    const narrowed = () => dbPool().length < (vocab[key] || []).length;
     let shown = [], rendered = 0, active = -1, body = null;
 
     const candidates = () => {
@@ -743,7 +755,10 @@ function valuePicker(anchor, r, key, after) {
         const b = el('button', 'opt'); b.type = 'button'; b.dataset.i = n;
         const box = el('span', 'box'); box.innerHTML = svg(I.tick, 10);
         b.append(box, el('span', 't', item.value),
-          el('span', 'n', item.count.toLocaleString()));
+          el('span', 'n', item.feed ? item.count.toLocaleString() + ' on your feed'
+                                    : item.count.toLocaleString()));
+        if (item.feed) b.title = 'No aircraft in the database carries this code; '
+          + 'your receiver has heard it.';
         batch.append(b);
       }
       body.append(batch);
@@ -775,11 +790,12 @@ function valuePicker(anchor, r, key, after) {
       const note = el('div', 'pop-note');
       if (!shown.length) note.textContent = q.value.trim()
         ? (spec.open
-          ? 'Nothing in the database matches that. Press Enter to use it anyway — the live feed may still broadcast it.'
+          ? 'Nothing in the database or on your feed matches that. Press Enter to use it anyway — an aircraft may still broadcast it.'
           : 'No value matching that' + (scope || ' in the database') + '.')
         : 'Everything reachable here is already selected.';
       else note.textContent = `${shown.length.toLocaleString()} ` +
-        `${shown.length === 1 ? 'value' : 'values'}${scope}, with how many aircraft each covers.`;
+        `${shown.length === 1 ? 'value' : 'values'}${scope}, with how many aircraft each covers.` +
+        (extra.length ? ' Codes your receiver has heard are listed too.' : '');
       listEl.replaceChildren(note, body);
       listEl.scrollTop = 0;
     };
@@ -1002,6 +1018,8 @@ function valueChips(r, key) {
   const spec = BY_KEY[key];
   const vals = el('div', 'vals');
   const known = new Set((vocab[key] || []).map(v => v.value.toLowerCase()));
+  const heard = new Map(key === 'icao_type'
+    ? feedTypes.map(v => [v.value.toLowerCase(), v.count]) : []);
   const facets = meta(r).preview?.facets?.[key];
   const reach = facets && new Map(facets.map(v => [v.value.toLowerCase(), v.count]));
 
@@ -1018,7 +1036,8 @@ function valueChips(r, key) {
            heard of can only be a typo. On an open field the live feed is the other
            half of that world, and flagging it red would be a lie. */
         chip.classList.add(spec.open ? 'feed' : 'miss');
-        chip.append(el('span', 'n', spec.open ? 'feed only' : 'not found'));
+        chip.append(el('span', 'n', !spec.open ? 'not found'
+          : heard.has(low) ? heard.get(low).toLocaleString() + ' on your feed' : 'feed only'));
         chip.title = spec.open
           ? 'No aircraft in the database carries this code. It still alerts on any aircraft broadcasting it on the live feed.'
           : 'Not found in the aircraft database — this value will never match.';
@@ -1690,6 +1709,7 @@ async function load() {
   doc.rules = doc.rules || [];
   alertsPath = body.path;
   vocab = body.vocabulary || {};
+  feedTypes = body.feed_types || [];
   locks = Object.fromEntries((body.locked || []).map(l => [l.key, l]));
   const keys = body.rule_keys || [];
   doc.rules.forEach((r, i) => { meta(r).key = keys[i] || ''; });

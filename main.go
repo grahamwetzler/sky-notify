@@ -12,7 +12,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -216,7 +218,7 @@ func poll(ctx context.Context, cfg *Alerts, src *Source, db *DB, state *State, q
 		h.setPollErr(err)
 		return
 	}
-	h.setPollOK(len(f.Aircraft))
+	h.setPollOK(f)
 	tr.Update(f)
 
 	cooldown := cfg.Cooldown.Std()
@@ -424,12 +426,47 @@ type health struct {
 	lastFreshPoll time.Time
 	lastPollErr   error
 	aircraft      int
+	// typeOf is the ICAO type code each aircraft was last heard broadcasting. The
+	// database knows the type of the aircraft it lists and nothing else; aircraft.json
+	// carries one for everything overhead, which is what makes the type picker
+	// answerable without the database.
+	// ponytail: memory only, one entry per aircraft seen since start — a restart
+	// starts the list again, as the tracker does.
+	typeOf map[string]string
 }
 
-func (h *health) setPollOK(n int) {
+func (h *health) setPollOK(f *feed) {
 	h.mu.Lock()
-	h.lastFreshPoll, h.lastPollErr, h.aircraft = time.Now(), nil, n
+	h.lastFreshPoll, h.lastPollErr, h.aircraft = time.Now(), nil, len(f.Aircraft)
+	if h.typeOf == nil {
+		h.typeOf = map[string]string{}
+	}
+	for _, ac := range f.Aircraft {
+		hex, t := normalizeHex(ac.Hex), strings.TrimSpace(ac.Type)
+		if hex != "" && t != "" {
+			h.typeOf[hex] = t
+		}
+	}
 	h.mu.Unlock()
+}
+
+// feedTypes is every ICAO type code the receiver has heard, and how many aircraft
+// broadcast each one. Offered alongside the database's own codes so a type nothing in
+// the database carries is still a value you can pick rather than one you must know to
+// type.
+func (h *health) feedTypes() []FacetValue {
+	h.mu.Lock()
+	counts := map[string]int{}
+	for _, t := range h.typeOf {
+		counts[t]++
+	}
+	h.mu.Unlock()
+	out := make([]FacetValue, 0, len(counts))
+	for v, n := range counts {
+		out = append(out, FacetValue{Value: v, Count: n})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Value < out[j].Value })
+	return out
 }
 
 func (h *health) setPollErr(err error) {
@@ -477,7 +514,7 @@ func (h *health) mux(q *queue) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"alerts": alerts, "path": alertsPath(env), "locked": locked,
-			"rule_keys": keys, "vocabulary": h.db.Vocabulary(),
+			"rule_keys": keys, "vocabulary": h.db.Vocabulary(), "feed_types": h.feedTypes(),
 		})
 	})
 	mux.HandleFunc("POST /api/preview", func(w http.ResponseWriter, r *http.Request) {
