@@ -1710,6 +1710,13 @@ async function runPreview(r, offset = 0, refresh = false) {
   const m = meta(r);
   const seq = (m.seq || 0) + 1;
   m.seq = seq;
+  /* When this rule was last asked about, and whether it is still waiting. The ticker
+     paces itself on these rather than on how old the answer is: a feeder that has
+     stopped leaves an answer that is permanently too old, and pacing on that would put
+     a database scan on every tick and leave each response superseded by the next before
+     it could land. */
+  m.asked = Date.now();
+  m.pending = true;
   try {
     const res = await fetch('/api/preview?' + new URLSearchParams(
         {offset, ...receiver()}), {
@@ -1740,6 +1747,10 @@ async function runPreview(r, offset = 0, refresh = false) {
   } catch (err) {
     if (m.seq !== seq) return;
     m.preview = {error: err.message, total: 0, aircraft: []};
+  } finally {
+    /* Only the newest request may say the page is idle: an older one finishing while it
+       is still in flight would let the ticker ask again on top of it. */
+    if (m.seq === seq) m.pending = false;
   }
   /* The rule may have been deleted while its answer was in flight. */
   if (!doc.rules.includes(r)) return;
@@ -1773,8 +1784,10 @@ function refreshFigures() {
                  window however short the poll is, so it is checked every second and
                  repainted the moment it stops being true — waiting on an answer that
                  may never come is exactly the failure it exists to show;
-     the answer  costs a database scan, so it is paced by the feeder instead, and never
-                 faster than LIVE_MIN_FETCH_S however often the feeder is polled.
+     the answer  costs a database scan, so it is paced by the feeder instead — never
+                 faster than LIVE_MIN_FETCH_S however often the feeder is polled, timed
+                 from when the last request went out rather than from how old its answer
+                 is, and never while one is still outstanding.
 
    Only the rule on screen: a preview nobody is looking at is a request nobody needs. */
 const LIVE_TICK_MS = 1000;
@@ -1789,7 +1802,12 @@ function refreshLive() {
      return — a stale sky claiming to be current costs more. */
   if (m.shownFresh !== undefined && m.shownFresh !== liveFresh(r)) return renderPane();
   if (document.hidden || closePop || m.timer) return;
-  if ((liveAge(r) ?? Infinity) > liveEvery()) runPreview(r, 0, true);
+  const every = liveEvery() * 1000, since = Date.now() - (m.asked ?? 0);
+  /* Outstanding is advisory, not a lock: nothing times a fetch out, and a hung one must
+     not be the last request this page ever makes. Its answer is discarded on arrival by
+     the sequence check either way. */
+  if (m.pending && since < every * 3) return;
+  if (since >= every) runPreview(r, 0, true);
 }
 setInterval(refreshLive, LIVE_TICK_MS);
 /* A backgrounded tab skips every tick, so its answer is as old as the time away. Ask
