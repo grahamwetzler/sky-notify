@@ -1638,7 +1638,24 @@ function payload() {
   return out;
 }
 
+/* ── The safeguard against alerting on everything ─────────────────────────
+   A rule that states no condition notifies on every aircraft the receiver hears, and
+   one stating only `listed` narrows who those aircraft are without narrowing how many
+   — either way it is a push every few seconds and an ntfy topic nobody can read. Both
+   are legitimate things to ask for and very easy things to leave behind by accident: a
+   rule added and not yet filled in, or one whose last condition was just removed. So
+   they cost a confirmation rather than being refused. Priority 0 is muted and sends
+   nothing, so it needs no warning. */
+const unbounded = r => r.priority !== 0 && stated(r).every(k => k === 'listed');
+
 async function save() {
+  const wide = doc.rules.filter(unbounded);
+  if (wide.length && !confirm(
+      (wide.length > 1 ? 'These rules match every aircraft: ' : 'This rule matches every aircraft: ')
+      + list(wide.map(ruleLabel), ' and ')
+      + '.\n\nEvery aircraft the receiver hears will be notified, which can be hundreds of '
+      + 'pushes an hour. Add a condition, or set the priority to muted, to stop it.\n\nSave anyway?'))
+    return;
   const b = $('#save');
   b.disabled = true;
   b.textContent = 'Saving…';
