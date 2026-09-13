@@ -5,6 +5,7 @@ compose.test.yaml
 run-test.sh
 PLAN.md
 PLAN-ALERTS.md
+PLAN-MAP.md
 PLAN-REVIEW-LOG.md
 # roborev snapshots
 /.roborev/
