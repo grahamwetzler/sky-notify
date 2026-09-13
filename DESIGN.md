@@ -100,6 +100,10 @@ nested cards do not exist on this page.
   unpreviewable, red for a rule that can never alert.
 - **Condition card** — a hairline box with an uppercase label, its values, and its caveat.
   Amber fill when the preview cannot see it; red fill when it would be rejected on save.
+- **Number field** — `type="text"` with `inputmode`, not `type="number"`: only a text input
+  will report or accept a caret position, and a preview answer landing mid-edit has to put
+  the caret back where it was. The card says "Must be a number" for what that then lets
+  through, which is the trade — a message where the browser used to swallow the keystroke.
 - **Chip** — one value. Carries the number of aircraft it covers, or `not found` /
   `feed only` / `clashes` when it covers none, each with the reason in a `title`.
 - **Toggle chip** — a fixed option set (operator class). Dashed when off, accent when on,
@@ -109,7 +113,8 @@ nested cards do not exist on this page.
   showing and what narrowed them.
 - **Result band** — figure, sentence, the not-counted line, then the matching aircraft in a
   table that scrolls horizontally in its own container rather than breaking at phone width.
-  Reaching further into a long list appends to it in place and leaves the page where it was.
+  Reaching further into a long list adds rows to the table already on screen rather than
+  repainting the band, because that table's scroll is where the operator was reading.
 
 ## Copy
 
@@ -131,9 +136,9 @@ from the rule itself, so they cannot drift from what will be saved.
    answer a different question than the save.
 3. **Typing never rebuilds the pane.** A structural change re-renders; a keystroke in a
    number field moves only the figure, the sentence and the list row, so the caret stays.
-   A preview answer arriving mid-edit does rebuild, and puts the caret and the scroll
-   position back, so a slow answer never takes the field out from under a half-typed
-   number.
+   A preview answer arriving mid-edit does rebuild, and puts back the caret, the
+   half-typed string the caret was in — `1.` is not the number it rounds to — and both
+   scroll positions, the window's and the match table's own.
 4. **Per-rule state is keyed by the rule object**, not its position, so reordering and
    deleting carry it with no bookkeeping.
 5. **Browser surfaces are themed**: selection, focus ring, scrollbars, `color-scheme`, and

@@ -219,7 +219,7 @@ input[type=text],input[type=number],select{border:1px solid var(--line2);backgro
   border-radius:var(--rs);padding:7px 9px;width:100%;min-width:0}
 input:disabled,select:disabled{background:var(--sunk);color:var(--fg3);cursor:not-allowed}
 input::placeholder{color:var(--fg3)}
-.numrow input[type=number]{width:10ch;text-align:right}
+.numrow input.num{width:10ch;text-align:right}
 
 .fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px 18px}
 .field{display:grid;gap:5px;align-content:start;min-width:0}
@@ -596,6 +596,11 @@ const blindKeys = r => stated(r).filter(k => BY_KEY[k].source === 'feed');
    page after a failed write. */
 function problem(r, key) {
   const spec = BY_KEY[key];
+  /* The number fields are text inputs so they can keep a caret, which means they will
+     also accept letters. The server would answer a decode error naming no field; this
+     says which one, before the save and before the preview asks. */
+  if (spec.kind === 'num' && hasValue(r[key]) && !Number.isFinite(Number(r[key])))
+    return spec.integer ? 'Must be a whole number.' : 'Must be a number.';
   if (DB_ONLY.includes(key) && hasValue(r[key]) && r.listed === false)
     return 'Only a database row carries this, and this rule asks for aircraft that have no row, so it can never match. Remove this or the “not in the database” condition.';
   if (spec.needsPosition && hasValue(r[key]) && (setting('lat', doc.lat) == null || setting('lon', doc.lon) == null))
@@ -621,17 +626,22 @@ function setting(key, fileValue) {
   return locks[key] ? locks[key].value : fileValue;
 }
 
-/* Go's duration syntax, which is what the server parses these with: one or more
-   number-unit pairs, so 1m30s is as valid as 90s. */
+/* Go's duration syntax, which is what the server parses these with, down to the corners:
+   an optional sign, then one or more number-unit pairs where the number may lead or
+   trail its point. So 1m30s, .5m, 1.m and +1m all parse, and only a bare 0 goes
+   without a unit. Verified case by case against time.ParseDuration. */
 const DUR_UNIT = {ns: 1e-9, us: 1e-6, 'µs': 1e-6, ms: .001, s: 1, m: 60, h: 3600};
-function parseDuration(s) {
-  const t = String(s ?? '').trim();
-  const re = /(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)/y;
+function parseDuration(v) {
+  let t = String(v ?? '').trim();
+  const sign = t[0] === '-' ? -1 : 1;
+  if (t[0] === '+' || t[0] === '-') t = t.slice(1);
+  if (t === '0') return 0;
+  const re = /(\d+\.?\d*|\.\d+)(ns|us|µs|ms|s|m|h)/y;
   /* A sticky regex resets lastIndex when it finally fails, so the end of the last
      match is kept: the whole string must be pairs, or this is not a duration. */
   let total = 0, end = 0, m;
   while ((m = re.exec(t))) { total += +m[1] * DUR_UNIT[m[2]]; end = re.lastIndex; }
-  return t && end === t.length ? total : null;
+  return t && end === t.length ? sign * total : null;
 }
 
 /* ── Messages ─────────────────────────────────────────────────────────── */
@@ -908,18 +918,29 @@ function conditionCard(r, key) {
     const row = el('div', 'numrow');
     const input = el('input');
     input.id = 'c-' + key;
-    input.type = spec.kind === 'num' ? 'number' : 'text';
-    if (spec.min !== undefined) input.min = spec.min;
-    if (spec.step) input.step = spec.step;
+    /* Text, not number, even for the numbers: only a text input will report or accept a
+       caret position, and a preview answer landing mid-edit has to be able to put the
+       caret back where it was. inputmode still asks a phone for the numeric keypad, and
+       the spinner arrows are no loss on a field like "within 15 NM". */
+    input.type = 'text';
+    if (spec.kind === 'num') {
+      input.className = 'num';
+      input.inputMode = spec.integer ? 'numeric' : 'decimal';
+    }
     if (spec.placeholder) input.placeholder = spec.placeholder;
     input.value = r[key] ?? '';
     input.setAttribute('aria-label', spec.label);
     /* Typing must not rebuild the pane — the caret would jump. Only the figure,
        the sentence and the list row move until the next structural change. */
     input.oninput = () => {
+      const n = Number(input.value);
       r[key] = input.value === '' ? ''
         : spec.kind !== 'num' ? input.value
-        : spec.integer ? Math.round(Number(input.value)) : Number(input.value);
+        /* A number field now accepts any keystroke, so what is not a number is held as
+           typed rather than written to the rule as NaN. The server would reject it, and
+           so does the figure above, which stops counting the moment it stops parsing. */
+        : !Number.isFinite(n) ? input.value
+        : spec.integer ? Math.round(n) : n;
       markDirty(); schedulePreview(r); refreshFigures();
     };
     row.append(input);
@@ -1088,12 +1109,24 @@ function renderPane() {
   const pane = $('#pane');
   const had = document.activeElement;
   const id = pane.contains(had) && had.id ? had.id : null;
-  /* selectionStart throws on a number input and says nothing on a select. */
-  const caret = id && had.type === 'text' ? [had.selectionStart, had.selectionEnd] : null;
+  const text = id && had.type === 'text';          // a select reports no caret
+  const caret = text ? [had.selectionStart, had.selectionEnd] : null;
+  const raw = text ? had.value : null;
   const y = scrollY;
+  /* The table of matches scrolls inside its own box — vertically through the rows, and
+     horizontally at phone width. Neither is the window's scroll, and both are where the
+     operator was looking. */
+  const hits = $('#pane .hits');
+  const inner = hits && [hits.scrollTop, hits.scrollLeft];
   paintPane(pane);
+  const again = $('#pane .hits');
+  if (inner && again) [again.scrollTop, again.scrollLeft] = inner;
   const back = id && document.getElementById(id);
   if (back) {
+    /* "1." and "1" are the same number but not the same half-typed value, and the rebuild
+       reads the number. Only ever put back a string that means what is already there:
+       anything else and the pane is showing a different rule, where it does not belong. */
+    if (raw !== null && back.value !== raw && Number(back.value) === Number(raw)) back.value = raw;
     back.focus();
     if (caret) back.setSelectionRange(caret[0], caret[1]);
   }
@@ -1213,25 +1246,51 @@ function resultBand(r, cov) {
     table.append(thead, tbody);
     wrap.append(table);
 
-    const shown = p.aircraft.length;
-    if (shown < p.total) {
-      /* Inside the scroll region, not below it: the button belongs where the rows
-         run out rather than pinned under a list you have not reached the end of. */
-      const more = el('button', 'btn more');
-      more.id = 'more';
-      more.type = 'button';
-      const remaining = p.total - shown;
-      more.textContent = `Show ${Math.min(remaining, p.limit || 20).toLocaleString()} more`;
-      /* Unhooked rather than disabled: a second click does nothing either way, and a
-         disabled button drops focus to the body, which would cost a keyboard reader
-         their place in the list they just asked for more of. */
-      more.onclick = () => { more.onclick = null; more.textContent = 'Loading…';
-        runPreview(r, shown); };
-      wrap.append(more);
-    }
+    /* Inside the scroll region, not below it: the button belongs where the rows run out
+       rather than pinned under a list you have not reached the end of. */
+    if (p.aircraft.length < p.total) wrap.append(moreButton(r, p));
     band.append(wrap);
   }
   return band;
+}
+
+function moreButton(r, p) {
+  const b = el('button', 'btn more');
+  b.id = 'more';
+  b.type = 'button';
+  const remaining = p.total - p.aircraft.length;
+  b.textContent = `Show ${Math.min(remaining, p.limit || 20).toLocaleString()} more`;
+  /* Unhooked rather than disabled: a second click does nothing either way, and a disabled
+     button drops focus to the body, which would cost a keyboard reader their place in the
+     list they just asked for more of. */
+  b.onclick = () => { b.onclick = null; b.textContent = 'Loading…';
+    runPreview(r, p.aircraft.length); };
+  return b;
+}
+
+/* Reaching further into the list adds to the table already on screen. The rows sit in a
+   container with its own scroll, and that scroll is exactly where the operator was
+   reading — repainting the band would put them back at the top of a list they had just
+   read to the bottom of. Returns false if there is no table to add to, which means the
+   pane is showing something else and the caller should paint it properly. */
+function appendHits(r) {
+  const wrap = $('#pane .hits');
+  const tbody = wrap?.querySelector('tbody');
+  if (!tbody) return false;
+  const p = meta(r).preview;
+  const at = wrap.scrollTop;
+  for (const a of p.aircraft.slice(tbody.children.length)) tbody.append(hitRow(a));
+  const old = $('#more');
+  if (old) {
+    const held = document.activeElement === old;
+    if (p.aircraft.length < p.total) old.replaceWith(moreButton(r, p));
+    else old.remove();
+    /* preventScroll, then put the scroll back: the button has just moved twenty rows
+       further down, and following it there would skip the rows it went to fetch. */
+    if (held) $('#more')?.focus({preventScroll: true});
+  }
+  wrap.scrollTop = at;
+  return true;
 }
 
 function hitRow(a) {
@@ -1464,7 +1523,9 @@ async function runPreview(r, offset = 0) {
   /* The rule may have been deleted while its answer was in flight. */
   if (!doc.rules.includes(r)) return;
   renderList();
-  if (doc.rules[sel] === r) renderPane();
+  if (doc.rules[sel] !== r) return;
+  if (offset > 0 && !m.preview.error && appendHits(r)) return;
+  renderPane();
 }
 
 /* While a number is being typed the pane must not be rebuilt, so only the things
