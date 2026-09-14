@@ -52,10 +52,12 @@ A new field on `poller` (`loops.go`), which is single-goroutine and needs no loc
 // judged is the last poll that could tell whether the aircraft had passed — present in
 // the feed, and with the ground track receding needs. Not "last seen": an aircraft that
 // keeps matching while broadcasting no track would refresh a last-seen stamp forever and
-// never reach the fallback that exists for exactly that case.
+// never reach the fallback that exists for exactly that case. It is set when the entry is
+// created, so an aircraft that has never once been judgeable waits out the same grace
+// window rather than tripping a zero timestamp on its first sweep.
 //
 // fired is when the alert was first offered to the queue, zero until then. The entry
-// outlives the offer, because an offer is not a delivery.
+// outlives the offer, because an offer is not a delivery — delivered is what says it was.
 type held struct {
     alert  *Alert
     judged time.Time
@@ -68,9 +70,9 @@ else uses. Each poll, for a matching rule with `notify: closest_pass`:
 
 - an ineligible key — the cooldown says this rule already alerted on this aircraft —
   drops any entry and is skipped, as it is today;
-- keep the incoming alert if it is nearer than the parked one, otherwise keep the parked
-  one;
-- stamp `judged` if the aircraft can be judged at all: `ac.GS == 0 || ac.Track != nil`,
+- park the alert if there is no entry yet, stamping `judged` with this poll; otherwise
+  keep whichever of the parked and incoming alerts is nearer;
+- refresh `judged` if the aircraft can be judged at all: `ac.GS == 0 || ac.Track != nil`,
   the same guard `passesOverhead` already fails closed on. A stationary aircraft is
   judgeable and `receding` answers true for it, since it will never get nearer;
 - set `fired` if `receding(...)` and it is not already set;
@@ -81,18 +83,26 @@ else uses. Each poll, for a matching rule with `notify: closest_pass`:
 One sweep after the aircraft loop is the only thing that touches the queue, so there is a
 single place where a parked alert can be offered, retried or dropped:
 
-- delivered (`!state.Eligible(key, cooldown)`) — drop the entry. The cooldown ledger is
-  the record that the alert actually went out;
+- delivered — drop the entry. What says so is an ack on the alert itself: `Alert` gains an
+  `atomic.Bool`, `notifyLoop` sets it beside the `state.Record` that follows a successful
+  publish, and the sweep reads it. The alert is one pointer shared by the poller, the
+  queue and the notifier, so the ack needs no map, no cleanup and no second lock.
+
+  Not `!state.Eligible(key, cooldown)`, which is what an earlier draft of this plan said:
+  the ledger cannot answer this. `validate` requires `cooldown > 0` and
+  `source.poll_interval > 0` and relates them not at all, so `cooldown: 5s` on 15s polls
+  is a legal configuration in which a delivered key is eligible again before the next
+  sweep looks — and `State.prune` has very likely dropped its ledger entry by then
+  anyway. The sweep would re-offer a delivered alert every poll until `holdGiveUp`;
 - not fired, and `judged` older than `3 * source.poll_interval` — set `fired`. That is the
   fallback for the two aircraft `receding` can never answer for: one that left the feed
   mid-approach, and one that stays in it broadcasting a position but no ground track.
   Three polls of grace rather than "missing from this poll", because feeds drop an
   aircraft for a poll and come back, and firing on a flicker would report a pass at 40 NM
   that was going to be 2 NM;
-- fired — `q.add(h.alert)` every poll until the cooldown says it landed, then drop the
-  entry at the top of this list. Not "enqueue once and forget": `notifyLoop` deletes a
-  queue entry whose publish failed without advancing the cooldown, and `q.add` refuses an
-  alert outright when the queue is at `maxPending`. Dropping the entry on the offer would
+- fired and not yet acked — `q.add(h.alert)` every poll. Not "enqueue once and forget":
+  `notifyLoop` deletes a queue entry whose publish failed without advancing the cooldown,
+  and `q.add` refuses an alert outright at `maxPending`. Dropping the entry on the offer would
   answer either by rebuilding the alert from a later poll — a worse distance for the pass,
   which is the one thing this whole mechanism exists to get right — or, for an aircraft
   that has left the feed, by losing it. `q.add` ignores a key that is already queued or in
@@ -111,7 +121,8 @@ flight, and the aircraft still overhead are picked up on the next poll.
 
 ## What the notification says
 
-`Alert` gains one bool, `AtClosest`. `render` in `notify.go` adds one line when it is set:
+`Alert` gains one plain bool, `AtClosest` — the delivery ack above is the other field, and
+the two are unrelated. `render` in `notify.go` adds one line when `AtClosest` is set:
 
 ```
 Closest pass: 1.2 NM
@@ -142,7 +153,8 @@ is announced. This also means the key is unchanged for every rule that exists to
 nobody's cooldown ledger or sent-alerts history resets on upgrade — a test asserts that a
 rule with `notify` set fingerprints identically to the same rule without it.
 
-**3. The hold.** `held`/`poller.holds` in `loops.go`, the branch in `poll`, and the sweep.
+**3. The hold.** `held`/`poller.holds` in `loops.go`, the branch in `poll`, the sweep, and
+the one-line delivery ack `notifyLoop` sets beside `state.Record`.
 Tests in `match_test.go` driving `poll` over a synthetic sequence of feeds, with the
 queue read directly rather than a notifier stood up:
 - inbound polls enqueue nothing, the pass enqueues exactly one alert, and its
@@ -150,14 +162,18 @@ queue read directly rather than a notifier stood up:
 - an aircraft that vanishes mid-approach fires after the grace window with its nearest
   seen distance;
 - an aircraft that stays in the feed, keeps matching and never broadcasts a ground track
-  fires after the same window. This is the case a last-seen stamp would hold forever, so
-  the test drives ten polls, not three;
+  enqueues nothing for three polls and then fires with its nearest distance. Both halves
+  are the assertion: a last-seen stamp would hold it forever, and a `judged` left zero at
+  creation would fire it on the first sweep. The test drives ten polls, not three;
 - a failed delivery — the queue entry taken and dropped with no cooldown recorded, which
   is what `notifyLoop` does — is re-offered on the next poll as the *same* alert, with the
-  nearest distance intact, and stops being offered once the cooldown records it;
+  nearest distance intact, and stops being offered once a publish succeeds;
 - an alert refused because the queue is at `maxPending` is still parked, and lands with
   its nearest distance once the queue drains;
 - an entry fired longer ago than `holdGiveUp` is dropped and stops being re-offered;
+- a delivered alert is offered exactly once under `cooldown: 5s` with `poll_interval: 15s`
+  — the legal configuration in which the cooldown ledger says "eligible" again, and has
+  pruned its own entry, before the next sweep runs;
 - `on_sight` and a rule with no `notify` behave exactly as they do today (the regression
   guard for the default path);
 - a held key that is already within its cooldown never parks.
