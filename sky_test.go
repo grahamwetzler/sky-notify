@@ -3516,26 +3516,43 @@ func varint(n int) []byte {
 
 // The shapes are third-party path data, and the parser that walks them is ours. Either
 // one can break in a way that draws nothing at all, so draw every shape in the table and
-// insist each one leaves ink.
-func TestEveryAircraftIconDraws(t *testing.T) {
+// insist each one leaves ink where it was asked to leave it. The placement half is not
+// decoration: a shape carrying its own transform is drawn through one more matrix than
+// the rest, and getting that matrix in the wrong order moves the marker off the aircraft
+// while still painting a perfectly good aeroplane.
+func TestEveryAircraftIconDrawsWhereItIsPut(t *testing.T) {
+	// Room for the longest shape turned onto the diagonal, so nothing is clipped and the
+	// ink the test measures is the whole shape.
+	const size, mid = 200, 100.0
 	for name, s := range icons.Shapes {
-		dc := gg.NewContext(120, 120)
+		dc := gg.NewContext(size, size)
 		dc.SetColor(colBackground)
 		dc.Clear()
-		if !drawShape(dc, s, 1, 60, 60, 45, colAircraft, colHalo) {
+		if !drawShape(dc, s, 1, mid, mid, 45, colAircraft, colHalo) {
 			t.Errorf("%s: path would not parse", name)
 			continue
 		}
-		painted := 0
-		for y := range 120 {
-			for x := range 120 {
-				if !sameColor(dc.Image().At(x, y), colBackground) {
-					painted++
+		painted, minX, minY, maxX, maxY := 0, size, size, -1, -1
+		for y := range size {
+			for x := range size {
+				if sameColor(dc.Image().At(x, y), colBackground) {
+					continue
 				}
+				painted++
+				minX, minY = min(minX, x), min(minY, y)
+				maxX, maxY = max(maxX, x), max(maxY, y)
 			}
 		}
 		if painted < 100 {
 			t.Errorf("%s: only %d pixels painted; the shape came out empty", name, painted)
+			continue
+		}
+		// A shape is centred in its viewBox, not in its own ink — a long tail or an
+		// accent hanging off the back pulls this a few pixels either way. Six is the
+		// worst of them; anything beyond this is a marker that has left its aircraft.
+		off := math.Hypot(float64(minX+maxX)/2-mid, float64(minY+maxY)/2-mid)
+		if off > 12 {
+			t.Errorf("%s: ink sits %.0fpx from where it was drawn", name, off)
 		}
 	}
 }

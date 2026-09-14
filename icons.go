@@ -168,8 +168,10 @@ func drawShape(dc *gg.Context, s *iconShape, scale, x, y, track float64, fill, s
 		dc.Rotate(gg.Radians(track)) // 0° is north, and so is -Y on the canvas
 	}
 	dc.Scale(kx, ky)
-	dc.Scale(s.sx, s.sy)
 	dc.Translate(-(s.vx + s.vw/2), -(s.vy + s.vh/2))
+	// The shape's own transform sits inside its viewBox, as the <g> it comes off does:
+	// it moves the path, not the frame the path is centred in.
+	dc.Scale(s.sx, s.sy)
 
 	// Stroke widths are device pixels: gg transforms the points, not the pen. The shape
 	// scale, the shape's own stroke normalisation and any transform all have to be
