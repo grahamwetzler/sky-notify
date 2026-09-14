@@ -1197,7 +1197,7 @@ function renderList() {
     p.textContent = 'No rules yet.';
     box.append(p);
   }
-  $('.list-f').hidden = !doc.rules.length;
+  $('.list-f').hidden = !doc.rules.length && !isSettings();
 
   $('#settings').setAttribute('aria-pressed', String(isSettings()));
 
@@ -1314,6 +1314,12 @@ function paintPane(pane) {
   if (shadowed) {
     const w = el('div', 'group');
     w.append(el('p', 'help warn', 'Never reached. A rule above it matches every aircraft.'));
+    pane.append(w);
+  }
+
+  if (cov.kind === 'dead' || cov.kind === 'error') {
+    const w = el('div', 'group');
+    w.append(el('p', 'help bad', cov.note));
     pane.append(w);
   }
 
