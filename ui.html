@@ -1998,23 +1998,40 @@ function payload() {
   return out;
 }
 
-/* ── The safeguard against alerting on everything ─────────────────────────
-   A rule that states no condition notifies on every aircraft the receiver hears, and
-   one stating only `listed` narrows who those aircraft are without narrowing how many
-   — either way it is a push every few seconds and an ntfy topic nobody can read. Both
-   are legitimate things to ask for and very easy things to leave behind by accident: a
-   rule added and not yet filled in, or one whose last condition was just removed. So
-   they cost a confirmation rather than being refused. Priority 0 is muted and sends
-   nothing, so it needs no warning. */
-const unbounded = r => r.priority !== 0 && stated(r).every(k => k === 'listed');
+/* ── The safeguard against a save that floods ─────────────────────────────
+   A rule with no condition notifies on every aircraft the receiver hears, and one
+   stating only `listed` narrows who those aircraft are without narrowing how many.
+   But the shape of a rule is only a proxy for the thing worth warning about: how many
+   pushes land the moment the save does. The preview already answers that for every
+   rule, against the last poll and the whole rule, so the warning asks it instead — and
+   falls back to the shape when there is no fresh poll to ask. Both are legitimate
+   things to want and very easy things to leave behind by accident, so they cost a
+   confirmation rather than being refused. Priority 0 is muted and sends nothing, so it
+   needs no warning. */
+const FLOOD = 3;
+/* How many pushes a rule sends the instant it is saved. Infinity is the honest answer
+   for an unbounded rule with no poll to count against: unknown, and certainly not a
+   number to save without being told. */
+function immediate(r) {
+  if (r.priority === 0) return 0;
+  if (!liveFresh(r)) return stated(r).every(k => k === 'listed') ? Infinity : 0;
+  return meta(r).preview?.live?.total || 0;
+}
 
 async function save() {
-  const wide = doc.rules.filter(unbounded);
-  if (wide.length && !confirm(
-      (wide.length > 1 ? 'These rules match every aircraft: ' : 'This rule matches every aircraft: ')
-      + list(wide.map(ruleLabel), ' and ')
-      + '.\n\nEvery aircraft the receiver hears will be notified, which can be hundreds of '
-      + 'pushes an hour. Add a condition, or set the priority to muted, to stop it.\n\nSave anyway?'))
+  const loud = doc.rules.filter(r => immediate(r) > FLOOD);
+  if (loud.length && !confirm(
+      loud.map(r => {
+        const n = immediate(r);
+        return ruleLabel(r) + ': ' + (Number.isFinite(n)
+          ? n.toLocaleString() + ' aircraft overhead right now'
+          : 'every aircraft the receiver hears');
+      }).join('\n')
+      + (loud.length > 1
+          ? '\n\nThese rules match more than they can usefully tell you about, and every '
+          : '\n\nThis rule matches more than it can usefully tell you about, and every ')
+      + 'match is a push the moment the save lands. Add a condition, or set the priority '
+      + 'to muted, to stop it.\n\nSave anyway?'))
     return;
   const b = $('#save');
   b.disabled = true;
