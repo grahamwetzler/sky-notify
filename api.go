@@ -22,6 +22,13 @@ func (s *server) mux(q *queue) http.Handler {
 		b, _ := uiFS.ReadFile("ui.html")
 		w.Write(b)
 	})
+	// The page's one asset. Immutable because it changes only when the binary does.
+	mux.HandleFunc("GET /public-sans.woff2", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "font/woff2")
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		b, _ := uiFS.ReadFile("public-sans.woff2")
+		w.Write(b)
+	})
 	mux.HandleFunc("GET /api/alerts", func(w http.ResponseWriter, r *http.Request) {
 		env := environMap(os.Environ())
 		alerts, err := loadAlertsFile(env)

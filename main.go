@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-//go:embed ui.html
+//go:embed ui.html public-sans.woff2
 var uiFS embed.FS
 
 const (

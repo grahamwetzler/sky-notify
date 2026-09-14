@@ -7,7 +7,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 ARG TARGETOS TARGETARCH
-COPY *.go ui.html icons.json ./
+COPY *.go ui.html public-sans.woff2 icons.json ./
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" -o /out/sky-notify .
 

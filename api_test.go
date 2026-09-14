@@ -527,3 +527,22 @@ func TestHistoryPagingSurvivesConcurrentDeliveries(t *testing.T) {
 		t.Fatalf("read %d rows, want the 22 surviving ones: %v", len(got), got)
 	}
 }
+
+// The page asks for the font by URL now that it is not inlined, so a page that renders
+// in the fallback stack is the failure this catches.
+func TestFontIsServedAndReferenced(t *testing.T) {
+	h := (&server{live: NewLive(defaultAlerts())}).mux(newQueue(1))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/public-sans.woff2", nil))
+	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "font/woff2" {
+		t.Fatalf("status = %d, type = %q", w.Code, w.Header().Get("Content-Type"))
+	}
+	if got := w.Body.Bytes(); len(got) < 1000 || string(got[:4]) != "wOF2" {
+		t.Fatalf("body is %d bytes, not a woff2", len(got))
+	}
+	page := httptest.NewRecorder()
+	h.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	if !strings.Contains(page.Body.String(), "src:url(public-sans.woff2)") {
+		t.Error("ui.html does not reference the served font")
+	}
+}

@@ -2,10 +2,10 @@
 
 <!-- impeccable:design-schema 1 -->
 
-Recorded from the built artifact, `ui.html`, not from intentions. One file, no build step,
-no network at runtime: the page is `go:embed`ed into the binary and served on a local
-network that need not reach the internet. Every rule below exists because the page already
-follows it.
+Recorded from the built artifact, `ui.html`, not from intentions. One page and its font,
+no build step, no network at runtime: both are `go:embed`ed into the binary and served on
+a local network that need not reach the internet. Every rule below exists because the page
+already follows it.
 
 ## Surface
 
@@ -59,10 +59,11 @@ toggle writes to `localStorage` only on a deliberate click, so the default is th
 
 ## Type
 
-**Public Sans**, latin subset, variable 400–700, embedded as a base64 `woff2` (~26 KB).
-Embedded rather than linked: a font that silently falls back is a different design, and
-this page is served on a network that need not have internet access. SIL OFL 1.1. The
-fallback stack is `system-ui, -apple-system, Segoe UI, sans-serif`.
+**Public Sans**, latin subset, variable 400–700, a 26 KB `woff2` served by the binary at
+`/public-sans.woff2`. Shipped rather than linked to a CDN: a font that silently falls back
+is a different design, and this page is served on a network that need not have internet
+access. SIL OFL 1.1. The fallback stack is
+`system-ui, -apple-system, Segoe UI, sans-serif`.
 
 `ui-monospace` appears in exactly one place: the cooldown fingerprint of an unnamed rule,
 because it is a hash and reads as one.
