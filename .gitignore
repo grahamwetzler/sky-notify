@@ -1,4 +1,5 @@
 /sky-notify
+.DS_Store
 /data/
 config.yaml
 compose.test.yaml
