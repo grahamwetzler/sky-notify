@@ -69,6 +69,14 @@ aircraft in plane-alert-db. Every condition is an optional filter of the same ki
 | altitude and distance | `min_altitude_ft`, `max_altitude_ft`, `max_distance_nm` |
 | flight path | `circling`, `passes_within_nm`, `passes_within` |
 
+One key is not a condition: `notify` says *when* the alert goes out, never which
+aircraft the rule claims.
+
+| | |
+|---|---|
+| `notify: on_sight` | the default: alert on the first check that matches |
+| `notify: closest_pass` | hold the alert while the aircraft is inbound and send it once it has passed, reporting the nearest point it reached |
+
 Values within one field are ORed, conditions are ANDed, and the first matching rule wins.
 A rule that states **no** condition is the wildcard — it matches every aircraft, so it
 goes last, and `listed: true` alone is "everything in plane-alert-db". Matches ignore case
@@ -94,6 +102,15 @@ the next five minutes". `circling: true` matches an aircraft that has turned a f
 inside 2 NM during the last 10 minutes, which is how news and police helicopters fly. It
 needs several minutes of positions before it can match, and that history is held in
 memory only, so a restart starts it again. It needs `source.poll_interval` of 30s or less.
+
+`notify: closest_pass` is what you want for a rule you have written to see something go
+over rather than to be told it exists. It needs `lat`/`lon`, since there has to be
+somewhere for the aircraft to be closest to. The alert is built afresh at every check and
+the nearest one is kept, so the distance and the map are the pass itself and not the
+departure — at a 15s check interval a jet is already a mile and a half past you by the
+time it can be seen to be leaving. An aircraft that stops broadcasting a ground track, or
+disappears from the feed altogether, alerts anyway after three quiet checks, with the
+nearest position it was seen at.
 
 ## The map
 
@@ -201,6 +218,11 @@ you cannot place on a map is one you cannot act on. Nothing records a cooldown u
 alert is published, so this holds the alert rather than dropping it: the next poll
 re-evaluates the same aircraft, which is usually still overhead. Mode-S-only traffic that
 never broadcasts a position never alerts.
+
+**A held alert lives in memory.** `notify: closest_pass` parks the alert until the
+aircraft has passed, so a restart in that window forgets what was waiting; anything still
+overhead is picked up on the next check. A held alert that cannot be delivered is
+re-offered every check for an hour and then abandoned.
 
 **Conditions fail closed.** A rule stating an altitude does not match an aircraft without
 `alt_baro`, and one with `passes_within_nm` does not match without a ground track when the
