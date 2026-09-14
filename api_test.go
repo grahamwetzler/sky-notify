@@ -540,6 +540,20 @@ func TestFontIsServedAndReferenced(t *testing.T) {
 	if got := w.Body.Bytes(); len(got) < 1000 || string(got[:4]) != "wOF2" {
 		t.Fatalf("body is %d bytes, not a woff2", len(got))
 	}
+	// The URL is fixed, so the font must revalidate: a browser holding the previous
+	// binary's font has nothing else to tell it that this one is different.
+	etag := w.Header().Get("ETag")
+	if etag == "" || w.Header().Get("Cache-Control") != "no-cache" {
+		t.Fatalf("etag = %q, cache-control = %q", etag, w.Header().Get("Cache-Control"))
+	}
+	again := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/public-sans.woff2", nil)
+	req.Header.Set("If-None-Match", etag)
+	h.ServeHTTP(again, req)
+	if again.Code != http.StatusNotModified || again.Body.Len() != 0 {
+		t.Errorf("repeat fetch = %d with %d bytes, want 304 and none", again.Code, again.Body.Len())
+	}
+
 	page := httptest.NewRecorder()
 	h.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/", nil))
 	if !strings.Contains(page.Body.String(), "src:url(public-sans.woff2)") {

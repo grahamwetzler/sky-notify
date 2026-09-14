@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -22,12 +25,19 @@ func (s *server) mux(q *queue) http.Handler {
 		b, _ := uiFS.ReadFile("ui.html")
 		w.Write(b)
 	})
-	// The page's one asset. Immutable because it changes only when the binary does.
+	// The page's one asset. The URL is fixed, so it cannot be cached immutably: a
+	// binary that ships a different font would leave every browser that had already
+	// fetched this one rendering the old one until its entry expired. The ETag is the
+	// font's own content, so a repeat visit costs a 304 and a changed font is picked
+	// up on the next request.
+	font, _ := uiFS.ReadFile("public-sans.woff2")
+	sum := sha256.Sum256(font)
+	fontETag := fmt.Sprintf("%q", hex.EncodeToString(sum[:8]))
 	mux.HandleFunc("GET /public-sans.woff2", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "font/woff2")
-		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-		b, _ := uiFS.ReadFile("public-sans.woff2")
-		w.Write(b)
+		w.Header().Set("ETag", fontETag)
+		w.Header().Set("Cache-Control", "no-cache")
+		http.ServeContent(w, r, "public-sans.woff2", time.Time{}, bytes.NewReader(font))
 	})
 	mux.HandleFunc("GET /api/alerts", func(w http.ResponseWriter, r *http.Request) {
 		env := environMap(os.Environ())
