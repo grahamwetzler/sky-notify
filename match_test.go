@@ -861,6 +861,16 @@ func (r *holdRig) age(d time.Duration) {
 
 func (r *holdRig) holds() int { return len(r.p.holds) }
 
+// pollFailed runs one poll against a feed the source will refuse — a dead feeder, which
+// is the state the hold has to keep working through.
+func (r *holdRig) pollFailed() {
+	r.t.Helper()
+	if err := os.WriteFile(r.path, []byte("not json"), 0o644); err != nil {
+		r.t.Fatal(err)
+	}
+	r.p.poll(context.Background(), r.alerts)
+}
+
 // flying is one aircraft nm north (negative: south) of the receiver on the given track.
 func flying(nm, track float64) Aircraft {
 	lat, lon, hdg := testLat+nm/60, testLon, track
@@ -1049,5 +1059,51 @@ func TestOnSightIsUnchangedAndCooldownsSkipTheHold(t *testing.T) {
 	r.none("inside the cooldown")
 	if r.holds() != 0 {
 		t.Error("a key inside its cooldown must never park")
+	}
+}
+
+// A feeder that dies is exactly when a parked alert needs the sweep: nothing can refresh
+// judged while it is down, so a sweep that only ran on a good poll would hold the alert
+// until the feed came back — and could abandon a fired one at the give-up ceiling
+// without ever retrying it, since a failed publish leaves the queue empty.
+func TestClosestPassKeepsWorkingWhileTheFeedIsDown(t *testing.T) {
+	r := newHoldRig(t, closestPassRule())
+	r.poll(flying(-2, 0))
+	r.pollFailed()
+	r.none("inside the grace window")
+
+	r.age(time.Minute)
+	r.pollFailed()
+	if a := r.one(); math.Abs(a.DistanceNM-2) > 0.01 {
+		t.Fatalf("want the 2 NM snapshot, got %.2f NM", a.DistanceNM)
+	}
+	// And the retry, which nothing else re-offers.
+	r.pollFailed()
+	if got := r.take(); len(got) != 1 {
+		t.Fatalf("a fired alert must still be retried with the feed down, got %d offers", len(got))
+	}
+}
+
+// alerts.yaml is re-read every five seconds, and a hold outlives several of those. A rule
+// deleted or muted while one of its alerts is parked must not still announce it — muting
+// is how an exception is written, and it cannot mean "after one more".
+func TestClosestPassDropsAHoldWhoseRuleIsGone(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		amend func(*Alerts)
+	}{
+		{"deleted", func(a *Alerts) { a.Rules = nil }},
+		{"muted", func(a *Alerts) { a.Rules[0].Priority = intp(0) }},
+	} {
+		r := newHoldRig(t, closestPassRule())
+		r.poll(flying(-2, 0))
+		r.age(time.Minute) // past the grace window: without the reconcile it would fire
+		tc.amend(r.alerts)
+
+		r.poll(flying(-1, 0))
+		r.none(tc.name + " rule")
+		if r.holds() != 0 {
+			t.Errorf("%s rule: the hold must be dropped, %d left", tc.name, r.holds())
+		}
 	}
 }

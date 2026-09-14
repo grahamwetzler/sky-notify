@@ -113,10 +113,7 @@ func Evaluate(ac Aircraft, db *DB, cfg *Alerts, trk *track) *Alert {
 	if rule == nil {
 		return nil
 	}
-	priority := cfg.Ntfy.Priority
-	if rule.Priority != nil {
-		priority = *rule.Priority
-	}
+	priority := rule.priorityIn(cfg)
 	if priority == 0 {
 		slog.Debug("rule matched but muted", "rule", rule.Key(), "icao", hex)
 		return nil
@@ -427,6 +424,14 @@ func (r *Rule) Key() string {
 	}
 	sum := sha256.Sum256(blob)
 	return fmt.Sprintf("#%x", sum[:4])
+}
+
+// priorityIn is what this rule sends at: its own, or the default it inherits. Zero mutes.
+func (r *Rule) priorityIn(cfg *Alerts) int {
+	if r.Priority != nil {
+		return *r.Priority
+	}
+	return cfg.Ntfy.Priority
 }
 
 // label names a rule in an error message. An unnamed one is identified the way the log

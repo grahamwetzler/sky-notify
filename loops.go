@@ -100,6 +100,12 @@ func (p *poller) poll(ctx context.Context, cfg *Alerts) {
 			slog.Warn("poll failed", "err", err)
 		}
 		p.h.setPollErr(err)
+		// A dead feed is when a parked alert most needs the sweep, not least: nothing
+		// can refresh judged while it is down, so waiting for a poll that may never
+		// come would hold every alert until it returns — and could abandon a fired one
+		// at holdGiveUp without ever retrying it, since a failed publish leaves the
+		// queue empty and only the sweep re-offers.
+		p.sweepHolds(cfg, time.Now())
 		return
 	}
 	p.tr.Update(f)
@@ -125,7 +131,7 @@ func (p *poller) poll(ctx context.Context, cfg *Alerts) {
 	}
 	// The one place a parked alert reaches the queue, so there is a single place where
 	// it can be offered, retried or dropped.
-	p.sweepHolds(now, 3*cfg.Source.PollInterval.Std())
+	p.sweepHolds(cfg, now)
 }
 
 // park keeps the nearest sighting of an aircraft a closest-pass rule has claimed, and
@@ -161,10 +167,20 @@ func (p *poller) park(key string, ac Aircraft, a *Alert, now time.Time) {
 	p.holds[key] = h
 }
 
-// sweepHolds offers, re-offers and retires the parked alerts.
-func (p *poller) sweepHolds(now time.Time, grace time.Duration) {
+// sweepHolds offers, re-offers and retires the parked alerts. It reads the config it is
+// given rather than the one the alert was built under, because alerts.yaml is re-read
+// every five seconds and a hold outlives several of those.
+func (p *poller) sweepHolds(cfg *Alerts, now time.Time) {
+	alerting := alertingKeys(cfg)
+	grace := 3 * cfg.Source.PollInterval.Std()
 	for key, h := range p.holds {
 		switch {
+		// The rule is gone, or has been muted. Evaluate stops matching either of those
+		// the moment the file is reloaded, which leaves the alert parked with nothing
+		// to announce it for — and an alert for a rule the operator has just deleted is
+		// exactly what a mute is written to prevent.
+		case !alerting[h.alert.Trigger]:
+			delete(p.holds, key)
 		// Delivered, said by the alert itself. Not "no longer eligible": a cooldown
 		// shorter than the poll interval is legal, and the ledger has pruned its own
 		// entry by the time the next sweep looks, so it would re-offer a delivered
@@ -193,6 +209,18 @@ func (p *poller) sweepHolds(now time.Time, grace time.Duration) {
 			p.q.add(h.alert)
 		}
 	}
+}
+
+// alertingKeys is the cooldown key of every rule that would still send something. A
+// muted rule has no key here: priority 0 means the aircraft stops at it.
+func alertingKeys(cfg *Alerts) map[string]bool {
+	keys := make(map[string]bool, len(cfg.Rules))
+	for i := range cfg.Rules {
+		if r := &cfg.Rules[i]; r.priorityIn(cfg) != 0 {
+			keys[r.Key()] = true
+		}
+	}
+	return keys
 }
 
 // retry is how long a failing key waits and how long it will wait next time. The two
