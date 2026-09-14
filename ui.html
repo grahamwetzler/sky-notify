@@ -565,8 +565,11 @@ function summarise(r) {
   if (r.circling === false) parts.push('while not circling');
   say('passes_within_nm', v => `predicted to pass within ${v} NM in the next ` +
     (hasValue(r.passes_within) ? r.passes_within : '5m'));
-  if (!parts.length) return 'Every aircraft — no conditions set.';
-  return parts.join(', ').replace(/^./, c => c.toUpperCase()) + '.';
+  /* Appended, not woven in: the sentence is read to audit what a rule claims, and when
+     it is announced is not a claim. */
+  const when = r.notify === 'closest_pass' ? ', alerted at its closest pass' : '';
+  if (!parts.length) return 'Every aircraft — no conditions set' + when + '.';
+  return parts.join(', ').replace(/^./, c => c.toUpperCase()) + when + '.';
 }
 
 const ruleLabel = r => r.name || 'Unnamed rule';
@@ -1323,7 +1326,7 @@ function paintPane(pane) {
     pane.append(w);
   }
 
-  pane.append(priorityBand(r));
+  pane.append(notificationBand(r));
 
   /* conditions, grouped by the question they ask */
   for (const g of GROUPS) {
@@ -1655,26 +1658,58 @@ async function loadHistory(r, after = '') {
   if (doc.rules.includes(r) && doc.rules[sel] === r) renderPane();
 }
 
-function priorityBand(r) {
+/* Priority and When both say what happens when a rule matches, and neither filters, so
+   they are one band rather than a condition each. */
+const NOTIFY_WHEN = [['', 'As soon as it is seen'],
+                     ['closest_pass', 'At its closest pass to the receiver']];
+
+function notificationBand(r) {
   const sec = el('div', 'group');
   const gh = el('div', 'group-h');
   const t = el('div', 'group-t');
-  const h = el('h3', 'lbl', 'Priority');
-  /* Native tooltip rather than a widget: it is a footnote to a field whose own help line
-     already says what the chosen level does. */
-  h.title = 'How loudly ntfy announces an alert: 5 pops over other apps and vibrates, '
-    + '3 arrives as a normal notification, 1 arrives silently. 0 mutes the rule.';
-  t.append(h);
+  t.append(el('h3', 'lbl', 'Notification'));
+  t.append(el('p', 'help', 'What happens when this rule matches. Neither field changes what it matches.'));
   gh.append(t);
   sec.append(gh);
 
   const fields = el('div', 'fields');
+  fields.append(whenField(r), priorityField(r));
+  sec.append(fields);
+  return sec;
+}
 
-  const pl = el('label', 'field narrow');
-  /* The band heading is the field's label, so the select carries the name rather than
-     repeating it on screen. */
+function whenField(r) {
+  const wrap = el('label', 'field narrow');
+  wrap.append(el('span', 'lbl', 'When'));
   const s = el('select');
-  s.setAttribute('aria-label', 'Priority');
+  for (const [v, t] of NOTIFY_WHEN) s.append(new Option(t, v));
+  const held = r.notify === 'closest_pass';
+  s.value = held ? 'closest_pass' : '';
+  s.onchange = () => {
+    if (s.value) r.notify = s.value; else delete r.notify;
+    markDirty(); renderPane(); renderList();
+  };
+  wrap.append(s);
+  /* The server refuses a held rule with nowhere to be closest to, so say it here rather
+     than at the bottom of the page after a failed write. */
+  const noReceiver = setting('lat', doc.lat) == null || setting('lon', doc.lon) == null;
+  wrap.append(held && noReceiver
+    ? el('span', 'help bad', 'Set the receiver position in Settings first.')
+    : el('span', 'help', held
+      ? 'Waits for the aircraft to pass, then sends one alert reporting the nearest point it reached.'
+      : 'Alerts on the first check that matches.'));
+  return wrap;
+}
+
+function priorityField(r) {
+  const pl = el('label', 'field narrow');
+  const lbl = el('span', 'lbl', 'Priority');
+  /* Native tooltip rather than a widget: it is a footnote to a field whose own help line
+     already says what the chosen level does. */
+  lbl.title = 'How loudly ntfy announces an alert: 5 pops over other apps and vibrates, '
+    + '3 arrives as a normal notification, 1 arrives silently. 0 mutes the rule.';
+  pl.append(lbl);
+  const s = el('select');
   s.append(new Option('Use the default', INHERIT));
   for (const [v, t2] of PRIORITIES) s.append(new Option(`${v} — ${t2}`, v));
   /* ?? not ||: priority 0 is "muted", a real choice, and must not read as unset. */
@@ -1693,9 +1728,7 @@ function priorityBand(r) {
         : r.priority <= 2
           ? 'Overrides the default. Arrives quietly, without a sound.'
           : 'Overrides the default. A normal notification.'));
-  fields.append(pl);
-  sec.append(fields);
-  return sec;
+  return pl;
 }
 
 /* ── Settings ─────────────────────────────────────────────────────────── */
@@ -1816,6 +1849,7 @@ function schedulePreview(r) {
 function payloadRule(r) {
   const out = {name: r.name || ''};
   if (r.priority !== undefined && r.priority !== null) out.priority = r.priority;
+  if (r.notify) out.notify = r.notify;
   for (const key of CONDITIONS.map(c => c.key)) {
     const v = r[key];
     if (!hasValue(v)) continue;
@@ -1841,11 +1875,12 @@ function receiver() {
    the count in hand is an answer about this rule or about the one it used to be — which
    an age cannot say, and which a save must not guess at.
 
-   The name and the priority are dropped: neither reaches the matching, so neither can
-   move the count, and a rename does not even ask for a new preview. Keeping them here
-   would leave a renamed rule permanently mismatched and quietly unwarned. */
+   The name, the priority and when to notify are dropped: none of them reaches the
+   matching, so none can move the count, and a rename does not even ask for a new
+   preview. Keeping them here would leave a renamed rule permanently mismatched and
+   quietly unwarned. */
 const question = r => {
-  const {name, priority, ...conditions} = payloadRule(r);
+  const {name, priority, notify, ...conditions} = payloadRule(r);
   return JSON.stringify([conditions, receiver()]);
 };
 
