@@ -132,6 +132,17 @@ func (a *Alert) facts() string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// researchPromptFor is what the rule behind this alert wants asked, as the rules are
+// now. "" when that rule no longer asks for research, or is no longer there at all.
+func researchPromptFor(cfg *Alerts, trigger string) string {
+	for i := range cfg.Rules {
+		if r := &cfg.Rules[i]; r.Key() == trigger {
+			return r.researchPrompt()
+		}
+	}
+	return ""
+}
+
 // researchRules names the rules that asked for research, for the startup warning when
 // nothing is configured to answer them. Cross-file validation is not possible — the UI
 // validates Alerts, which has never been able to see Config — so this is where an

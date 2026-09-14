@@ -45,8 +45,10 @@ type Alert struct {
 	HasDistance bool
 	Priority    int
 	Circling    bool
-	// ResearchPrompt is what the matching rule wants asked about this aircraft, "" when
-	// it wants nothing; Research is the answer, filled by the notifier before it renders.
+	// ResearchPrompt is what to ask about this aircraft, "" to ask nothing, and Research
+	// is the answer. Both are filled on the notify path, not here: the prompt is resolved
+	// from the rules as they are at delivery (notifyLoop), never as they were at the
+	// match, and the answer from asking.
 	ResearchPrompt string
 	Research       string
 	// AtClosest is set by a rule that notifies at the closest pass. Before delivery it
@@ -141,7 +143,6 @@ func Evaluate(ac Aircraft, db *DB, cfg *Alerts, trk *track) *Alert {
 		return nil
 	}
 	a.Trigger, a.RuleName, a.Priority, a.Path = rule.Key(), rule.Name, priority, trk.path()
-	a.ResearchPrompt = rule.researchPrompt()
 	a.AtClosest = rule.Notify == notifyClosestPass
 	// Derived from the squawk itself, never from which rule fired: the queue's eviction
 	// and ordering (main.go) and the notification's framing (notify.go) must treat a 7700

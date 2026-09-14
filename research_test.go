@@ -233,6 +233,9 @@ func TestResearchEndToEnd(t *testing.T) {
 	if a == nil {
 		t.Fatal("rule did not match")
 	}
+	// The prompt is resolved from the rules as they are at delivery, which is what
+	// notifyLoop does for each alert just before it publishes.
+	a.ResearchPrompt = researchPromptFor(alerts, a.Trigger)
 	if a.ResearchPrompt != defaultResearchPrompt {
 		t.Fatalf("prompt = %q", a.ResearchPrompt)
 	}
@@ -242,5 +245,85 @@ func TestResearchEndToEnd(t *testing.T) {
 	body := nt.bodies[0].Message
 	if !strings.Contains(body, "Research: "+ai.answer) {
 		t.Fatalf("notification body:\n%s", body)
+	}
+}
+
+// ---------- resolved at delivery, not at the match ----------
+
+// drainOne runs notifyLoop over one queued alert and waits for the queue to empty.
+func drainOne(t *testing.T, n *Notifier, alerts *Alerts, a *Alert) *State {
+	t.Helper()
+	state := NewState(t.TempDir())
+	q := newQueue(maxPending)
+	q.add(a)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go notifyLoop(ctx, NewLive(alerts), n, state, q)
+	for i := 0; i < 200 && q.depth() > 0; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if q.depth() > 0 {
+		t.Fatal("the queue never drained")
+	}
+	return state
+}
+
+// A closest-pass alert waits minutes for its aircraft to pass, and alerts.yaml is re-read
+// every five seconds. Research switched off in that window must not still reach the
+// provider: it is a third party, and a bill.
+func TestResearchTurnedOffWhileAnAlertWaits(t *testing.T) {
+	ai := &aiServer{answer: "should never be asked"}
+	n, nt := researchNotifier(t, ai)
+
+	// Matched under a rule that asked for research; delivered under one that no longer does.
+	a := testAlert()
+	a.Trigger, a.ResearchPrompt = "watch", defaultResearchPrompt
+	alerts := defaultAlerts()
+	alerts.Rules = []Rule{{Name: "watch"}}
+
+	state := drainOne(t, n, alerts, a)
+	if len(ai.reqs) != 0 {
+		t.Errorf("provider was asked %d times after research was switched off", len(ai.reqs))
+	}
+	if len(nt.bodies) != 1 || strings.Contains(nt.bodies[0].Message, "Research:") {
+		t.Errorf("notification should have gone out without the line:\n%v", nt.bodies)
+	}
+	if state.Eligible(cooldownKey(a.Hex, a.Trigger), alerts.Cooldown.Std()) {
+		t.Error("the alert itself should still have been published")
+	}
+}
+
+// The other direction: switched on while the alert waited, and the rule as it is now is
+// what decides — including a prompt edited in that same window.
+func TestResearchTurnedOnWhileAnAlertWaits(t *testing.T) {
+	ai := &aiServer{answer: "Operated by the Garland PD air unit."}
+	n, nt := researchNotifier(t, ai)
+
+	a := testAlert()
+	a.Trigger = "watch" // matched before the rule asked for anything
+	on := true
+	alerts := defaultAlerts()
+	alerts.Rules = []Rule{{Name: "watch", Research: &on, ResearchPrompt: "Who flies this?"}}
+
+	drainOne(t, n, alerts, a)
+	if len(ai.reqs) != 1 {
+		t.Fatalf("provider was asked %d times, want 1", len(ai.reqs))
+	}
+	msgs, _ := ai.reqs[0]["messages"].([]any)
+	m, _ := msgs[0].(map[string]any)
+	if content, _ := m["content"].(string); !strings.HasPrefix(content, "Who flies this?") {
+		t.Errorf("asked with the stale prompt: %q", content)
+	}
+	if !strings.Contains(nt.bodies[0].Message, "Research: "+ai.answer) {
+		t.Errorf("notification body:\n%s", nt.bodies[0].Message)
+	}
+}
+
+// A rule deleted outright is the same answer as one that stopped asking.
+func TestResearchPromptForAMissingRule(t *testing.T) {
+	alerts := defaultAlerts()
+	alerts.Rules = []Rule{{Name: "other"}}
+	if got := researchPromptFor(alerts, "watch"); got != "" {
+		t.Errorf("researchPromptFor = %q, want empty for a rule that is gone", got)
 	}
 }
