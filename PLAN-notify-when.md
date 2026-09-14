@@ -47,39 +47,67 @@ A new field on `poller` (`loops.go`), which is single-goroutine and needs no loc
 
 ```go
 // held is one alert parked at the nearest position seen for it so far, for rules that
-// notify at the closest pass. seen is the last poll that still matched, so an aircraft
-// that leaves the feed still gets its alert rather than being lost mid-approach.
+// notify at the closest pass.
+//
+// judged is the last poll that could tell whether the aircraft had passed — present in
+// the feed, and with the ground track receding needs. Not "last seen": an aircraft that
+// keeps matching while broadcasting no track would refresh a last-seen stamp forever and
+// never reach the fallback that exists for exactly that case.
+//
+// fired is when the alert was first offered to the queue, zero until then. The entry
+// outlives the offer, because an offer is not a delivery.
 type held struct {
-    alert *Alert
-    seen  time.Time
+    alert  *Alert
+    judged time.Time
+    fired  time.Time
 }
 ```
 
 `poller.holds map[string]held`, keyed by the same `cooldownKey(hex, trigger)` everything
 else uses. Each poll, for a matching rule with `notify: closest_pass`:
 
+- an ineligible key — the cooldown says this rule already alerted on this aircraft —
+  drops any entry and is skipped, as it is today;
 - keep the incoming alert if it is nearer than the parked one, otherwise keep the parked
-  one; stamp `seen`;
-- if `receding(...)` — or if the aircraft reports no ground track and is not moving —
-  send the parked alert and drop the entry;
-- otherwise enqueue nothing and let the next poll re-evaluate, exactly as the existing
-  "hold the alert until a position arrives" path does. No cooldown is recorded, so
-  nothing is consumed by waiting.
+  one;
+- stamp `judged` if the aircraft can be judged at all: `ac.GS == 0 || ac.Track != nil`,
+  the same guard `passesOverhead` already fails closed on. A stationary aircraft is
+  judgeable and `receding` answers true for it, since it will never get nearer;
+- set `fired` if `receding(...)` and it is not already set;
+- enqueue nothing here. No cooldown is recorded by waiting, so nothing is consumed by it,
+  and the next poll re-evaluates exactly as the existing "hold the alert until a position
+  arrives" path does.
 
-After the aircraft loop, any entry whose `seen` is older than `3 * source.poll_interval`
-is sent and dropped. That is the fallback that stops two cases from silently losing an
-alert: an aircraft that leaves the feed while still inbound, and one that never broadcasts
-a ground track, where `receding` has nothing to answer with. Three polls of grace, rather
-than "missing from this poll", because feeds drop an aircraft for a poll and come back,
-and firing on a flicker would report a pass at 40 NM that was going to be 2 NM.
+One sweep after the aircraft loop is the only thing that touches the queue, so there is a
+single place where a parked alert can be offered, retried or dropped:
+
+- delivered (`!state.Eligible(key, cooldown)`) — drop the entry. The cooldown ledger is
+  the record that the alert actually went out;
+- not fired, and `judged` older than `3 * source.poll_interval` — set `fired`. That is the
+  fallback for the two aircraft `receding` can never answer for: one that left the feed
+  mid-approach, and one that stays in it broadcasting a position but no ground track.
+  Three polls of grace rather than "missing from this poll", because feeds drop an
+  aircraft for a poll and come back, and firing on a flicker would report a pass at 40 NM
+  that was going to be 2 NM;
+- fired — `q.add(h.alert)` every poll until the cooldown says it landed, then drop the
+  entry at the top of this list. Not "enqueue once and forget": `notifyLoop` deletes a
+  queue entry whose publish failed without advancing the cooldown, and `q.add` refuses an
+  alert outright when the queue is at `maxPending`. Dropping the entry on the offer would
+  answer either by rebuilding the alert from a later poll — a worse distance for the pass,
+  which is the one thing this whole mechanism exists to get right — or, for an aircraft
+  that has left the feed, by losing it. `q.add` ignores a key that is already queued or in
+  flight, so re-offering costs a map lookup;
+- fired longer than `holdGiveUp` (1h, two attempts past the 30-minute ceiling
+  `notifyLoop`'s per-key backoff climbs to) — drop it. An ntfy server that has been down
+  for a day must not park every aircraft that passed in that time.
 
 The parked alert is the whole `*Alert` as of its nearest poll, so the map snapshot and
 the recent-track path are the ones from the closest point too — the picture shows the
 pass, not the departure.
 
-Bounded by aircraft overhead × closest-pass rules, and every entry exits within the grace
-window. It is memory only, like `Tracker`: a restart forgets the holds in flight, and the
-aircraft still overhead are picked up on the next poll.
+Bounded by aircraft overhead × closest-pass rules, and no entry outlives delivery by more
+than `holdGiveUp`. It is memory only, like `Tracker`: a restart forgets the holds in
+flight, and the aircraft still overhead are picked up on the next poll.
 
 ## What the notification says
 
@@ -114,13 +142,22 @@ is announced. This also means the key is unchanged for every rule that exists to
 nobody's cooldown ledger or sent-alerts history resets on upgrade — a test asserts that a
 rule with `notify` set fingerprints identically to the same rule without it.
 
-**3. The hold.** `held`/`poller.holds` in `loops.go` and the branch in `poll`. Tests in
-`match_test.go` driving `poll` over a synthetic sequence of feeds:
+**3. The hold.** `held`/`poller.holds` in `loops.go`, the branch in `poll`, and the sweep.
+Tests in `match_test.go` driving `poll` over a synthetic sequence of feeds, with the
+queue read directly rather than a notifier stood up:
 - inbound polls enqueue nothing, the pass enqueues exactly one alert, and its
   `DistanceNM` is the minimum of the sequence, not the distance at the firing poll;
 - an aircraft that vanishes mid-approach fires after the grace window with its nearest
   seen distance;
-- an aircraft with no ground track fires the same way;
+- an aircraft that stays in the feed, keeps matching and never broadcasts a ground track
+  fires after the same window. This is the case a last-seen stamp would hold forever, so
+  the test drives ten polls, not three;
+- a failed delivery — the queue entry taken and dropped with no cooldown recorded, which
+  is what `notifyLoop` does — is re-offered on the next poll as the *same* alert, with the
+  nearest distance intact, and stops being offered once the cooldown records it;
+- an alert refused because the queue is at `maxPending` is still parked, and lands with
+  its nearest distance once the queue drains;
+- an entry fired longer ago than `holdGiveUp` is dropped and stops being re-offered;
 - `on_sight` and a rule with no `notify` behave exactly as they do today (the regression
   guard for the default path);
 - a held key that is already within its cooldown never parks.
