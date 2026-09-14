@@ -348,7 +348,7 @@ func TestPreviewMeasuresFromTheReceiverOnScreen(t *testing.T) {
 	saved, savedLon := 0.0, 0.0
 	cfg := defaultAlerts()
 	cfg.Lat, cfg.Lon = &saved, &savedLon
-	h := &health{live: NewLive(cfg)}
+	h := &server{live: NewLive(cfg)}
 
 	draft := url.Values{"lat": {"30"}, "lon": {"-95"}}
 	got := h.previewAlerts(draft)

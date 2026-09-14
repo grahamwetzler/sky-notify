@@ -210,7 +210,7 @@ func alertsHandler(t *testing.T, path string, planes ...*Plane) http.Handler {
 			db.merged[p.ICAO] = p
 		}
 	}
-	return (&health{live: NewLive(defaultAlerts()), db: db}).mux(newQueue(1))
+	return (&server{live: NewLive(defaultAlerts()), db: db}).mux(newQueue(1))
 }
 
 func TestAlertsUIRoundTrip(t *testing.T) {
@@ -586,7 +586,7 @@ func TestVocabularyDedupesAndSorts(t *testing.T) {
 // The type picker must work on a receiver whose sky the database has never heard of,
 // so the codes come off aircraft.json and are counted by aircraft, not by sighting.
 func TestFeedTypesCountAircraftSeen(t *testing.T) {
-	h := &health{}
+	h := &server{}
 	h.setPollOK(&feed{Aircraft: []Aircraft{
 		{Hex: "ABC123", Type: "B738"}, {Hex: "def456", Type: "B738"},
 		{Hex: "aaa111", Type: " A320 "}, {Hex: "bbb222"}, {Hex: "", Type: "C172"},

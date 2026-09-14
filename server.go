@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-type health struct {
+type server struct {
 	live     *Live
 	db       *DB
 	state    *State
@@ -38,27 +38,27 @@ type health struct {
 
 // setPollOK records a good poll. tr may be nil; when it is not it must already have
 // been updated with this feed, or the circling flags describe the poll before it.
-func (h *health) setPollOK(f *feed, tr *Tracker) {
-	h.mu.Lock()
-	h.lastFreshPoll, h.lastPollErr, h.aircraft = time.Now(), nil, len(f.Aircraft)
-	if h.typeOf == nil {
-		h.typeOf = map[string]string{}
+func (s *server) setPollOK(f *feed, tr *Tracker) {
+	s.mu.Lock()
+	s.lastFreshPoll, s.lastPollErr, s.aircraft = time.Now(), nil, len(f.Aircraft)
+	if s.typeOf == nil {
+		s.typeOf = map[string]string{}
 	}
-	h.overhead = f.Aircraft
-	h.circling = map[string]bool{}
+	s.overhead = f.Aircraft
+	s.circling = map[string]bool{}
 	for _, ac := range f.Aircraft {
 		hex, t := normalizeHex(ac.Hex), strings.TrimSpace(ac.Type)
 		if hex == "" {
 			continue
 		}
 		if t != "" {
-			h.typeOf[hex] = t
+			s.typeOf[hex] = t
 		}
 		if tr.get(hex).circling() {
-			h.circling[hex] = true
+			s.circling[hex] = true
 		}
 	}
-	h.mu.Unlock()
+	s.mu.Unlock()
 }
 
 // coord reads one drafted coordinate. Blank is a cleared receiver, and so is anything
@@ -77,8 +77,8 @@ func coord(v string) *float64 {
 // place — or, before they are first saved, for nowhere at all. The environment still
 // wins, exactly as it does at save; a coordinate it sets is not editable in the page
 // either.
-func (h *health) previewAlerts(q url.Values) *Alerts {
-	cfg := h.live.Get()
+func (s *server) previewAlerts(q url.Values) *Alerts {
+	cfg := s.live.Get()
 	// Absent is not blank. Only the page sends these, and it sends both or neither, so
 	// nothing here means nothing is being drafted; a blank one means the receiver has
 	// been cleared on screen, and answering that from the saved pair would show
@@ -94,16 +94,11 @@ func (h *health) previewAlerts(q url.Values) *Alerts {
 		draft.Lat, draft.Lon = nil, nil
 	}
 	env := environMap(os.Environ())
-	for _, b := range alertEnvBindings() {
-		if _, set := env[b.name]; !set {
-			continue
-		}
-		switch b.key {
-		case "lat":
-			draft.Lat = cfg.Lat
-		case "lon":
-			draft.Lon = cfg.Lon
-		}
+	if _, set := env["SKY_LAT"]; set {
+		draft.Lat = cfg.Lat
+	}
+	if _, set := env["SKY_LON"]; set {
+		draft.Lon = cfg.Lon
 	}
 	return &draft
 }
@@ -112,36 +107,36 @@ func (h *health) previewAlerts(q url.Values) *Alerts {
 // staleness rule /healthz uses. A preview drawn from a dead feeder must say so rather
 // than read as an empty sky — and the age travels with the answer, so a page holding one
 // can watch it go stale without asking again.
-func (h *health) pollAge() (age time.Duration, ok, fresh bool) {
-	h.mu.Lock()
-	last := h.lastFreshPoll
-	h.mu.Unlock()
+func (s *server) pollAge() (age time.Duration, ok, fresh bool) {
+	s.mu.Lock()
+	last := s.lastFreshPoll
+	s.mu.Unlock()
 	if last.IsZero() {
 		return 0, false, false
 	}
 	age = time.Since(last)
-	return age, true, age <= h.live.Get().Source.PollInterval.Std()*3
+	return age, true, age <= s.live.Get().Source.PollInterval.Std()*3
 }
 
 // snapshot is the last poll's traffic, for matching a draft rule against what is
 // overhead right now.
-func (h *health) snapshot() ([]Aircraft, map[string]bool) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.overhead, h.circling
+func (s *server) snapshot() ([]Aircraft, map[string]bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.overhead, s.circling
 }
 
 // feedTypes is every ICAO type code the receiver has heard, and how many aircraft
 // broadcast each one. Offered alongside the database's own codes so a type nothing in
 // the database carries is still a value you can pick rather than one you must know to
 // type.
-func (h *health) feedTypes() []FacetValue {
-	h.mu.Lock()
+func (s *server) feedTypes() []FacetValue {
+	s.mu.Lock()
 	counts := map[string]int{}
-	for _, t := range h.typeOf {
+	for _, t := range s.typeOf {
 		counts[t]++
 	}
-	h.mu.Unlock()
+	s.mu.Unlock()
 	out := make([]FacetValue, 0, len(counts))
 	for v, n := range counts {
 		out = append(out, FacetValue{Value: v, Count: n})
@@ -150,8 +145,8 @@ func (h *health) feedTypes() []FacetValue {
 	return out
 }
 
-func (h *health) setPollErr(err error) {
-	h.mu.Lock()
-	h.lastPollErr = err
-	h.mu.Unlock()
+func (s *server) setPollErr(err error) {
+	s.mu.Lock()
+	s.lastPollErr = err
+	s.mu.Unlock()
 }

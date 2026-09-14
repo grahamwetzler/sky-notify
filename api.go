@@ -11,7 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func (h *health) mux(q *queue) http.Handler {
+func (s *server) mux(q *queue) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -50,7 +50,7 @@ func (h *health) mux(q *queue) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"alerts": alerts, "path": alertsPath(env), "locked": locked,
-			"rule_keys": keys, "vocabulary": h.db.Vocabulary(), "feed_types": h.feedTypes(),
+			"rule_keys": keys, "vocabulary": s.db.Vocabulary(), "feed_types": s.feedTypes(),
 		})
 	})
 	mux.HandleFunc("POST /api/preview", func(w http.ResponseWriter, r *http.Request) {
@@ -69,8 +69,8 @@ func (h *health) mux(q *queue) http.Handler {
 		if err != nil || offset < 0 {
 			offset = 0
 		}
-		total, sample := h.db.Match(rule, previewLimit, offset)
-		rows, _ := h.db.Stats()
+		total, sample := s.db.Match(rule, previewLimit, offset)
+		rows, _ := s.db.Stats()
 		body := map[string]any{
 			"total": total, "aircraft": sample, "database": rows,
 			"limit": previewLimit, "offset": offset, "key": rule.Key(),
@@ -79,9 +79,9 @@ func (h *health) mux(q *queue) http.Handler {
 		// than the database: the whole rule applies here, altitude and distance and
 		// flight path included. Not paged — the sky holds a few hundred aircraft, not a
 		// few hundred thousand, so the sample cap is only ever a courtesy.
-		overhead, circling := h.snapshot()
-		liveTotal, liveSample := MatchLive(rule, overhead, circling, h.db, h.previewAlerts(r.URL.Query()), previewLimit)
-		age, seen, fresh := h.pollAge()
+		overhead, circling := s.snapshot()
+		liveTotal, liveSample := MatchLive(rule, overhead, circling, s.db, s.previewAlerts(r.URL.Query()), previewLimit)
+		age, seen, fresh := s.pollAge()
 		live := map[string]any{
 			"total": liveTotal, "aircraft": liveSample, "overhead": len(overhead),
 			"fresh": fresh,
@@ -93,7 +93,7 @@ func (h *health) mux(q *queue) http.Handler {
 		// Faceting scans the whole database once per pickable field, and the facets do
 		// not change as you page through a fixed rule. Only the first page pays for it.
 		if offset == 0 {
-			body["facets"] = h.db.Facets(rule)
+			body["facets"] = s.db.Facets(rule)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(body)
@@ -103,7 +103,7 @@ func (h *health) mux(q *queue) http.Handler {
 		// an empty page, not an error: a rule the page has not saved yet has no history.
 		// `after` is the cursor a previous page handed back, absent on the first.
 		q := r.URL.Query()
-		page, err := h.history.List(q.Get("key"), q.Get("after"), historyPage)
+		page, err := s.history.List(q.Get("key"), q.Get("after"), historyPage)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, err)
 			return
@@ -148,16 +148,16 @@ func (h *health) mux(q *queue) http.Handler {
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		h.mu.Lock()
-		lastPoll, pollErr, aircraft := h.lastFreshPoll, h.lastPollErr, h.aircraft
-		h.mu.Unlock()
+		s.mu.Lock()
+		lastPoll, pollErr, aircraft := s.lastFreshPoll, s.lastPollErr, s.aircraft
+		s.mu.Unlock()
 
-		rows, refreshed := h.db.Stats()
-		notifyErr := h.notifier.LastErr()
-		stateErr := h.state.WriteErr()
+		rows, refreshed := s.db.Stats()
+		notifyErr := s.notifier.LastErr()
+		stateErr := s.state.WriteErr()
 
 		var reasons []string
-		stale := h.live.Get().Source.PollInterval.Std() * 3
+		stale := s.live.Get().Source.PollInterval.Std() * 3
 		if lastPoll.IsZero() {
 			reasons = append(reasons, "no successful poll yet")
 		} else if age := time.Since(lastPoll); age > stale {

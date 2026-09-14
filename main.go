@@ -112,7 +112,7 @@ func run() error {
 		notifier.history = hist
 	}
 	source := NewSource(cfg, httpClient)
-	h := &health{live: live, db: db, state: state, notifier: notifier, history: hist}
+	h := &server{live: live, db: db, state: state, notifier: notifier, history: hist}
 
 	// Cold start needs a complete list. Running with a partial or empty one would look
 	// healthy while silently matching nothing.

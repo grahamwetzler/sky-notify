@@ -39,11 +39,11 @@ type poller struct {
 	db    *DB
 	state *State
 	q     *queue
-	h     *health
+	h     *server
 	tr    *Tracker
 }
 
-func pollLoop(ctx context.Context, live *Live, src *Source, db *DB, state *State, q *queue, h *health) {
+func pollLoop(ctx context.Context, live *Live, src *Source, db *DB, state *State, q *queue, h *server) {
 	interval := live.Get().Source.PollInterval.Std()
 	t := time.NewTicker(interval)
 	defer t.Stop()
