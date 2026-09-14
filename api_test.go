@@ -684,3 +684,148 @@ func TestEnvAIKeyIsLockedWithoutItsValue(t *testing.T) {
 		t.Error("an env-set key must still be reported as locked")
 	}
 }
+
+// The page never holds the key, so a save that supplies none and moves the endpoint is
+// asking for the stored credential to be posted to a host the payload chose. That is the
+// same disclosure as serving the key outright, by a longer route.
+func TestAIKeyDoesNotFollowTheEndpoint(t *testing.T) {
+	const stored = "ai:\n  url: https://openrouter.ai/api/v1\n  key: sk-or-v1-secret\n  model: perplexity/sonar\n"
+	put := func(t *testing.T, h http.Handler, ai string) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		body := `{"ai":{` + ai + `,"model":"perplexity/sonar","timeout":"20s"},"rules":[]}`
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(body)))
+		return w
+	}
+
+	t.Run("a move with no key is refused", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "alerts.yaml")
+		os.WriteFile(path, []byte(stored), 0o644)
+		h := alertsHandler(t, path)
+		w := put(t, h, `"url":"https://attacker.invalid/v1"`)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+		}
+		saved, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if saved.AI.URL != "https://openrouter.ai/api/v1" || saved.aiKey() != "sk-or-v1-secret" {
+			t.Fatalf("a refused save must not touch the file: %+v", saved.AI)
+		}
+	})
+
+	t.Run("a move with a key of its own is allowed", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "alerts.yaml")
+		os.WriteFile(path, []byte(stored), 0o644)
+		h := alertsHandler(t, path)
+		w := put(t, h, `"url":"https://api.together.xyz/v1","key":"sk-together-new"`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		}
+		if saved, _ := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path}); saved.aiKey() != "sk-together-new" {
+			t.Errorf("key = %q, want the one the save supplied", saved.aiKey())
+		}
+	})
+
+	t.Run("staying put keeps the key", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "alerts.yaml")
+		os.WriteFile(path, []byte(stored), 0o644)
+		h := alertsHandler(t, path)
+		// The path may move freely: the key already reaches that host.
+		if w := put(t, h, `"url":"https://openrouter.ai/api/v2"`); w.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		}
+		if saved, _ := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path}); saved.aiKey() != "sk-or-v1-secret" {
+			t.Errorf("a same-host save should keep the key, got %q", saved.aiKey())
+		}
+	})
+
+	t.Run("a downgrade to http is a move", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "alerts.yaml")
+		os.WriteFile(path, []byte(stored), 0o644)
+		h := alertsHandler(t, path)
+		if w := put(t, h, `"url":"http://openrouter.ai/api/v1"`); w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400 for an https to http move", w.Code)
+		}
+	})
+
+	t.Run("turning the provider off is not a move", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "alerts.yaml")
+		os.WriteFile(path, []byte(stored), 0o644)
+		h := alertsHandler(t, path)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts",
+			strings.NewReader(`{"ai":{"url":"","model":"","timeout":"20s"},"rules":[]}`)))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("with no key stored there is nothing to carry", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "alerts.yaml")
+		os.WriteFile(path, []byte("ai:\n  url: http://localhost:11434/v1\n  model: llama3\n"), 0o644)
+		h := alertsHandler(t, path)
+		if w := put(t, h, `"url":"https://api.openai.com/v1"`); w.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	// An environment key is not the page's to redirect either, and it cannot be replaced
+	// from the page, so the endpoint is fixed with it.
+	t.Run("an env key pins its endpoint", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "alerts.yaml")
+		os.WriteFile(path, []byte("ai:\n  url: https://openrouter.ai/api/v1\n  model: perplexity/sonar\n"), 0o644)
+		t.Setenv("SKY_AI_KEY", "sk-or-v1-from-env")
+		h := alertsHandler(t, path)
+		w := put(t, h, `"url":"https://attacker.invalid/v1"`)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "SKY_AI_URL") {
+			t.Errorf("the error should say how to move it: %s", w.Body.String())
+		}
+	})
+
+	// With the endpoint set by the environment too, the payload's URL is overwritten
+	// before it is ever used, so there is nothing to refuse.
+	t.Run("an env endpoint cannot be moved at all", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "alerts.yaml")
+		os.WriteFile(path, []byte(stored), 0o644)
+		t.Setenv("SKY_AI_KEY", "sk-or-v1-from-env")
+		t.Setenv("SKY_AI_URL", "https://openrouter.ai/api/v1")
+		h := alertsHandler(t, path)
+		if w := put(t, h, `"url":"https://attacker.invalid/v1"`); w.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		}
+		saved, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path, "SKY_AI_KEY=sk-or-v1-from-env", "SKY_AI_URL=https://openrouter.ai/api/v1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if saved.AI.URL != "https://openrouter.ai/api/v1" {
+			t.Errorf("the environment endpoint must win, got %q", saved.AI.URL)
+		}
+	})
+}
+
+// A file that cannot be read is a refusal, not a silent fresh start: the save is about to
+// overwrite it, and defaulting writes away the credential it holds.
+func TestSaveRefusesOverAnUnreadableFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.yaml")
+	broken := "ai:\n  url: https://openrouter.ai/api/v1\n  key: sk-or-v1-secret\n  model: perplexity/sonar\n  ["
+	os.WriteFile(path, []byte(broken), 0o644)
+	h := alertsHandler(t, path)
+	w := httptest.NewRecorder()
+	body := `{"ai":{"url":"https://openrouter.ai/api/v1","model":"perplexity/sonar","timeout":"20s"},"rules":[]}`
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(body)))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", w.Code, w.Body.String())
+	}
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(blob) != broken {
+		t.Fatalf("a refused save must leave the file alone:\n%s", blob)
+	}
+}

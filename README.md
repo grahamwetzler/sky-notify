@@ -163,6 +163,13 @@ whether one is stored, never the value, and a save that carries no key keeps the
 one — so editing anything else in the UI cannot wipe the credential. Clearing the box
 after typing in it removes it, and `SKY_AI_KEY` locks it against the page entirely.
 
+A stored key does not follow the endpoint. Moving `ai.url` to a different scheme, host or
+port is refused unless the same save supplies a key for the new one — otherwise a secret
+the page cannot read could still be posted to a host the page chose, and switching
+providers would hand the new one the old one's key. Paths may move freely; the key already
+reaches that host. When `SKY_AI_KEY` holds the credential there is no key to re-enter, so
+the endpoint is pinned with it: set `SKY_AI_URL` to move it.
+
 `url` is a base, as `ntfy.url` is: `/chat/completions` is appended. Anything speaking the
 OpenAI shape works — OpenRouter, vLLM, Ollama, LiteLLM, Together, Groq, OpenAI — and
 `model` is passed through untouched, so searching the web is the model's job: pick one

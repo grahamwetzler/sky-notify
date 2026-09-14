@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"unicode"
 )
@@ -21,6 +22,53 @@ const defaultResearchPrompt = "Research this aircraft and reply with only the ow
 // have to agree on which value is the secret one: the env-lock listing, the GET that
 // blanks it, and the PUT that keeps it.
 const aiKeyPath = "ai.key"
+
+// The two variables the guard above reasons about by name.
+const (
+	aiKeyEnv = "SKY_AI_KEY"
+	aiURLEnv = "SKY_AI_URL"
+)
+
+// aiOrigin is the part of an endpoint that decides who receives the credential sent with
+// it: scheme, host and port. The path does not — the key already reaches that host — but
+// the scheme does, since https to http changes who else can read it on the way.
+func aiOrigin(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return raw
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+// checkAIKeyStaysPut refuses a save that would send a credential it did not supply to an
+// endpoint it did. The page never holds the key, so "did not supply" is its normal state;
+// moving the endpoint is therefore the one edit that has to come with one.
+//
+// Turning the provider off is not a move: an empty endpoint sends nothing anywhere.
+func checkAIKeyStaysPut(onDisk, saved *Alerts, env map[string]string) error {
+	if saved.AI.Key != nil {
+		return nil // the save brought a key for wherever it is pointing
+	}
+	was, now := onDisk.AI.URL, saved.AI.URL
+	// An endpoint the environment sets is not the page's to move in the first place:
+	// applyAlertEnv overwrites whatever was sent, so nothing can be redirected.
+	if v, ok := env[aiURLEnv]; ok {
+		was, now = v, v
+	}
+	if now == "" || aiOrigin(now) == aiOrigin(was) {
+		return nil
+	}
+	if key, ok := env[aiKeyEnv]; ok {
+		if key == "" {
+			return nil
+		}
+		return fmt.Errorf("ai.url: %s holds the API key, so its endpoint is not editable here — set %s too, or move both into alerts.yaml", aiKeyEnv, aiURLEnv)
+	}
+	if onDisk.aiKey() == "" {
+		return nil // nothing stored to carry anywhere
+	}
+	return fmt.Errorf("ai.url: the stored API key was issued for %s and is never sent to this page, so it cannot follow the endpoint to %s — enter the key for the new endpoint, or clear it", aiOrigin(was), aiOrigin(now))
+}
 
 // researchLimit caps what we will paste into a notification. ntfy renders the body in a
 // phone's notification shade; a model that ignores "concise" must not fill it.

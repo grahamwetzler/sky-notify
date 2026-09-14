@@ -155,15 +155,32 @@ func (s *server) mux(q *queue) http.Handler {
 		// Only the env bindings' scalar fields are reassigned, and none of them alias the
 		// rules slice, so a shallow copy is enough to keep the payload untouched.
 		env := environMap(os.Environ())
+		// The stored document, needed twice below. A file that cannot be read is a
+		// refusal rather than a silent fresh start: the save is about to overwrite it,
+		// and defaulting would write away the credential it holds without saying so.
+		// Nothing is lost by refusing — GET answers 500 on the same file, so a page in
+		// this state could not have loaded either.
+		onDisk, err := loadAlertsFile(env)
+		if err != nil {
+			writeJSONError(w, http.StatusConflict, fmt.Errorf("%s cannot be read, so saving over it would discard what it holds: %w", alertsPath(env), err))
+			return
+		}
+		// A key the page was never shown must not be redirected by it. Carrying the
+		// stored credential to an endpoint this save named would post the secret to
+		// whatever host the payload chose — the same disclosure as serving it outright,
+		// by a longer route — and it is the accidental case too: switching providers
+		// would hand the new one the old one's key.
+		if err := checkAIKeyStaysPut(onDisk, alerts, env); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err)
+			return
+		}
 		// No key in the payload means "leave the stored one alone": the page is never
 		// sent it, so it has nothing to send back, and a save that only changed the poll
 		// interval must not wipe the credential. An empty string is the page saying
 		// clear it, which is a different thing and is honoured.
 		switch {
 		case alerts.AI.Key == nil:
-			if onDisk, err := loadAlertsFile(env); err == nil {
-				alerts.AI.Key = onDisk.AI.Key
-			}
+			alerts.AI.Key = onDisk.AI.Key
 		case *alerts.AI.Key == "":
 			alerts.AI.Key = nil
 		}

@@ -18,7 +18,9 @@ cooldown: 24h
 #
 # All four are editable in the web UI. The key is the one value the UI never reads back:
 # it is served as "set" or "not set" and never as itself, and a save that carries no key
-# keeps this one. Leave it out entirely for a local provider that needs none.
+# keeps this one. Leave it out entirely for a local provider that needs none. A key does
+# not follow the endpoint: moving url to another host needs a key for that host, or the
+# save is refused.
 #
 # Nothing here searches the web; pick a model that does its own (perplexity/sonar, or an
 # ":online" suffix on OpenRouter) if the answer needs more than the model remembers.

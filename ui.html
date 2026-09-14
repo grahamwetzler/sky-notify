@@ -480,6 +480,15 @@ let doc = null, vocab = {}, feedTypes = [], locks = {}, dbRows = null, alertsPat
    keyEdited is set the moment the operator types in the key box: until then the save
    carries no key at all, which is what tells the server to keep the stored one. */
 let aiKeySet = false, keyEdited = false, defaultPrompt = '';
+/* The endpoint the stored key was issued for. A credential the page cannot read cannot
+   follow the endpoint to a new host — the server refuses that save — so this is what
+   says when one has to be typed in. */
+let keyOrigin = '';
+/* Scheme, host and port: what decides who receives the key. The same test the server
+   makes, so the page cannot warn about a save that would be accepted or stay quiet about
+   one that would not. */
+const originOf = u => { try { const p = new URL(u); return p.protocol + '//' + p.host; } catch { return ''; } };
+const keyStrandedBy = url => aiKeySet && !keyEdited && !!originOf(url) && originOf(url) !== keyOrigin;
 /* Research needs somewhere to ask, and that is now an ordinary hot-reloaded setting. */
 const aiReady = () => !!(setting('ai.url', doc?.ai?.url) && setting('ai.model', doc?.ai?.model));
 /* Save lives at the end of whatever the pane is showing, so it is re-appended by every
@@ -1916,6 +1925,15 @@ function settingField(f) {
     wrap.append(note);
     return wrap;
   }
+  /* An environment key pins its endpoint: the key cannot be replaced from here, so a new
+     one cannot be supplied for a new host, and the server refuses the move. A disabled
+     box says that once; an editable one would say it on every save. */
+  if (f.key === 'ai.url' && locks[AI_KEY]) {
+    input.disabled = true;
+    wrap.append(input, el('span', 'help lock',
+      'Pinned by ' + locks[AI_KEY].env + ', which holds the API key. Set SKY_AI_URL to move it.'));
+    return wrap;
+  }
   input.oninput = () => {
     /* Typing in the key box at all is what puts a key in the save. Until then the
        payload carries none, which is how the server is told to keep the stored one —
@@ -1924,6 +1942,9 @@ function settingField(f) {
       keyEdited = true;
       put(doc, f.key, input.value);
       markDirty();
+      /* The box now carries a key for wherever the endpoint points, so whatever this
+         line was warning about is answered. */
+      $('#ai-key-help')?.replaceWith(keyHelp());
       return;
     }
     /* Blank means null only where the setting is genuinely optional. Everywhere
@@ -1946,15 +1967,33 @@ function settingField(f) {
     if (f.key === 'lat' || f.key === 'lon') doc.rules.forEach(schedulePreview);
     /* Turning the provider on or off changes what every research rule can say. */
     if (f.key === 'ai.url' || f.key === 'ai.model') renderList();
+    /* Repaint just the one line rather than the pane: this fires per keystroke, and
+       half-typed URLs are the normal state of a box being edited. */
+    if (f.key === 'ai.url') {
+      const help = $('#ai-key-help');
+      if (help) help.replaceWith(keyHelp());
+    }
   };
   wrap.append(input);
-  if (f.secret) {
-    wrap.append(el('span', 'help', aiKeySet
-      ? 'Stored on the server and never sent to this page. Leave it blank to keep it; clear the box after typing to remove it.'
-      : 'Sent to the provider, not to this page. Some local providers need none.'));
-  }
+  if (f.secret) wrap.append(keyHelp());
   if (f.help) wrap.append(el('span', 'help', f.help));
   return wrap;
+}
+
+const AI_KEY = 'ai.key';
+
+/* What the key box has to say, which depends on where the endpoint now points. */
+function keyHelp() {
+  const stranded = keyStrandedBy(doc.ai?.url || '');
+  const line = el('span', stranded ? 'help bad' : 'help', stranded
+    ? 'The endpoint has moved. The stored key was issued for ' + keyOrigin + ' and is never '
+      + 'sent to this page, so it cannot follow — enter the key for the new endpoint, or '
+      + 'clear this box to remove it.'
+    : aiKeySet
+      ? 'Stored on the server and never sent to this page. Leave it blank to keep it; clear the box after typing to remove it.'
+      : 'Sent to the provider, not to this page. Some local providers need none.');
+  line.id = 'ai-key-help';
+  return line;
 }
 
 /* ── Preview ──────────────────────────────────────────────────────────────
@@ -2220,6 +2259,7 @@ async function load() {
   feedTypes = body.feed_types || [];
   aiKeySet = body.ai_key_set === true;
   keyEdited = false;
+  keyOrigin = originOf(doc.ai?.url || '');
   doc.ai = doc.ai || {};
   defaultPrompt = body.research_prompt_default || '';
   locks = Object.fromEntries((body.locked || []).map(l => [l.key, l]));
