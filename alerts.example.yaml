@@ -29,6 +29,14 @@ rules:
     squawk: ["7500", "7600", "7700"]
     priority: 5
 
+  # notify is not a condition: it says when the alert goes out. closest_pass holds it
+  # until the helicopter has passed and then reports how near it actually came, rather
+  # than alerting the moment it appears at the edge of range. Needs lat/lon.
+  - name: Police helicopters
+    cmpg: [Pol]
+    max_distance_nm: 25
+    notify: closest_pass
+
   - name: Listed aircraft nearby
     listed: true
     max_distance_nm: 50
@@ -49,14 +57,6 @@ rules:
   - passes_within_nm: 1
     passes_within: 5m      # the default
     max_altitude_ft: 10000
-
-  # notify is not a condition: it says when the alert goes out. closest_pass holds it
-  # until the helicopter has passed and then reports how near it actually came, rather
-  # than alerting the moment it appears at the edge of range. Needs lat/lon.
-  - name: Police helicopters
-    cmpg: [Pol]
-    max_distance_nm: 25
-    notify: closest_pass
 
   # A full turn inside 2 NM during the last 10 minutes: news and police helicopters.
   - name: Orbiting aircraft

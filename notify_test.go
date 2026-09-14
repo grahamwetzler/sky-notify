@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ---------- notifier ----------
@@ -301,5 +302,37 @@ func TestClosestPassIsNamedInTheMessage(t *testing.T) {
 	a.AtClosest = true
 	if got := n.render(a).Message; !strings.Contains(got, "Closest pass: 12.3 NM") {
 		t.Errorf("message should report the pass, got:\n%s", got)
+	}
+}
+
+// The queue is the one place an alert sits out of reach of the poll loop, and alerts.yaml
+// is re-read every five seconds. A rule muted or deleted in that window must not still
+// get its alert out: priority 0 is how an exception is written, and it cannot mean
+// "after one more".
+func TestAMutedRuleStopsAnAlertAlreadyQueued(t *testing.T) {
+	s := &ntfyServer{}
+	n := s.start(t, testConfig(t))
+	alerts := defaultAlerts()
+	alerts.Rules = []Rule{{Name: "live"}, {Name: "muted", Priority: intp(0)}}
+	state := NewState(t.TempDir())
+	q := newQueue(maxPending)
+	q.add(&Alert{Hex: "aaaaaa", Trigger: "live", Priority: 3})
+	q.add(&Alert{Hex: "bbbbbb", Trigger: "muted", Priority: 3})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go notifyLoop(ctx, NewLive(alerts), n, state, q)
+	for i := 0; i < 200 && q.depth() > 0; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// The ledger is the record of what was published, and it is the one the notify loop
+	// writes under a lock — so reading it needs no second guess about timing.
+	cooldown := alerts.Cooldown.Std()
+	if state.Eligible(cooldownKey("aaaaaa", "live"), cooldown) {
+		t.Error("the live rule's alert should have been published")
+	}
+	if !state.Eligible(cooldownKey("bbbbbb", "muted"), cooldown) {
+		t.Error("a muted rule's queued alert must not be published")
 	}
 }

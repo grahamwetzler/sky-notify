@@ -241,7 +241,9 @@ func notifyLoop(ctx context.Context, live *Live, n *Notifier, state *State, q *q
 		case <-time.After(time.Second):
 		}
 
-		cooldown := live.Get().Cooldown.Std()
+		cfg := live.Get()
+		cooldown := cfg.Cooldown.Std()
+		alerting := alertingKeys(cfg)
 		for {
 			a := q.take()
 			if a == nil {
@@ -249,6 +251,16 @@ func notifyLoop(ctx context.Context, live *Live, n *Notifier, state *State, q *q
 			}
 			key := cooldownKey(a.Hex, a.Trigger)
 
+			// The last gate before something is sent, and the only one the queue is
+			// behind: alerts.yaml is re-read every five seconds, so a rule can be
+			// deleted or muted between the poll that queued this and now. A mute that
+			// still let a queued alert out would be a mute the operator cannot trust.
+			// No cooldown is recorded, so the alert returns if the rule does.
+			if !alerting[a.Trigger] {
+				slog.Debug("dropping a queued alert whose rule no longer alerts", "icao", a.Hex, "trigger", a.Trigger)
+				q.done(key)
+				continue
+			}
 			// Belt and braces. The queue holds one entry per key and marks it in flight,
 			// so nothing should advance this cooldown while the alert waits — but the
 			// cost of being wrong is a duplicate notification, and this check is a map
