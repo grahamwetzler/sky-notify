@@ -7,12 +7,20 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 const defaultPassHorizon = 5 * time.Minute
+
+// When a rule announces the aircraft it has claimed. Not a condition: neither value
+// changes which aircraft the rule matches.
+const (
+	notifyOnSight     = "on_sight"
+	notifyClosestPass = "closest_pass"
+)
 
 // emergencySquawks: hijack, radio failure, general emergency. No longer a trigger — a
 // rule with a `squawk` field is — but still the label table, and still what earns an
@@ -37,6 +45,15 @@ type Alert struct {
 	HasDistance bool
 	Priority    int
 	Circling    bool
+	// AtClosest is set by a rule that notifies at the closest pass. Before delivery it
+	// is what tells the poll loop to hold the alert; after it, what puts the distance of
+	// the pass in the notification. Both are the same fact: this alert describes a pass,
+	// not a first sighting.
+	AtClosest bool
+	// delivered is set once, by the notifier, on a successful publish. The poll loop
+	// holds a parked alert until it sees this: the cooldown ledger cannot answer
+	// "delivered" — a short cooldown expires, and prunes its own entry, between polls.
+	delivered atomic.Bool
 	// The predicted closest approach, set only when the matching rule has passes_within_nm.
 	PassNM  float64
 	PassIn  time.Duration
@@ -105,6 +122,7 @@ func Evaluate(ac Aircraft, db *DB, cfg *Alerts, trk *track) *Alert {
 		return nil
 	}
 	a.Trigger, a.RuleName, a.Priority, a.Path = rule.Key(), rule.Name, priority, trk.path()
+	a.AtClosest = rule.Notify == notifyClosestPass
 	// Derived from the squawk itself, never from which rule fired: the queue's eviction
 	// and ordering (main.go) and the notification's framing (notify.go) must treat a 7700
 	// as urgent however the operator happened to write the rule that caught it.
@@ -356,8 +374,12 @@ func MatchLive(rule Rule, overhead []Aircraft, circling map[string]bool, db *DB,
 }
 
 type Rule struct {
-	Name     string   `yaml:"name,omitempty" json:"name"`
-	Priority *int     `yaml:"priority,omitempty" json:"priority,omitempty"`
+	Name     string `yaml:"name,omitempty" json:"name"`
+	Priority *int   `yaml:"priority,omitempty" json:"priority,omitempty"`
+	// Notify is when the alert goes out: on_sight, the default, on the first poll the
+	// rule matches, or closest_pass, held until the aircraft has passed the receiver
+	// and then sent with the nearest point it reached.
+	Notify   string   `yaml:"notify,omitempty" json:"notify,omitempty"`
 	ICAO     []string `yaml:"icao,omitempty" json:"icao,omitempty"`
 	Reg      []string `yaml:"reg,omitempty" json:"reg,omitempty"`
 	ICAOType []string `yaml:"icao_type,omitempty" json:"icao_type,omitempty"`
@@ -389,14 +411,14 @@ type Rule struct {
 // An unnamed rule is keyed by a fingerprint of its own conditions rather than by its
 // position, so reordering the list leaves its cooldowns alone — and editing what it
 // matches resets them, which is right, since the ledger's entries were recorded for a
-// rule that no longer exists. Name and priority are excluded: neither changes which
-// aircraft the rule claims.
+// rule that no longer exists. Name, priority and notify are excluded: none of them
+// changes which aircraft the rule claims, only how and when it is announced.
 func (r *Rule) Key() string {
 	if r.Name != "" {
 		return r.Name
 	}
 	conds := *r
-	conds.Name, conds.Priority, conds.All = "", nil, nil
+	conds.Name, conds.Priority, conds.All, conds.Notify = "", nil, nil, ""
 	blob, err := yaml.Marshal(conds)
 	if err != nil {
 		// A struct of scalars and string slices cannot fail to marshal, but a key that

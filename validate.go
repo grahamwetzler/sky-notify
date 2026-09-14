@@ -104,6 +104,17 @@ func (a *Alerts) validate() error {
 		if rule.Priority != nil && (*rule.Priority < 0 || *rule.Priority > 5) {
 			return fmt.Errorf("rule %d (%s): priority must be 0..5, got %d", i, rule.label(), *rule.Priority)
 		}
+		switch rule.Notify {
+		case "", notifyOnSight:
+		case notifyClosestPass:
+			// Without a receiver there is no distance to be closest to, so the rule
+			// could never decide the aircraft had passed.
+			if a.Lat == nil || a.Lon == nil {
+				return fmt.Errorf("rule %d (%s): notify: %s requires top-level lat and lon in alerts.yaml", i, rule.label(), notifyClosestPass)
+			}
+		default:
+			return fmt.Errorf("rule %d (%s): notify must be %s or %s, got %q", i, rule.label(), notifyOnSight, notifyClosestPass, rule.Notify)
+		}
 		if rule.All != nil {
 			return fmt.Errorf("rule %d (%s): all is no longer a key — a rule with no conditions already matches every aircraft, so delete it", i, rule.label())
 		}

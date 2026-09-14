@@ -882,3 +882,31 @@ func TestAbsoluteFilePathSourceIsAccepted(t *testing.T) {
 		t.Error("an absolute path source must not be treated as HTTP")
 	}
 }
+
+// notify says when a rule announces what it matched, never what it matches. So it must
+// not move the fingerprint an unnamed rule is keyed by: if it did, adding it to a rule
+// already in service would reset that rule's cooldown and its alert history.
+func TestNotifyIsNotACondition(t *testing.T) {
+	plain, err := loadAlertsWith(t, "lat: 51.5\nlon: -0.12\nrules:\n  - cmpg: [Mil]\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := loadAlertsWith(t, "lat: 51.5\nlon: -0.12\nrules:\n  - cmpg: [Mil]\n    notify: closest_pass\n")
+	if err != nil {
+		t.Fatalf("closest_pass with a receiver must be valid: %v", err)
+	}
+	if a, b := plain.Rules[0].Key(), held.Rules[0].Key(); a != b {
+		t.Errorf("notify must not change the cooldown key: %q became %q", a, b)
+	}
+
+	if _, err := loadAlertsWith(t, "lat: 51.5\nlon: -0.12\nrules:\n  - notify: when_it_lands\n"); err == nil {
+		t.Error("an unknown notify value must be refused")
+	}
+	// No receiver, so there is nothing for the aircraft to be closest to.
+	if _, err := loadAlertsWith(t, "rules:\n  - cmpg: [Mil]\n    notify: closest_pass\n"); err == nil {
+		t.Error("closest_pass without lat/lon must be refused")
+	}
+	if _, err := loadAlertsWith(t, "rules:\n  - cmpg: [Mil]\n    notify: on_sight\n"); err != nil {
+		t.Errorf("on_sight needs no receiver: %v", err)
+	}
+}
