@@ -564,10 +564,10 @@ func TestPreviewRejectsUnknownField(t *testing.T) {
 }
 
 func TestVocabularyDedupesAndSorts(t *testing.T) {
-	db := &DB{merged: map[string]*Plane{
-		"a": {Operator: "Zulu", Type: "C-17", ICAOType: "C17", CMPG: "Mil", Category: "Other", Tags: []string{"Heavy", "Cargo"}},
-		"b": {Operator: "Alpha", Tags: []string{"Cargo", ""}},
-	}}
+	db := dbWith(t, testConfig(t), []Plane{
+		{ICAO: "a", Operator: "Zulu", Type: "C-17", ICAOType: "C17", CMPG: "Mil", Category: "Other", Tags: []string{"Heavy", "Cargo"}},
+		{ICAO: "b", Operator: "Alpha", Tags: []string{"Cargo", ""}},
+	})
 	got := db.Vocabulary()
 	if !reflect.DeepEqual(facetValues(got["operator"]), []string{"Alpha", "Zulu"}) || !reflect.DeepEqual(facetValues(got["tags"]), []string{"Cargo", "Heavy"}) {
 		t.Fatalf("vocabulary = %#v", got)

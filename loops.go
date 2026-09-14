@@ -32,14 +32,25 @@ func seedDB(ctx context.Context, db *DB) error {
 	}
 }
 
+// poller is everything one poll needs. pollLoop holds all of it for its lifetime, so
+// it is a receiver rather than eight arguments repeated at the call.
+type poller struct {
+	src   *Source
+	db    *DB
+	state *State
+	q     *queue
+	h     *health
+	tr    *Tracker
+}
+
 func pollLoop(ctx context.Context, live *Live, src *Source, db *DB, state *State, q *queue, h *health) {
 	interval := live.Get().Source.PollInterval.Std()
 	t := time.NewTicker(interval)
 	defer t.Stop()
-	tr := NewTracker()
+	p := &poller{src: src, db: db, state: state, q: q, h: h, tr: NewTracker()}
 	for {
 		cfg := live.Get()
-		poll(ctx, cfg, src, db, state, q, h, tr)
+		p.poll(ctx, cfg)
 		if next := cfg.Source.PollInterval.Std(); next != interval {
 			interval = next
 			t.Reset(interval)
@@ -52,34 +63,40 @@ func pollLoop(ctx context.Context, live *Live, src *Source, db *DB, state *State
 	}
 }
 
-func poll(ctx context.Context, cfg *Alerts, src *Source, db *DB, state *State, q *queue, h *health, tr *Tracker) {
-	f, err := src.Fetch(ctx, time.Now())
+func (p *poller) poll(ctx context.Context, cfg *Alerts) {
+	f, err := p.src.Fetch(ctx, time.Now())
 	if err != nil {
 		if ctx.Err() == nil {
 			slog.Warn("poll failed", "err", err)
 		}
-		h.setPollErr(err)
+		p.h.setPollErr(err)
 		return
 	}
-	tr.Update(f)
-	h.setPollOK(f, tr)
+	p.tr.Update(f)
+	p.h.setPollOK(f, p.tr)
 
 	cooldown := cfg.Cooldown.Std()
 	for _, ac := range f.Aircraft {
-		a := Evaluate(ac, db, cfg, tr.get(normalizeHex(ac.Hex)))
+		a := Evaluate(ac, p.db, cfg, p.tr.get(normalizeHex(ac.Hex)))
 		if a == nil {
 			continue
 		}
-		if !state.Eligible(cooldownKey(a.Hex, a.Trigger), cooldown) {
+		if !p.state.Eligible(cooldownKey(a.Hex, a.Trigger), cooldown) {
 			continue
 		}
-		q.add(a)
+		p.q.add(a)
 	}
 }
 
+// retry is how long a failing key waits and how long it will wait next time. The two
+// are always set together and cleared together, so they are one entry.
+type retry struct {
+	until time.Time
+	delay time.Duration
+}
+
 func notifyLoop(ctx context.Context, live *Live, n *Notifier, state *State, q *queue) {
-	backoff := map[string]time.Time{}
-	delay := map[string]time.Duration{}
+	backoff := map[string]retry{}
 
 	for {
 		select {
@@ -105,7 +122,7 @@ func notifyLoop(ctx context.Context, live *Live, n *Notifier, state *State, q *q
 				q.done(key)
 				continue
 			}
-			if until, ok := backoff[key]; ok && time.Now().Before(until) {
+			if r, ok := backoff[key]; ok && time.Now().Before(r.until) {
 				q.done(key)
 				continue
 			}
@@ -114,21 +131,19 @@ func notifyLoop(ctx context.Context, live *Live, n *Notifier, state *State, q *q
 			if err != nil {
 				// Cooldown is not advanced, so the next poll re-enqueues naturally.
 				// The per-key backoff keeps a permanently broken sink to a trickle.
-				d := delay[key]
+				d := backoff[key].delay
 				if d == 0 {
 					d = 30 * time.Second
 				} else if d < 30*time.Minute {
 					d *= 2
 				}
-				delay[key] = d
-				backoff[key] = time.Now().Add(d)
+				backoff[key] = retry{until: time.Now().Add(d), delay: d}
 				slog.Warn("notification failed", "icao", a.Hex, "trigger", a.Trigger, "retry_after", d, "err", err)
 				q.done(key)
 				continue
 			}
 
 			delete(backoff, key)
-			delete(delay, key)
 			state.Record(key, cooldown)
 			q.done(key)
 			slog.Info("notified", "icao", a.Hex, "trigger", a.Trigger, "reg", a.AC.Reg)

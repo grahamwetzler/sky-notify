@@ -58,6 +58,7 @@ type DB struct {
 	mu      sync.RWMutex
 	snap    *snapshot
 	merged  map[string]*Plane
+	vocab   map[string][]FacetValue
 	refresh time.Time
 	dupes   int
 	// pendingShrink holds the content hash of a drastic row reduction awaiting
@@ -146,11 +147,17 @@ func withoutField(r Rule, field string) Rule {
 func (d *DB) Facets(rule Rule) map[string][]FacetValue {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
+	return facets(d.merged, rule)
+}
+
+// facets is Facets without the lock, so commit can precompute the unconditional case
+// while it already holds the write lock.
+func facets(merged map[string]*Plane, rule Rule) map[string][]FacetValue {
 	out := make(map[string][]FacetValue, len(vocabFields))
 	for _, field := range vocabFields {
 		counts := map[string]int{}
 		probe := withoutField(rule, field)
-		for _, p := range d.merged {
+		for _, p := range merged {
 			if !probe.matchesPlane(p) {
 				continue
 			}
@@ -176,7 +183,13 @@ func (d *DB) Facets(rule Rule) map[string][]FacetValue {
 }
 
 // Vocabulary is every value in the database: the facets of a rule with no conditions.
-func (d *DB) Vocabulary() map[string][]FacetValue { return d.Facets(Rule{}) }
+// It is computed once per commit rather than per request, since it only changes when
+// the database does — daily — and every /api/alerts asks for it.
+func (d *DB) Vocabulary() map[string][]FacetValue {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.vocab
+}
 
 // Match reports how many database aircraft one rule selects, and returns `limit` of them
 // by ICAO starting at `offset`. It shares the alert path's own field matching
@@ -257,8 +270,10 @@ func (d *DB) commit(s *snapshot, refreshed time.Time) {
 			merged[p.ICAO] = p
 		}
 	}
+	vocab := facets(merged, Rule{})
+
 	d.mu.Lock()
-	d.snap, d.merged, d.dupes = s, merged, dupes
+	d.snap, d.merged, d.dupes, d.vocab = s, merged, dupes, vocab
 	if !refreshed.IsZero() {
 		d.refresh = refreshed
 	}
