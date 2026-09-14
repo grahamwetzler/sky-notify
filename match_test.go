@@ -762,3 +762,292 @@ func TestReadLimitedRejectsOversize(t *testing.T) {
 		t.Fatalf("under-limit read failed: %q %v", b, err)
 	}
 }
+
+// ---------- holding an alert for the closest pass ----------
+
+// holdRig drives poller.poll over a synthetic feed, so what is under test is the whole
+// path — Evaluate, the cooldown check, the hold and the sweep — rather than a
+// re-implemented slice of it. The queue is read directly; no notifier is stood up.
+type holdRig struct {
+	t      *testing.T
+	p      *poller
+	alerts *Alerts
+	path   string
+	clock  time.Time
+}
+
+func newHoldRig(t *testing.T, rules []Rule) *holdRig {
+	t.Helper()
+	cfg := testConfig(t)
+	dir := t.TempDir()
+	cfg.Source.URL = filepath.Join(dir, "aircraft.json")
+	a := defaultAlerts()
+	a.Lat, a.Lon, a.Rules = &testLat, &testLon, rules
+	if err := a.validate(); err != nil {
+		t.Fatalf("rules under test must be valid: %v", err)
+	}
+	r := &holdRig{t: t, alerts: a, path: cfg.Source.URL, clock: time.Now()}
+	state := NewState(dir)
+	// The ledger's clock is the rig's, so a cooldown shorter than the poll interval —
+	// legal, and the reason the sweep cannot ask the ledger anything — can be reached.
+	state.Now = func() time.Time { return r.clock }
+	r.p = &poller{src: NewSource(cfg, http.DefaultClient), db: dbWith(t, cfg, nil), state: state,
+		q: newQueue(maxPending), h: &server{}, tr: NewTracker(), holds: map[string]held{}}
+	return r
+}
+
+// poll writes one feed and runs one poll over it.
+func (r *holdRig) poll(acs ...Aircraft) {
+	r.t.Helper()
+	b, err := json.Marshal(feed{Now: float64(time.Now().UnixMilli()) / 1000, Aircraft: acs})
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	if err := os.WriteFile(r.path, b, 0o644); err != nil {
+		r.t.Fatal(err)
+	}
+	r.p.poll(context.Background(), r.alerts)
+}
+
+// take empties the queue the way a failing notifyLoop does: the entry is taken and
+// dropped, and no cooldown is recorded.
+func (r *holdRig) take() []*Alert {
+	var out []*Alert
+	for {
+		a := r.p.q.take()
+		if a == nil {
+			return out
+		}
+		r.p.q.done(cooldownKey(a.Hex, a.Trigger))
+		out = append(out, a)
+	}
+}
+
+func (r *holdRig) one() *Alert {
+	r.t.Helper()
+	got := r.take()
+	if len(got) != 1 {
+		r.t.Fatalf("want exactly one alert offered, got %d", len(got))
+	}
+	return got[0]
+}
+
+func (r *holdRig) none(what string) {
+	r.t.Helper()
+	if got := r.take(); len(got) > 0 {
+		r.t.Fatalf("%s: %d alert(s) offered, want none", what, len(got))
+	}
+}
+
+// deliver is what notifyLoop does after a successful publish.
+func (r *holdRig) deliver(a *Alert) {
+	a.delivered.Store(true)
+	r.p.state.Record(cooldownKey(a.Hex, a.Trigger), r.alerts.Cooldown.Std())
+}
+
+// age back-dates both of a hold's stamps, which is how a test reaches a grace window or
+// the give-up ceiling without sleeping through one.
+func (r *holdRig) age(d time.Duration) {
+	for k, h := range r.p.holds {
+		if !h.judged.IsZero() {
+			h.judged = h.judged.Add(-d)
+		}
+		if !h.fired.IsZero() {
+			h.fired = h.fired.Add(-d)
+		}
+		r.p.holds[k] = h
+	}
+}
+
+func (r *holdRig) holds() int { return len(r.p.holds) }
+
+// flying is one aircraft nm north (negative: south) of the receiver on the given track.
+func flying(nm, track float64) Aircraft {
+	lat, lon, hdg := testLat+nm/60, testLon, track
+	return Aircraft{Hex: "abc123", Lat: &lat, Lon: &lon, GS: 120, Track: &hdg}
+}
+
+// trackless is the aircraft receding can never answer for: moving, reporting a position,
+// broadcasting no ground track.
+func trackless(nm float64) Aircraft {
+	ac := flying(nm, 0)
+	ac.Track = nil
+	return ac
+}
+
+func closestPassRule() []Rule { return []Rule{{Name: "pass", Notify: notifyClosestPass}} }
+
+// The point of the whole mechanism: the alert that goes out is the one built at the
+// nearest position, not the one built at the poll that noticed the aircraft had passed.
+func TestClosestPassSendsTheNearestPosition(t *testing.T) {
+	r := newHoldRig(t, closestPassRule())
+	for _, nm := range []float64{-10, -5, -0.5} {
+		r.poll(flying(nm, 0)) // inbound from the south
+		r.none("while inbound")
+		if r.holds() != 1 {
+			t.Fatal("an inbound aircraft should be parked")
+		}
+	}
+	r.poll(flying(2, 0)) // 2 NM north and still going: it has passed
+	a := r.one()
+	if !a.AtClosest || math.Abs(a.DistanceNM-0.5) > 0.01 {
+		t.Fatalf("want the 0.5 NM snapshot, got %.2f NM (AtClosest=%v)", a.DistanceNM, a.AtClosest)
+	}
+}
+
+// An aircraft that leaves the feed mid-approach never reads as receding, so the grace
+// window is the only thing that will ever send its alert.
+func TestClosestPassFiresForAnAircraftThatVanishes(t *testing.T) {
+	r := newHoldRig(t, closestPassRule())
+	r.poll(flying(-10, 0))
+	r.poll(flying(-2, 0))
+	r.none("while inbound")
+
+	r.poll() // gone from the feed
+	r.none("inside the grace window")
+	r.age(time.Minute) // three polls of a 15s interval is 45s
+	r.poll()
+	if a := r.one(); math.Abs(a.DistanceNM-2) > 0.01 {
+		t.Fatalf("want the 2 NM snapshot, got %.2f NM", a.DistanceNM)
+	}
+}
+
+// An aircraft broadcasting a position but no ground track cannot be judged at all. Both
+// halves matter: a last-seen stamp would hold it for as long as it kept matching, and a
+// judged left zero at creation would fire it on the first sweep.
+func TestClosestPassFiresForATracklessAircraft(t *testing.T) {
+	r := newHoldRig(t, closestPassRule())
+	for i := 0; i < 10; i++ {
+		r.poll(trackless(-10 + float64(i)))
+		r.none("inside the grace window")
+	}
+	r.age(time.Minute)
+	r.poll(trackless(-1)) // still matching, still trackless: judged must not be refreshed
+	if a := r.one(); math.Abs(a.DistanceNM-1) > 0.01 {
+		t.Fatalf("want the 1 NM snapshot, got %.2f NM", a.DistanceNM)
+	}
+}
+
+// notifyLoop drops a queue entry whose publish failed and advances no cooldown, so the
+// entry has to outlive the offer — and resend the same snapshot, not a later one.
+func TestClosestPassRetriesTheSameAlertUntilDelivered(t *testing.T) {
+	r := newHoldRig(t, closestPassRule())
+	r.poll(flying(-2, 0))
+	r.poll(flying(2, 0))
+	first := r.one()
+
+	r.poll(flying(6, 0)) // further away now, and the publish has not succeeded
+	again := r.one()
+	if again != first {
+		t.Fatalf("a retry must re-offer the same alert, got %.2f NM", again.DistanceNM)
+	}
+	if math.Abs(again.DistanceNM-2) > 0.01 {
+		t.Fatalf("the snapshot must not move after firing, got %.2f NM", again.DistanceNM)
+	}
+
+	r.deliver(again)
+	r.poll(flying(10, 0))
+	r.none("after delivery")
+	if r.holds() != 0 {
+		t.Error("a delivered hold must be dropped")
+	}
+}
+
+// A full queue refuses the alert outright. Dropping the entry on the offer would lose
+// the pass; keeping it means the alert lands late rather than never.
+func TestClosestPassSurvivesAFullQueue(t *testing.T) {
+	r := newHoldRig(t, closestPassRule())
+	r.p.q = newQueue(1)
+	r.p.q.add(&Alert{Hex: "ffffff", Trigger: "other"})
+
+	r.poll(flying(-2, 0))
+	r.poll(flying(2, 0))
+	if r.holds() != 1 {
+		t.Fatal("an alert the queue refused must stay parked")
+	}
+	r.p.q.done(cooldownKey("ffffff", "other"))
+	r.poll(flying(6, 0))
+	if a := r.one(); math.Abs(a.DistanceNM-2) > 0.01 {
+		t.Fatalf("want the 2 NM snapshot once the queue drains, got %.2f NM", a.DistanceNM)
+	}
+}
+
+// An ntfy server down for a day must not leave every aircraft that passed still parked
+// and still being offered.
+func TestClosestPassGivesUp(t *testing.T) {
+	r := newHoldRig(t, closestPassRule())
+	r.poll(flying(-2, 0))
+	r.poll(flying(2, 0))
+	r.one()
+
+	r.age(holdGiveUp + time.Minute)
+	r.poll()
+	r.none("after the give-up ceiling")
+	if r.holds() != 0 {
+		t.Error("an abandoned hold must be dropped")
+	}
+}
+
+// The delivery ack, not the cooldown ledger. A cooldown shorter than the poll interval
+// is a legal configuration in which the key is eligible again — and its ledger entry
+// pruned — before the next sweep runs.
+func TestClosestPassIsDeliveredOnceUnderAShortCooldown(t *testing.T) {
+	r := newHoldRig(t, closestPassRule())
+	r.alerts.Cooldown = Duration(5 * time.Second)
+	r.poll(flying(-2, 0))
+	r.poll(flying(2, 0))
+	r.deliver(r.one())
+
+	r.clock = r.clock.Add(time.Minute) // the cooldown has lapsed and pruned itself
+	if !r.p.state.Eligible(cooldownKey("abc123", "pass"), r.alerts.Cooldown.Std()) {
+		t.Fatal("the ledger should say eligible again, which is the trap being tested")
+	}
+	for i := 0; i < 5; i++ {
+		r.poll() // the aircraft has gone; only the sweep can act
+		r.none("after delivery under a short cooldown")
+	}
+}
+
+// The trackless aircraft that reached the fallback while still inbound: freezing the
+// snapshot is what keeps its ack attached, so a nearer position after firing changes
+// neither what is sent nor how often.
+func TestClosestPassDoesNotResendWhenItKeepsClosing(t *testing.T) {
+	r := newHoldRig(t, closestPassRule())
+	r.alerts.Cooldown = Duration(5 * time.Second)
+	r.poll(trackless(-8))
+	r.age(time.Minute)
+	r.poll(trackless(-8))
+	a := r.one()
+	if math.Abs(a.DistanceNM-8) > 0.01 {
+		t.Fatalf("want the 8 NM snapshot, got %.2f NM", a.DistanceNM)
+	}
+	r.deliver(a)
+
+	r.clock = r.clock.Add(time.Minute)
+	r.poll(trackless(-3)) // closer than the alert that went out, and eligible again
+	r.none("a nearer position after firing must not resend")
+}
+
+// The default path, unchanged: an on_sight rule alerts on the first poll it matches and
+// parks nothing, and a rule inside its cooldown parks nothing either.
+func TestOnSightIsUnchangedAndCooldownsSkipTheHold(t *testing.T) {
+	for _, rule := range []Rule{{Name: "sight"}, {Name: "sight", Notify: notifyOnSight}} {
+		r := newHoldRig(t, []Rule{rule})
+		r.poll(flying(-10, 0))
+		if a := r.one(); a.AtClosest {
+			t.Error("an on_sight alert must not claim to be a closest pass")
+		}
+		if r.holds() != 0 {
+			t.Error("an on_sight rule must park nothing")
+		}
+	}
+
+	r := newHoldRig(t, closestPassRule())
+	r.p.state.Record(cooldownKey("abc123", "pass"), r.alerts.Cooldown.Std())
+	r.poll(flying(-2, 0))
+	r.poll(flying(2, 0))
+	r.none("inside the cooldown")
+	if r.holds() != 0 {
+		t.Error("a key inside its cooldown must never park")
+	}
+}

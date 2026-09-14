@@ -41,13 +41,43 @@ type poller struct {
 	q     *queue
 	h     *server
 	tr    *Tracker
+	// holds are the alerts waiting for their aircraft to pass, keyed as the cooldown
+	// ledger keys them. Bounded by aircraft overhead × closest-pass rules, and nothing
+	// stays past delivery or holdGiveUp.
+	// ponytail: memory only, like the Tracker — a restart forgets what was in flight and
+	// picks the aircraft still overhead up on the next poll.
+	holds map[string]held
+}
+
+// holdGiveUp bounds a parked alert's life. Two attempts past the 30 minutes
+// notifyLoop's per-key backoff climbs to: an ntfy server down for a day must not leave
+// every aircraft that passed in that time parked and still being offered.
+const holdGiveUp = time.Hour
+
+// held is one alert parked at the nearest position seen for it so far, for a rule that
+// notifies at the closest pass.
+//
+// judged is the last poll that could tell whether the aircraft had passed — present in
+// the feed, and with the ground track receding needs. Not "last seen": an aircraft that
+// keeps matching while broadcasting no track would refresh a last-seen stamp forever and
+// never reach the fallback that exists for exactly that case. It is stamped when the
+// entry is created, so one that has never once been judgeable waits out the same grace
+// window rather than tripping a zero timestamp on its first sweep.
+//
+// fired is when the alert was first offered to the queue, zero until then. The entry
+// outlives the offer, because an offer is not a delivery — the alert's own ack is what
+// says it was delivered.
+type held struct {
+	alert  *Alert
+	judged time.Time
+	fired  time.Time
 }
 
 func pollLoop(ctx context.Context, live *Live, src *Source, db *DB, state *State, q *queue, h *server) {
 	interval := live.Get().Source.PollInterval.Std()
 	t := time.NewTicker(interval)
 	defer t.Stop()
-	p := &poller{src: src, db: db, state: state, q: q, h: h, tr: NewTracker()}
+	p := &poller{src: src, db: db, state: state, q: q, h: h, tr: NewTracker(), holds: map[string]held{}}
 	for {
 		cfg := live.Get()
 		p.poll(ctx, cfg)
@@ -75,16 +105,93 @@ func (p *poller) poll(ctx context.Context, cfg *Alerts) {
 	p.tr.Update(f)
 	p.h.setPollOK(f, p.tr)
 
+	now := time.Now()
 	cooldown := cfg.Cooldown.Std()
 	for _, ac := range f.Aircraft {
 		a := Evaluate(ac, p.db, cfg, p.tr.get(normalizeHex(ac.Hex)))
 		if a == nil {
 			continue
 		}
-		if !p.state.Eligible(cooldownKey(a.Hex, a.Trigger), cooldown) {
+		key := cooldownKey(a.Hex, a.Trigger)
+		if !p.state.Eligible(key, cooldown) {
+			delete(p.holds, key)
+			continue
+		}
+		if a.AtClosest {
+			p.park(key, ac, a, now)
 			continue
 		}
 		p.q.add(a)
+	}
+	// The one place a parked alert reaches the queue, so there is a single place where
+	// it can be offered, retried or dropped.
+	p.sweepHolds(now, 3*cfg.Source.PollInterval.Std())
+}
+
+// park keeps the nearest sighting of an aircraft a closest-pass rule has claimed, and
+// decides whether it has passed. It queues nothing: waiting records no cooldown, so
+// nothing is consumed by it and the next poll re-evaluates from scratch.
+func (p *poller) park(key string, ac Aircraft, a *Alert, now time.Time) {
+	h, ok := p.holds[key]
+	switch {
+	case !ok:
+		h = held{alert: a, judged: now}
+	case !h.fired.IsZero():
+		// Frozen. A retry must resend what was decided, not a moving target — and the
+		// delivery ack rides on the alert pointer, so swapping in a nearer snapshot
+		// after firing would hand the sweep an unacknowledged alert and send the pass
+		// twice. Nothing is lost: the alert has gone out, and an aircraft still closing
+		// cannot un-send it.
+	case a.DistanceNM < h.alert.DistanceNM:
+		h.alert = a
+	}
+	// Judgeable at all: a moving aircraft broadcasting no ground track cannot be told
+	// to have passed, which is the case the grace window in sweepHolds exists for. A
+	// stationary one is judgeable, and receding answers true for it.
+	if ac.GS == 0 || ac.Track != nil {
+		h.judged = now
+		var heading float64
+		if ac.Track != nil {
+			heading = *ac.Track
+		}
+		if h.fired.IsZero() && receding(a.recvLat, a.recvLon, *ac.Lat, *ac.Lon, ac.GS, heading) {
+			h.fired = now
+		}
+	}
+	p.holds[key] = h
+}
+
+// sweepHolds offers, re-offers and retires the parked alerts.
+func (p *poller) sweepHolds(now time.Time, grace time.Duration) {
+	for key, h := range p.holds {
+		switch {
+		// Delivered, said by the alert itself. Not "no longer eligible": a cooldown
+		// shorter than the poll interval is legal, and the ledger has pruned its own
+		// entry by the time the next sweep looks, so it would re-offer a delivered
+		// alert every poll until holdGiveUp.
+		case h.alert.delivered.Load():
+			delete(p.holds, key)
+		case !h.fired.IsZero() && now.Sub(h.fired) >= holdGiveUp:
+			delete(p.holds, key)
+		case h.fired.IsZero() && now.Sub(h.judged) >= grace:
+			// The fallback for the two aircraft receding can never answer for: one that
+			// left the feed mid-approach, and one that stays in it broadcasting a
+			// position but no ground track. Three polls of grace rather than "missing
+			// from this poll", because a feed drops an aircraft and brings it back, and
+			// firing on a flicker would report a pass at 40 NM that was going to be 2.
+			h.fired = now
+			p.holds[key] = h
+			p.q.add(h.alert)
+		case !h.fired.IsZero():
+			// Offered every poll until the ack, not enqueued once and forgotten:
+			// notifyLoop drops a queue entry whose publish failed without advancing the
+			// cooldown, and q.add refuses outright at maxPending. Dropping the entry on
+			// the offer would answer either by rebuilding the alert from a later poll —
+			// a worse distance for the pass, which is the whole point of the hold — or,
+			// for an aircraft that has left the feed, by losing it. q.add ignores a key
+			// already queued or in flight, so re-offering costs a map lookup.
+			p.q.add(h.alert)
+		}
 	}
 }
 
@@ -144,6 +251,9 @@ func notifyLoop(ctx context.Context, live *Live, n *Notifier, state *State, q *q
 			}
 
 			delete(backoff, key)
+			// Before the cooldown, and independent of it: this is what the poll loop's
+			// parked alerts read to know they are done.
+			a.delivered.Store(true)
 			state.Record(key, cooldown)
 			q.done(key)
 			slog.Info("notified", "icao", a.Hex, "trigger", a.Trigger, "reg", a.AC.Reg)
