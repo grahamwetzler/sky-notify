@@ -353,6 +353,11 @@ func (n *Notifier) render(a *Alert) ntfyMessage {
 		}
 		line("Overhead", fmt.Sprintf("closest %.1f NM %s", a.PassNM, when))
 	}
+	// What actually happened, next to the Overhead line above, which is the prediction a
+	// passes_within_nm condition recorded. A rule may state both.
+	if a.AtClosest && a.HasDistance {
+		line("Closest pass", fmt.Sprintf("%.1f NM", a.DistanceNM))
+	}
 	if a.Circling {
 		line("Circling", "yes")
 	}

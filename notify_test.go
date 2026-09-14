@@ -288,3 +288,18 @@ func TestAuthHeaders(t *testing.T) {
 		})
 	}
 }
+
+// The distance an alert held for the closest pass carries is the pass itself, so the
+// message has to say so — an on_sight alert's distance is just where the aircraft was
+// when it was noticed, and the two must not read alike.
+func TestClosestPassIsNamedInTheMessage(t *testing.T) {
+	n := &Notifier{cfg: testConfig(t)}
+	a := testAlert()
+	if strings.Contains(n.render(a).Message, "Closest pass") {
+		t.Error("an on_sight alert must not claim a closest pass")
+	}
+	a.AtClosest = true
+	if got := n.render(a).Message; !strings.Contains(got, "Closest pass: 12.3 NM") {
+		t.Errorf("message should report the pass, got:\n%s", got)
+	}
+}
