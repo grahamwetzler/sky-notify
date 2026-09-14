@@ -28,8 +28,8 @@ Callsign []string `yaml:"callsign,omitempty" json:"callsign,omitempty"`
 ```
 
 `Key()` fingerprints the whole struct, so cooldown keys pick it up for free. No
-`validate()` clause: an empty string is a prefix of everything, which is the same
-thing an absent condition means, and every other string field is unvalidated too.
+`validate()` clause: the helper below handles a blank value, and every other string
+field is unvalidated too.
 
 **match.go** — two edits:
 
@@ -47,6 +47,14 @@ thing an absent condition means, and every other string field is unvalidated too
        return false
    }
    ```
+
+   A blank value is skipped rather than honoured, because `""` is a prefix of every
+   string: without the guard one stray empty chip in the UI would silently widen a
+   rule to every aircraft overhead. Skipping it instead leaves a blank-only condition
+   matching nothing, which is how every other runtime condition fails. (Note this is
+   *not* what the exact `matches` does with a blank — there `squawk: [""]` means "no
+   squawk", a real question. "No callsign" is not askable through a prefix, and is not
+   worth a second field.)
 
 2. `matchesPlane` (database preview): clear `identity.Callsign` alongside
    `identity.Squawk`. **This is the one that bites if missed** — a database row has no
@@ -101,6 +109,7 @@ One test in sky_test.go beside `TestRegAndICAOTypeMatchFromEitherSource`:
 - `callsign: [SWA]` matches feed flight `SWA2504 ` (trailing space — the feed pads)
 - lowercase `swa` matches too
 - `SWA` does not match `ASA100`, and `WA` does not match `SWA2504` (prefix, not substring)
+- `callsign: [""]` matches nothing, not everything — the guard against a stray blank
 - `matchesPlane` with a callsign-only rule still returns true for a database row,
   proving the preview did not go dark
 
