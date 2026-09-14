@@ -138,12 +138,14 @@ Ranked. Each is small and independent.
 5. **`previewAlerts` walks `alertEnvBindings()` to switch on `"lat"` and `"lon"`.** Two
    direct `env["SKY_LAT"]` / `env["SKY_LON"]` lookups say the same thing and grep.
 
-6. **`ui.html` line 12 is a 35 KB base64 `woff2` on a single line.** Embedding the font as
-   its own file and serving it takes `ui.html` from 135,979 to 100,411 bytes — 136 KB to
-   ~98 KB, a 26% cut, not the order-of-magnitude one the single line makes it look like.
-   The size is not the reason to do it; a 35 KB line in the middle of a source file is.
-   The binary does not shrink at all — the same ~26 KB of font ships either way — and the
-   no-network property DESIGN.md requires is unchanged, since the font still comes off the
+6. **`ui.html` line 12 is a 35 KB base64 `woff2` on a single line.** Measured: the file is
+   135,979 bytes, the data URI's base64 payload is 35,516, and the font it decodes to is
+   26,636. Embedding the `.woff2` as its own file and serving it leaves `ui.html` at
+   100,411 bytes (a 26% cut) and drops the embedded payload from 35,516 to 26,636 — about
+   8.7 KB off the binary, because `go:embed` stores `ui.html` verbatim and base64 costs a
+   third. Verified by finding the base64 text literally inside the compiled binary.
+   Neither saving is the reason to do it; a 35 KB line in the middle of a source file is.
+   The no-network property DESIGN.md requires is unchanged — the font still comes off the
    binary rather than off the network. Low value, listed last on purpose.
 
 7. **`.DS_Store` is untracked but not in `.gitignore`.**
