@@ -71,7 +71,13 @@ else uses. Each poll, for a matching rule with `notify: closest_pass`:
 - an ineligible key — the cooldown says this rule already alerted on this aircraft —
   drops any entry and is skipped, as it is today;
 - park the alert if there is no entry yet, stamping `judged` with this poll; otherwise
-  keep whichever of the parked and incoming alerts is nearer;
+  keep whichever of the parked and incoming alerts is nearer — **unless `fired` is set, in
+  which case the parked alert is frozen**. Once an alert has been offered it is the thing
+  being retried, and a retry must resend what was decided, not a moving target. It also
+  keeps the ack attached: the ack rides on the alert pointer, so swapping in a nearer
+  snapshot after firing would hand the sweep an unacknowledged alert and send the pass
+  twice. Nothing is lost by freezing — the alert has already gone out, and an aircraft
+  still closing after the fallback fired cannot un-send it;
 - refresh `judged` if the aircraft can be judged at all: `ac.GS == 0 || ac.Track != nil`,
   the same guard `passesOverhead` already fails closed on. A stationary aircraft is
   judgeable and `receding` answers true for it, since it will never get nearer;
@@ -174,6 +180,11 @@ queue read directly rather than a notifier stood up:
 - a delivered alert is offered exactly once under `cooldown: 5s` with `poll_interval: 15s`
   — the legal configuration in which the cooldown ledger says "eligible" again, and has
   pruned its own entry, before the next sweep runs;
+- an aircraft that keeps closing after its alert fired — the trackless one that reached
+  the fallback while still inbound — is delivered once, with the distance as of the firing
+  poll, under that same short cooldown. Both doors are the assertion: the frozen snapshot
+  keeps its ack, and a nearer position after firing changes neither what is sent nor how
+  often;
 - `on_sight` and a rule with no `notify` behave exactly as they do today (the regression
   guard for the default path);
 - a held key that is already within its cooldown never parks.
