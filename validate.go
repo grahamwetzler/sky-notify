@@ -13,11 +13,6 @@ var dbFileRe = regexp.MustCompile(`^[A-Za-z0-9._-]+\.csv$`)
 // mapEnabled reports whether notifications should carry a map. Absent means on.
 func (c *Config) mapEnabled() bool { return c.Map.Enabled == nil || *c.Map.Enabled }
 
-// aiEnabled reports whether a rule with research: true has somewhere to ask. The key is
-// not part of the test: a local vLLM or Ollama needs none, and a provider that does need
-// one answers 401, which costs the notification its research line and nothing else.
-func (c *Config) aiEnabled() bool { return c.AI.URL != "" && c.AI.Model != "" }
-
 func (c *Config) validate() error {
 	for _, r := range []struct{ name, env, val string }{
 		{"source.url", "SKY_SOURCE_URL", c.Source.URL},
@@ -67,20 +62,6 @@ func (c *Config) validate() error {
 		return fmt.Errorf("source.url must be an http(s) URL or an absolute file path, got %q", c.Source.URL)
 	}
 
-	// Half an ai block is a misconfiguration, not a way to turn research off: a url with
-	// no model would start, look configured, and answer every research rule with nothing.
-	if (c.AI.URL == "") != (c.AI.Model == "") {
-		return fmt.Errorf("ai: url and model must be set together (set both, or neither to turn research off)")
-	}
-	if c.aiEnabled() {
-		if err := checkHTTPURL("ai.url", c.AI.URL); err != nil {
-			return err
-		}
-		if c.AI.Timeout.Std() <= 0 {
-			return fmt.Errorf("ai.timeout must be > 0")
-		}
-	}
-
 	if c.Ntfy.Token != "" && (c.Ntfy.User != "" || c.Ntfy.Password != "") {
 		return fmt.Errorf("ntfy: token and user/password are mutually exclusive")
 	}
@@ -103,6 +84,20 @@ func (c *Config) validate() error {
 		return fmt.Errorf("source.max_age must be > 0")
 	}
 	return nil
+}
+
+// aiEnabled reports whether a rule with research: true has somewhere to ask. The key is
+// not part of the test: a local vLLM or Ollama needs none, and a provider that does need
+// one answers 401, which costs the notification its research line and nothing else.
+func (a *Alerts) aiEnabled() bool { return a.AI.URL != "" && a.AI.Model != "" }
+
+// aiKey is the credential to present, "" when there is none — which is a keyless local
+// provider, not an error.
+func (a *Alerts) aiKey() string {
+	if a.AI.Key == nil {
+		return ""
+	}
+	return *a.AI.Key
 }
 
 func (a *Alerts) validate() error {
@@ -182,6 +177,19 @@ func (a *Alerts) validate() error {
 	} {
 		if d.val.Std() <= 0 {
 			return fmt.Errorf("%s must be > 0", d.name)
+		}
+	}
+	// Half an ai block is a misconfiguration, not a way to turn research off: a url with
+	// no model would look configured and answer every research rule with nothing.
+	if (a.AI.URL == "") != (a.AI.Model == "") {
+		return fmt.Errorf("ai: url and model must be set together (set both, or neither to turn research off)")
+	}
+	if a.aiEnabled() {
+		if err := checkHTTPURL("ai.url", a.AI.URL); err != nil {
+			return err
+		}
+		if a.AI.Timeout.Std() <= 0 {
+			return fmt.Errorf("ai.timeout must be > 0")
 		}
 	}
 	// Validate coordinates whenever they are set, not only when the filter is on.

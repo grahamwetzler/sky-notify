@@ -11,6 +11,24 @@ db:
   refresh_interval: 24h
 cooldown: 24h
 
+# Optional: the AI provider that answers a rule with `research: true`, which puts a line
+# in the notification saying who the aircraft belongs to. Off unless url and model are
+# both set. Any OpenAI-compatible provider works — OpenRouter, vLLM, Ollama, LiteLLM,
+# Together, Groq, OpenAI — because url is a base and "/chat/completions" is appended.
+#
+# All four are editable in the web UI. The key is the one value the UI never reads back:
+# it is served as "set" or "not set" and never as itself, and a save that carries no key
+# keeps this one. Leave it out entirely for a local provider that needs none.
+#
+# Nothing here searches the web; pick a model that does its own (perplexity/sonar, or an
+# ":online" suffix on OpenRouter) if the answer needs more than the model remembers.
+# A call that fails costs the notification that one line, never the notification.
+# ai:
+#   url: https://openrouter.ai/api/v1
+#   key: sk-or-v1-...
+#   model: perplexity/sonar
+#   timeout: 20s        # the default
+
 # Your receiver. Required by any rule that sets max_distance_nm.
 lat: 51.5007
 lon: -0.1246

@@ -234,9 +234,12 @@ td.num{white-space:nowrap;font-variant-numeric:tabular-nums}
 .mini:hover:not(:disabled){border-color:var(--acc);color:var(--acc);border-style:solid}
 .mini:disabled{opacity:.5;cursor:default}
 .mini.plus{padding-left:9px;padding-right:9px;font-size:15px;line-height:1}
+.linkish{color:inherit;text-decoration:underline;text-underline-offset:2px;
+  text-decoration-thickness:from-font;font:inherit}
+.linkish:hover{color:var(--fg)}
 .numrow{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
 .numrow .unit{color:var(--fg2);flex:none}
-input[type=text],input[type=number],select,textarea{border:1px solid var(--line2);background:var(--panel);
+input[type=text],input[type=number],input[type=password],select,textarea{border:1px solid var(--line2);background:var(--panel);
   border-radius:var(--rs);padding:7px 9px;width:100%;min-width:0}
 input:disabled,select:disabled{background:var(--sunk);color:var(--fg3);cursor:not-allowed}
 input::placeholder,textarea::placeholder{color:var(--fg3)}
@@ -287,7 +290,7 @@ textarea{resize:vertical;line-height:1.45}
   .list-f[hidden]{display:grid}
   /* Anything under 16px is a field iOS zooms into on focus, and this page is read
      one-handed while something is overhead. */
-  input[type=text],input[type=number],select,textarea{font-size:16px}
+  input[type=text],input[type=number],input[type=password],select,textarea{font-size:16px}
   .shell{grid-template-columns:1fr;padding:12px 12px 80px}
   .list{position:static}
   .rows{max-height:none}
@@ -471,10 +474,14 @@ const LIST_KEYS = CONDITIONS.filter(c => c.kind === 'pick' || c.kind === 'free' 
    `doc` is the alerts document exactly as it will be PUT back — nothing else is
    ever added to it, so saving is a serialisation and not a reconstruction.   */
 let doc = null, vocab = {}, feedTypes = [], locks = {}, dbRows = null, alertsPath = '';
-/* What this deployment can do, from /api/alerts: whether an AI provider is configured,
-   and the prompt a research rule asks when it names none. Both come from the server so
-   the page cannot describe a default the service does not use. */
-let aiReady = false, defaultPrompt = '';
+/* Whether the service holds an API key, and the prompt a research rule asks when it names
+   none. The key itself is never sent here — only whether there is one — and the default
+   prompt comes from the server so the page cannot show one the service does not use.
+   keyEdited is set the moment the operator types in the key box: until then the save
+   carries no key at all, which is what tells the server to keep the stored one. */
+let aiKeySet = false, keyEdited = false, defaultPrompt = '';
+/* Research needs somewhere to ask, and that is now an ordinary hot-reloaded setting. */
+const aiReady = () => !!(setting('ai.url', doc?.ai?.url) && setting('ai.model', doc?.ai?.model));
 /* Save lives at the end of whatever the pane is showing, so it is re-appended by every
    paint. Held, because between the paint and the next one it is in no document. */
 const saveBtn = el('button', 'btn primary', 'Save');
@@ -1717,9 +1724,14 @@ function researchField(r) {
   /* The server cannot refuse this at save time — the page edits alerts.yaml, and the
      provider is a config.yaml fact the validator has never been able to see — so the
      warning is here rather than after a save that succeeded and changed nothing. */
-  if (!aiReady) wrap.append(el('span', 'help bad',
-    'No AI provider is configured on this server, so this rule will send without its '
-    + 'research line. Set ai.url and ai.model in config.yaml and restart.'));
+  if (!aiReady()) {
+    const bad = el('span', 'help bad', 'No AI provider is set up yet, so this rule will send without its research line. ');
+    const go = el('button', 'linkish', 'Set one up in Settings.');
+    go.type = 'button';
+    go.onclick = () => select('settings');
+    bad.append(go);
+    wrap.append(bad);
+  }
   const ta = el('textarea');
   ta.id = 'rule-research-prompt';
   ta.rows = 3;
@@ -1853,6 +1865,16 @@ function renderSettings(pane) {
      options: ['debug', 'info', 'warn', 'error'].map(v => [v, v])},
   ]);
 
+  band('AI research', 'Answers rules that ask who an aircraft belongs to. Any OpenAI-compatible provider works — OpenRouter, Ollama, vLLM, OpenAI — and "/chat/completions" is added to the endpoint.', [
+    {key: 'ai.url', label: 'Endpoint', placeholder: 'https://openrouter.ai/api/v1',
+     help: 'Leave this and the model blank to turn research off.'},
+    {key: 'ai.model', label: 'Model', placeholder: 'perplexity/sonar',
+     help: 'Passed through as written. Searching the web is the model\'s job: pick one that does it.'},
+    {key: 'ai.key', label: 'API key', secret: true},
+    {key: 'ai.timeout', label: 'Give up after', placeholder: '20s',
+     help: 'A slow answer delays later alerts, since notifications are sent one at a time.'},
+  ]);
+
   const foot = el('div', 'group');
   foot.append(el('p', 'help',
     'Saved changes take effect within five seconds. The feeder address, ntfy account and cache settings live in config.yaml and are not editable here.'));
@@ -1868,7 +1890,8 @@ function settingField(f) {
   const input = f.options ? el('select') : el('input');
   if (f.options) for (const [v, t] of f.options) input.append(new Option(t, v));
   else {
-    input.type = f.type || 'text';
+    input.type = f.secret ? 'password' : (f.type || 'text');
+    if (f.secret) input.autocomplete = 'off';
     if (f.step) input.step = f.step;
     if (f.min !== undefined) input.min = f.min;
     if (f.max !== undefined) input.max = f.max;
@@ -1877,17 +1900,32 @@ function settingField(f) {
   input.id = 'set-' + f.key;
   const value = at(doc, f.key);
   input.value = value === null || value === undefined ? '' : String(value);
+  /* The key is never sent to this page, so the box starts empty whether or not one is
+     stored. The placeholder is what says which. */
+  if (f.secret) input.placeholder = aiKeySet ? '•••••••• stored — type to replace' : 'Not set';
 
   const lock = locks[f.key];
   if (lock) {
     input.disabled = true;
+    input.value = '';
     wrap.append(input);
-    const note = el('span', 'help lock', 'Set to ');
-    note.append(el('span', 'env', String(lock.value)), ' by ' + lock.env + ', which wins over this file.');
+    const note = el('span', 'help lock', 'Set ');
+    /* A locked secret has no value to show: the server deliberately does not send it. */
+    if (lock.value === undefined) note.append('by ' + lock.env + ', which wins over this file.');
+    else note.append('to ', el('span', 'env', String(lock.value)), ' by ' + lock.env + ', which wins over this file.');
     wrap.append(note);
     return wrap;
   }
   input.oninput = () => {
+    /* Typing in the key box at all is what puts a key in the save. Until then the
+       payload carries none, which is how the server is told to keep the stored one —
+       and an empty box after typing is how it is told to clear it. */
+    if (f.secret) {
+      keyEdited = true;
+      put(doc, f.key, input.value);
+      markDirty();
+      return;
+    }
     /* Blank means null only where the setting is genuinely optional. Everywhere
        else a JSON null is a no-op on a non-pointer field, which would silently
        keep the old value instead of the one on screen. */
@@ -1906,8 +1944,15 @@ function settingField(f) {
     /* The receiver is what every distance and predicted-pass rule is measured from, so
        moving it changes what each of them is overhead of. */
     if (f.key === 'lat' || f.key === 'lon') doc.rules.forEach(schedulePreview);
+    /* Turning the provider on or off changes what every research rule can say. */
+    if (f.key === 'ai.url' || f.key === 'ai.model') renderList();
   };
   wrap.append(input);
+  if (f.secret) {
+    wrap.append(el('span', 'help', aiKeySet
+      ? 'Stored on the server and never sent to this page. Leave it blank to keep it; clear the box after typing to remove it.'
+      : 'Sent to the provider, not to this page. Some local providers need none.'));
+  }
   if (f.help) wrap.append(el('span', 'help', f.help));
   return wrap;
 }
@@ -2093,6 +2138,10 @@ function addRule() {
 function payload() {
   const out = structuredClone(doc);
   out.rules = doc.rules.map(payloadRule);
+  /* An untouched key box sends no key, which is the server's cue to keep the one it has.
+     This page is never given the stored key, so it has nothing to send back and must not
+     invent one — a save of the poll interval would otherwise wipe the credential. */
+  if (!keyEdited) delete out.ai?.key;
   return out;
 }
 
@@ -2169,7 +2218,9 @@ async function load() {
   alertsPath = body.path;
   vocab = body.vocabulary || {};
   feedTypes = body.feed_types || [];
-  aiReady = body.ai === true;
+  aiKeySet = body.ai_key_set === true;
+  keyEdited = false;
+  doc.ai = doc.ai || {};
   defaultPrompt = body.research_prompt_default || '';
   locks = Object.fromEntries((body.locked || []).map(l => [l.key, l]));
   const keys = body.rule_keys || [];

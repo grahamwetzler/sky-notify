@@ -54,7 +54,13 @@ func (s *server) mux(q *queue) http.Handler {
 		var locked []map[string]string
 		for _, b := range alertEnvBindings() {
 			if v, ok := env[b.name]; ok {
-				locked = append(locked, map[string]string{"key": b.key, "env": b.name, "value": v})
+				l := map[string]string{"key": b.key, "env": b.name, "value": v}
+				// Except a credential. The page only has to know the key is not its to
+				// edit; the value is the one thing in this response that must not be.
+				if b.key == aiKeyPath {
+					delete(l, "value")
+				}
+				locked = append(locked, l)
 			}
 		}
 		// The cooldown key of every rule, in order. A rule may have no name, and the
@@ -64,11 +70,16 @@ func (s *server) mux(q *queue) http.Handler {
 		for i := range alerts.Rules {
 			keys[i] = alerts.Rules[i].Key()
 		}
+		// The API key is handled the way a password field is: never echoed back, only
+		// reported as set or not. alerts is a fresh document per request, so blanking it
+		// here changes nothing on disk — and a PUT that sends no key keeps the stored one.
+		keySet := alerts.aiKey() != ""
+		alerts.AI.Key = nil
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"alerts": alerts, "path": alertsPath(env), "locked": locked,
 			"rule_keys": keys, "vocabulary": s.db.Vocabulary(), "feed_types": s.feedTypes(),
-			"ai": s.aiConfigured(), "research_prompt_default": defaultResearchPrompt,
+			"ai_key_set": keySet, "research_prompt_default": defaultResearchPrompt,
 		})
 	})
 	mux.HandleFunc("POST /api/preview", func(w http.ResponseWriter, r *http.Request) {
@@ -143,8 +154,20 @@ func (s *server) mux(q *queue) http.Handler {
 		// the file keeps the operator's own values — an override is not silently baked in.
 		// Only the env bindings' scalar fields are reassigned, and none of them alias the
 		// rules slice, so a shallow copy is enough to keep the payload untouched.
-		overlaid := *alerts
 		env := environMap(os.Environ())
+		// No key in the payload means "leave the stored one alone": the page is never
+		// sent it, so it has nothing to send back, and a save that only changed the poll
+		// interval must not wipe the credential. An empty string is the page saying
+		// clear it, which is a different thing and is honoured.
+		switch {
+		case alerts.AI.Key == nil:
+			if onDisk, err := loadAlertsFile(env); err == nil {
+				alerts.AI.Key = onDisk.AI.Key
+			}
+		case *alerts.AI.Key == "":
+			alerts.AI.Key = nil
+		}
+		overlaid := *alerts
 		if err := applyAlertEnv(&overlaid, env); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err)
 			return

@@ -44,8 +44,12 @@ type Notifier struct {
 	fileURL string
 	// maps renders the snapshot, nil when map.enabled is false.
 	maps *mapRenderer
-	// ai answers a rule with research: true, nil when no provider is configured.
-	ai *researcher
+	// live is the hot-reloaded alerts, read for the AI provider at the moment an alert
+	// is published. nil in tests that do not exercise research.
+	live *Live
+	// aiClient is the HTTP client the provider is asked with. The researcher itself is
+	// built per alert, since its endpoint and model can change under us.
+	aiClient *http.Client
 	// shutdown is the root signal context, held purely to know when Ctrl-C has been
 	// pressed. Delivery still runs on the caller's context and keeps its drain window;
 	// this only takes the picture away.
@@ -192,7 +196,13 @@ func (n *Notifier) snapshot(ctx context.Context, a *Alert) []byte {
 // to be an answer. Every failure is silent by design, exactly as the map's is: a line
 // that cannot be written costs the notification that line, never the notification.
 func (n *Notifier) research(ctx context.Context, a *Alert) string {
-	if n.ai == nil || a.ResearchPrompt == "" {
+	if a.ResearchPrompt == "" || n.live == nil {
+		return ""
+	}
+	cfg := n.live.Get()
+	rs := newResearcher(cfg, n.aiClient)
+	if rs == nil {
+		slog.Warn("a rule asked for research but no AI provider is configured", "icao", a.Hex)
 		return ""
 	}
 	shutdown := n.shutdown
@@ -204,10 +214,10 @@ func (n *Notifier) research(ctx context.Context, a *Alert) string {
 	if shutdown.Err() != nil {
 		return ""
 	}
-	rctx, cancel := context.WithTimeout(ctx, n.cfg.AI.Timeout.Std())
+	rctx, cancel := context.WithTimeout(ctx, cfg.AI.Timeout.Std())
 	defer cancel()
 	defer context.AfterFunc(shutdown, cancel)()
-	answer, err := n.ai.ask(rctx, a.ResearchPrompt, a.facts())
+	answer, err := rs.ask(rctx, a.ResearchPrompt, a.facts())
 	if err != nil {
 		slog.Warn("research failed, sending the alert without it", "icao", a.Hex, "err", err)
 		return ""

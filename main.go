@@ -103,13 +103,12 @@ func run() error {
 	} else {
 		slog.Info("map snapshots disabled: notifications will carry no image")
 	}
-	// A rule can ask for research on a server with no provider: the UI validates alerts,
-	// which has never been able to see Config, so a save cannot be rejected for it. Say
-	// so once here, and skip silently at send time.
-	notifier.ai = newResearcher(cfg, httpClient)
-	if notifier.ai == nil {
+	// The provider is read per alert, not captured here: it is hot-reloaded with the
+	// rules that ask for it. This only says so once at startup, when nothing is set.
+	notifier.live, notifier.aiClient = live, httpClient
+	if !alerts.aiEnabled() {
 		if asked := researchRules(alerts); len(asked) > 0 {
-			slog.Warn("rules ask for AI research but no provider is configured (set ai.url and ai.model, or SKY_AI_URL and SKY_AI_MODEL)",
+			slog.Warn("rules ask for AI research but no provider is configured (set ai.url and ai.model in alerts.yaml, or SKY_AI_URL and SKY_AI_MODEL)",
 				"rules", strings.Join(asked, ", "))
 		}
 	}
@@ -124,7 +123,7 @@ func run() error {
 		notifier.history = hist
 	}
 	source := NewSource(cfg, httpClient)
-	h := &server{cfg: cfg, live: live, db: db, state: state, notifier: notifier, history: hist}
+	h := &server{live: live, db: db, state: state, notifier: notifier, history: hist}
 
 	// Cold start needs a complete list. Running with a partial or empty one would look
 	// healthy while silently matching nothing.

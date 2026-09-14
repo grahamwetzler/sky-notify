@@ -912,66 +912,75 @@ func TestNotifyIsNotACondition(t *testing.T) {
 }
 
 func TestAIBlockLoadsFromYAMLAndEnv(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(`
+	yaml := `
 ai:
   url: https://openrouter.ai/api/v1
   key: sk-or-v1-secret
   model: perplexity/sonar
   timeout: 5s
-`), 0o644)
-	env := append(requiredEnv(), "SKY_CONFIG="+path, "SKY_NTFY_TOPIC=test")
-	cfg, err := LoadConfig(env)
+`
+	alerts, err := loadAlertsWith(t, yaml)
 	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
+		t.Fatalf("LoadAlerts: %v", err)
 	}
-	if cfg.AI.URL != "https://openrouter.ai/api/v1" || cfg.AI.Key != "sk-or-v1-secret" ||
-		cfg.AI.Model != "perplexity/sonar" || cfg.AI.Timeout.Std() != 5*time.Second {
-		t.Fatalf("ai = %+v", cfg.AI)
+	if alerts.AI.URL != "https://openrouter.ai/api/v1" || alerts.aiKey() != "sk-or-v1-secret" ||
+		alerts.AI.Model != "perplexity/sonar" || alerts.AI.Timeout.Std() != 5*time.Second {
+		t.Fatalf("ai = %+v", alerts.AI)
 	}
-	if !cfg.aiEnabled() {
+	if !alerts.aiEnabled() {
 		t.Error("aiEnabled = false for a configured provider")
 	}
 
-	env = append(env, "SKY_AI_MODEL=anthropic/claude-sonnet-4.5", "SKY_AI_TIMEOUT=9s")
-	cfg, err = LoadConfig(env)
+	alerts, err = loadAlertsWith(t, yaml, "SKY_AI_MODEL=anthropic/claude-sonnet-4.5", "SKY_AI_TIMEOUT=9s")
 	if err != nil {
-		t.Fatalf("LoadConfig with env: %v", err)
+		t.Fatalf("LoadAlerts with env: %v", err)
 	}
-	if cfg.AI.Model != "anthropic/claude-sonnet-4.5" || cfg.AI.Timeout.Std() != 9*time.Second {
-		t.Fatalf("env override: ai = %+v", cfg.AI)
+	if alerts.AI.Model != "anthropic/claude-sonnet-4.5" || alerts.AI.Timeout.Std() != 9*time.Second {
+		t.Fatalf("env override: ai = %+v", alerts.AI)
+	}
+	// Absent is off, and the default timeout does not make it look configured.
+	bare, err := loadAlertsWith(t, "cooldown: 1h\n")
+	if err != nil {
+		t.Fatalf("LoadAlerts: %v", err)
+	}
+	if bare.aiEnabled() {
+		t.Error("aiEnabled = true with no ai block")
 	}
 }
 
-// The credentials belong in config.yaml because GET /api/alerts serves alerts.yaml to
-// the browser. Putting them in the wrong file has to say which file they belong in.
-func TestAIBlockInAlertsNamesTheRightFile(t *testing.T) {
+// The ai block is hot-reloaded, so it belongs in alerts.yaml. Putting it in config.yaml
+// has to say which file it belongs in rather than read as a typo.
+func TestAIBlockInConfigNamesTheRightFile(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "alerts.yaml"), []byte("ai:\n  key: sk-or-v1-secret\n"), 0o644)
-	env := append(requiredEnv(), "SKY_CONFIG="+filepath.Join(dir, "config.yaml"), "SKY_NTFY_TOPIC=test")
-	_, err := LoadAlerts(env)
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte("ai:\n  key: sk-or-v1-secret\n"), 0o644)
+	env := append(requiredEnv(), "SKY_CONFIG="+path, "SKY_NTFY_TOPIC=test")
+	_, err := LoadConfig(env)
 	if err == nil {
-		t.Fatal("an ai block in alerts.yaml loaded without complaint")
+		t.Fatal("an ai block in config.yaml loaded without complaint")
 	}
-	if !strings.Contains(err.Error(), "ai.key") || !strings.Contains(err.Error(), "config.yaml") {
+	if !strings.Contains(err.Error(), "ai.key") || !strings.Contains(err.Error(), "alerts.yaml") {
 		t.Errorf("error should name the key and the file it belongs in: %v", err)
 	}
 }
 
 // Half a block is a misconfiguration, not a way to turn research off.
-func TestPartialAIBlockRefusesToStart(t *testing.T) {
-	cfg := testConfig(t)
-	cfg.AI.URL = "https://openrouter.ai/api/v1"
-	if err := cfg.validate(); err == nil {
+func TestPartialAIBlockIsRefused(t *testing.T) {
+	a := defaultAlerts()
+	a.AI.URL = "https://openrouter.ai/api/v1"
+	if err := a.validate(); err == nil {
 		t.Fatal("a url with no model validated")
 	}
-	cfg.AI.URL, cfg.AI.Model = "", "perplexity/sonar"
-	if err := cfg.validate(); err == nil {
+	a.AI.URL, a.AI.Model = "", "perplexity/sonar"
+	if err := a.validate(); err == nil {
 		t.Fatal("a model with no url validated")
 	}
-	cfg.AI.URL = "not-a-url"
-	if err := cfg.validate(); err == nil {
+	a.AI.URL = "not-a-url"
+	if err := a.validate(); err == nil {
 		t.Fatal("a non-http ai.url validated")
+	}
+	a.AI.URL, a.AI.Timeout = "https://openrouter.ai/api/v1", 0
+	if err := a.validate(); err == nil {
+		t.Fatal("a zero ai.timeout validated")
 	}
 }

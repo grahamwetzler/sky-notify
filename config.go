@@ -92,18 +92,6 @@ type Config struct {
 		TilesURL string `yaml:"tiles_url"`
 	} `yaml:"map"`
 
-	// AI is the provider that answers a rule with research: true. Deliberately here and
-	// not in alerts.yaml: GET /api/alerts serves that file to the browser verbatim, and
-	// a key in it would be a key on a page.
-	AI struct {
-		// URL is a base, like ntfy.url: "/chat/completions" is appended. Every
-		// OpenAI-compatible provider is reachable that way.
-		URL     string   `yaml:"url"`
-		Key     string   `yaml:"key"`
-		Model   string   `yaml:"model"`
-		Timeout Duration `yaml:"timeout"`
-	} `yaml:"ai"`
-
 	CacheDir   string `yaml:"cache_dir"`
 	Tar1090URL string `yaml:"tar1090_url"`
 	Listen     string `yaml:"listen"`
@@ -119,6 +107,24 @@ type Alerts struct {
 	DB struct {
 		RefreshInterval Duration `yaml:"refresh_interval" json:"refresh_interval"`
 	} `yaml:"db" json:"db"`
+	// AI is the provider that answers a rule with research: true. Hot-reloaded with the
+	// rest of this file, so a model can be swapped without a restart.
+	//
+	// Key is write-only to the browser: GET /api/alerts blanks it and reports only
+	// whether one is set, and a PUT that sends none keeps the one on disk. It is the one
+	// value in this file that is a credential, and it is handled like a password field.
+	AI struct {
+		// URL is a base, like ntfy.url: "/chat/completions" is appended. Every
+		// OpenAI-compatible provider is reachable that way.
+		URL string `yaml:"url,omitempty" json:"url"`
+		// Key is a pointer so the three things a save can mean stay distinguishable:
+		// absent is "keep the stored one" (the page was never sent it), an empty string
+		// is "clear it", and a value replaces it.
+		Key     *string  `yaml:"key,omitempty" json:"key,omitempty"`
+		Model   string   `yaml:"model,omitempty" json:"model"`
+		Timeout Duration `yaml:"timeout" json:"timeout"`
+	} `yaml:"ai" json:"ai"`
+
 	Cooldown Duration `yaml:"cooldown" json:"cooldown"`
 	Lat      *float64 `yaml:"lat,omitempty" json:"lat"`
 	Lon      *float64 `yaml:"lon,omitempty" json:"lon"`
@@ -152,10 +158,6 @@ func defaultConfig() *Config {
 	// deployment: OpenFreeMap is a free public service with no key and no account, so a
 	// default here misconfigures nothing. Point it at a self-hosted planet to change that.
 	c.Map.TilesURL = "https://tiles.openfreemap.org/planet"
-	// Not a statement about anyone's deployment: only how long we will wait for one.
-	// URL, key and model stay empty — unset means research is off, and guessing a
-	// provider is the same mistake as guessing an ntfy server.
-	c.AI.Timeout = Duration(20 * time.Second)
 	return c
 }
 
@@ -165,6 +167,10 @@ func defaultAlerts() *Alerts {
 	a.Ntfy.Priority = 3
 	a.DB.RefreshInterval = Duration(24 * time.Hour)
 	a.Cooldown = Duration(24 * time.Hour)
+	// Only how long we will wait for a provider. URL, key and model stay empty — unset
+	// means research is off, and guessing a provider is the same mistake as guessing an
+	// ntfy server.
+	a.AI.Timeout = Duration(20 * time.Second)
 	a.LogLevel = "info"
 	return a
 }
@@ -199,11 +205,6 @@ func envBindings() []envBinding {
 		{"SKY_MAP_ENABLED", func(c *Config, v string) error { return setBoolPtr(&c.Map.Enabled, v) }},
 		{"SKY_MAP_TILES_URL", func(c *Config, v string) error { c.Map.TilesURL = v; return nil }},
 
-		{"SKY_AI_URL", func(c *Config, v string) error { c.AI.URL = v; return nil }},
-		{"SKY_AI_KEY", func(c *Config, v string) error { c.AI.Key = v; return nil }},
-		{"SKY_AI_MODEL", func(c *Config, v string) error { c.AI.Model = v; return nil }},
-		{"SKY_AI_TIMEOUT", func(c *Config, v string) error { return setDur(&c.AI.Timeout, v) }},
-
 		{"SKY_CACHE_DIR", func(c *Config, v string) error { c.CacheDir = v; return nil }},
 		{"SKY_TAR1090_URL", func(c *Config, v string) error { c.Tar1090URL = v; return nil }},
 		{"SKY_LISTEN", func(c *Config, v string) error { c.Listen = v; return nil }},
@@ -225,6 +226,10 @@ func alertEnvBindings() []alertEnvBinding {
 		{"SKY_LAT", "lat", func(a *Alerts, v string) error { return setFloatPtr(&a.Lat, v) }},
 		{"SKY_LON", "lon", func(a *Alerts, v string) error { return setFloatPtr(&a.Lon, v) }},
 		{"SKY_LOG_LEVEL", "log_level", func(a *Alerts, v string) error { a.LogLevel = v; return nil }},
+		{"SKY_AI_URL", "ai.url", func(a *Alerts, v string) error { a.AI.URL = v; return nil }},
+		{"SKY_AI_KEY", "ai.key", func(a *Alerts, v string) error { a.AI.Key = &v; return nil }},
+		{"SKY_AI_MODEL", "ai.model", func(a *Alerts, v string) error { a.AI.Model = v; return nil }},
+		{"SKY_AI_TIMEOUT", "ai.timeout", func(a *Alerts, v string) error { return setDur(&a.AI.Timeout, v) }},
 	}
 }
 
@@ -346,8 +351,8 @@ func loadAlertsFile(env map[string]string) (*Alerts, error) {
 // Each list mirrors the other file's keys, and must be extended whenever a key is added
 // to the other struct: a key missing here still fails, but with KnownFields' "field rules
 // not found in type main.Config" instead of a message naming the file it belongs in.
-var configMisplaced = []string{"rules", "cooldown", "lat", "lon", "log_level", "source.poll_interval", "ntfy.priority", "db.refresh_interval"}
-var alertsMisplaced = []string{"source.url", "source.max_age", "ntfy.url", "ntfy.topic", "ntfy.token", "ntfy.user", "ntfy.password", "tar1090_url", "db.files", "db.base_url", "cache_dir", "listen", "ai.url", "ai.key", "ai.model", "ai.timeout"}
+var configMisplaced = []string{"rules", "cooldown", "lat", "lon", "log_level", "source.poll_interval", "ntfy.priority", "db.refresh_interval", "ai.url", "ai.key", "ai.model", "ai.timeout"}
+var alertsMisplaced = []string{"source.url", "source.max_age", "ntfy.url", "ntfy.topic", "ntfy.token", "ntfy.user", "ntfy.password", "tar1090_url", "db.files", "db.base_url", "cache_dir", "listen"}
 
 // A key or variable deleted by the rules-only rewrite gets an explanation of where its
 // job went. Without these, KnownFields says "field filters not found in type main.Alerts"

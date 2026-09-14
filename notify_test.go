@@ -395,20 +395,22 @@ func TestMutingDuringADrainStopsTheNextAlert(t *testing.T) {
 
 // ---------- research in the notification ----------
 
-// researchNotifier points a notifier at a fake provider and a fake ntfy.
-func researchNotifier(t *testing.T, ai *aiServer) (*Notifier, *ntfyServer) {
+// researchNotifier points a notifier at a fake provider and a fake ntfy, and hands back
+// the alerts document carrying the provider — which is what the notifier reads at
+// publish time, and what a test edits to change the provider under it.
+func researchNotifier(t *testing.T, ai *aiServer) (*Notifier, *ntfyServer, *Alerts) {
 	t.Helper()
-	cfg := testConfig(t)
-	rs := ai.start(t, cfg)
+	alerts := defaultAlerts()
+	ai.start(t, alerts)
 	nt := &ntfyServer{}
-	n := nt.start(t, cfg)
-	n.ai = rs
-	return n, nt
+	n := nt.start(t, testConfig(t))
+	n.live, n.aiClient = NewLive(alerts), ai.client
+	return n, nt, alerts
 }
 
 func TestPublishCarriesTheResearchLine(t *testing.T) {
 	answer := "Owned by Hillwood, operated by the Garland PD air unit; a police patrol orbit."
-	n, nt := researchNotifier(t, &aiServer{answer: answer})
+	n, nt, _ := researchNotifier(t, &aiServer{answer: answer})
 	a := testAlert()
 	a.ResearchPrompt = defaultResearchPrompt
 	if err := n.Publish(context.Background(), a); err != nil {
@@ -422,7 +424,7 @@ func TestPublishCarriesTheResearchLine(t *testing.T) {
 // The rule the map already follows: a line that cannot be written costs the notification
 // that line, never the notification.
 func TestPublishSurvivesAFailedResearchCall(t *testing.T) {
-	n, nt := researchNotifier(t, &aiServer{status: http.StatusUnauthorized, body: `{"error":"bad key"}`})
+	n, nt, _ := researchNotifier(t, &aiServer{status: http.StatusUnauthorized, body: `{"error":"bad key"}`})
 	a := testAlert()
 	a.ResearchPrompt = defaultResearchPrompt
 	if err := n.Publish(context.Background(), a); err != nil {
@@ -439,7 +441,7 @@ func TestPublishSurvivesAFailedResearchCall(t *testing.T) {
 // A rule that did not ask for research must not cost a request.
 func TestPublishWithoutAResearchRuleAsksNothing(t *testing.T) {
 	ai := &aiServer{answer: "should never be asked"}
-	n, _ := researchNotifier(t, ai)
+	n, _, _ := researchNotifier(t, ai)
 	if err := n.Publish(context.Background(), testAlert()); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
@@ -451,7 +453,7 @@ func TestPublishWithoutAResearchRuleAsksNothing(t *testing.T) {
 // A model that answered with newlines would otherwise inject headers on the attachment
 // path, where the whole body travels in X-Message.
 func TestResearchAnswerIsHeaderSafe(t *testing.T) {
-	n, nt := researchNotifier(t, &aiServer{answer: "Owned by X.\nOperated by Y."})
+	n, nt, _ := researchNotifier(t, &aiServer{answer: "Owned by X.\nOperated by Y."})
 	n.maps = nil
 	a := testAlert()
 	a.ResearchPrompt = defaultResearchPrompt

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -558,5 +559,128 @@ func TestFontIsServedAndReferenced(t *testing.T) {
 	h.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/", nil))
 	if !strings.Contains(page.Body.String(), "src:url(public-sans.woff2)") {
 		t.Error("ui.html does not reference the served font")
+	}
+}
+
+// The API key is handled the way a password field is: the page is never sent it, and a
+// save that carries none keeps the one on disk. Without the second half, saving any
+// unrelated setting from the page would wipe the credential.
+func TestAIKeyIsWriteOnlyToTheBrowser(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.yaml")
+	if err := os.WriteFile(path, []byte("ai:\n  url: https://openrouter.ai/api/v1\n  key: sk-or-v1-secret\n  model: perplexity/sonar\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := alertsHandler(t, path)
+
+	get := func() map[string]any {
+		t.Helper()
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/alerts", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET status %d: %s", w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "sk-or-v1-secret") {
+			t.Fatalf("the API key was served to the browser:\n%s", w.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+
+	body := get()
+	if body["ai_key_set"] != true {
+		t.Errorf("ai_key_set = %v, want true", body["ai_key_set"])
+	}
+	ai, _ := body["alerts"].(map[string]any)["ai"].(map[string]any)
+	if _, ok := ai["key"]; ok {
+		t.Errorf("the served document carried a key field at all: %v", ai)
+	}
+	// What the page holds is what the page sends back: everything but the key.
+	if ai["url"] != "https://openrouter.ai/api/v1" || ai["model"] != "perplexity/sonar" {
+		t.Fatalf("endpoint and model should still be editable: %v", ai)
+	}
+
+	w := httptest.NewRecorder()
+	save := `{"ai":{"url":"https://openrouter.ai/api/v1","model":"anthropic/claude-sonnet-4.5","timeout":"20s"},"rules":[]}`
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(save)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT status %d: %s", w.Code, w.Body.String())
+	}
+	saved, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.aiKey() != "sk-or-v1-secret" {
+		t.Errorf("an omitted key wiped the stored one: %q", saved.aiKey())
+	}
+	if saved.AI.Model != "anthropic/claude-sonnet-4.5" {
+		t.Errorf("model = %q, want the edited one", saved.AI.Model)
+	}
+	if body := get(); body["ai_key_set"] != true {
+		t.Error("the key should still be reported as set after a save that omitted it")
+	}
+
+	// A key the page does send replaces it.
+	w = httptest.NewRecorder()
+	save = `{"ai":{"url":"https://openrouter.ai/api/v1","key":"sk-or-v1-new","model":"perplexity/sonar","timeout":"20s"},"rules":[]}`
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(save)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT status %d: %s", w.Code, w.Body.String())
+	}
+	if saved, _ := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path}); saved.aiKey() != "sk-or-v1-new" {
+		t.Errorf("key = %q, want the one that was sent", saved.aiKey())
+	}
+
+	// An empty string is the page saying clear it, which is not the same as sending none.
+	w = httptest.NewRecorder()
+	save = `{"ai":{"url":"https://openrouter.ai/api/v1","key":"","model":"perplexity/sonar","timeout":"20s"},"rules":[]}`
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(save)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT status %d: %s", w.Code, w.Body.String())
+	}
+	if saved, _ := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path}); saved.aiKey() != "" {
+		t.Errorf("key = %q, want it cleared", saved.aiKey())
+	}
+	if body := get(); body["ai_key_set"] != false {
+		t.Error("ai_key_set should be false once the key is cleared")
+	}
+}
+
+// An env-set key is not the page's to edit, and its value is the one locked setting whose
+// value must not travel with the lock.
+func TestEnvAIKeyIsLockedWithoutItsValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.yaml")
+	t.Setenv("SKY_AI_KEY", "sk-or-v1-from-env")
+	h := alertsHandler(t, path)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/alerts", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "sk-or-v1-from-env") {
+		t.Fatalf("the locked key's value was served:\n%s", w.Body.String())
+	}
+	var body struct {
+		Locked []map[string]string `json:"locked"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, l := range body.Locked {
+		if l["key"] == aiKeyPath {
+			found = true
+			if _, ok := l["value"]; ok {
+				t.Error("the locked entry carried the key's value")
+			}
+			if l["env"] != "SKY_AI_KEY" {
+				t.Errorf("env = %q", l["env"])
+			}
+		}
+	}
+	if !found {
+		t.Error("an env-set key must still be reported as locked")
 	}
 }

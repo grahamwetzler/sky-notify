@@ -19,10 +19,12 @@ type aiServer struct {
 	delay   time.Duration
 	reqs    []map[string]any
 	headers []http.Header
+	client  *http.Client
 }
 
-// start stands up a fake OpenAI-compatible provider and points cfg at it.
-func (s *aiServer) start(t *testing.T, cfg *Config) *researcher {
+// start stands up a fake OpenAI-compatible provider and points an alerts document at it,
+// returning the researcher that document would build.
+func (s *aiServer) start(t *testing.T, cfg *Alerts) *researcher {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]any
@@ -48,8 +50,10 @@ func (s *aiServer) start(t *testing.T, cfg *Config) *researcher {
 		})
 	}))
 	t.Cleanup(srv.Close)
-	cfg.AI.URL, cfg.AI.Key, cfg.AI.Model = srv.URL, "sk-test", "perplexity/sonar"
-	rs := newResearcher(cfg, srv.Client())
+	s.client = srv.Client()
+	key := "sk-test"
+	cfg.AI.URL, cfg.AI.Key, cfg.AI.Model = srv.URL, &key, "perplexity/sonar"
+	rs := newResearcher(cfg, s.client)
 	if rs == nil {
 		t.Fatal("newResearcher returned nil for a configured provider")
 	}
@@ -57,7 +61,7 @@ func (s *aiServer) start(t *testing.T, cfg *Config) *researcher {
 }
 
 func TestResearchAsksTheProvider(t *testing.T) {
-	cfg := testConfig(t)
+	cfg := defaultAlerts()
 	ai := &aiServer{answer: "Owned by Hillwood, operated by the Garland PD air unit; a police patrol orbit."}
 	rs := ai.start(t, cfg)
 
@@ -91,11 +95,11 @@ func TestResearchAsksTheProvider(t *testing.T) {
 }
 
 func TestResearchNoKeySendsNoAuthorization(t *testing.T) {
-	cfg := testConfig(t)
+	cfg := defaultAlerts()
 	ai := &aiServer{answer: "ok"}
 	ai.start(t, cfg) // sets the URL and a key
-	cfg.AI.Key = ""
-	rs := newResearcher(cfg, http.DefaultClient)
+	cfg.AI.Key = nil
+	rs := newResearcher(cfg, ai.client)
 	if _, err := rs.ask(context.Background(), "p", "f"); err != nil {
 		t.Fatalf("ask: %v", err)
 	}
@@ -116,7 +120,7 @@ func TestResearchFailures(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ai := tc.ai
-			rs := ai.start(t, testConfig(t))
+			rs := ai.start(t, defaultAlerts())
 			if got, err := rs.ask(context.Background(), "p", "f"); err == nil {
 				t.Fatalf("ask returned %q, want an error", got)
 			}
@@ -126,7 +130,7 @@ func TestResearchFailures(t *testing.T) {
 
 func TestResearchHonoursTheDeadline(t *testing.T) {
 	ai := &aiServer{answer: "too late", delay: time.Second}
-	rs := ai.start(t, testConfig(t))
+	rs := ai.start(t, defaultAlerts())
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	if _, err := rs.ask(ctx, "p", "f"); err == nil {
@@ -210,15 +214,10 @@ func TestResearchDoesNotMoveTheCooldownKey(t *testing.T) {
 // the two servers: the rule says research, Evaluate carries the prompt, the notifier
 // asks, and the answer arrives in the body ntfy was sent.
 func TestResearchEndToEnd(t *testing.T) {
-	cfg := testConfig(t)
 	ai := &aiServer{answer: "Owned by Hillwood Development, operated by the Garland PD air unit; a police patrol orbit."}
-	rs := ai.start(t, cfg)
-	nt := &ntfyServer{}
-	n := nt.start(t, cfg)
-	n.ai = rs
+	n, nt, alerts := researchNotifier(t, ai)
 
 	on := true
-	alerts := defaultAlerts()
 	alerts.Rules = []Rule{{Name: "Police helicopters", ICAO: []string{"a8c3f1"}, Research: &on}}
 	lat, lon := 32.9126, -96.6389
 	alerts.Lat, alerts.Lon = &lat, &lon
@@ -229,7 +228,7 @@ func TestResearchEndToEnd(t *testing.T) {
 	aclat, aclon := 32.95, -96.70
 	ac := Aircraft{Hex: "a8c3f1", Reg: "N661HD", Type: "EC45", Lat: &aclat, Lon: &aclon,
 		AltBaro: Altitude{Present: true, Feet: 1200}}
-	a := Evaluate(ac, NewDB(cfg, nil), alerts, nil)
+	a := Evaluate(ac, NewDB(testConfig(t), nil), alerts, nil)
 	if a == nil {
 		t.Fatal("rule did not match")
 	}
@@ -256,9 +255,11 @@ func drainOne(t *testing.T, n *Notifier, alerts *Alerts, a *Alert) *State {
 	state := NewState(t.TempDir())
 	q := newQueue(maxPending)
 	q.add(a)
+	live := NewLive(alerts)
+	n.live = live
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go notifyLoop(ctx, NewLive(alerts), n, state, q)
+	go notifyLoop(ctx, live, n, state, q)
 	for i := 0; i < 200 && q.depth() > 0; i++ {
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -273,12 +274,13 @@ func drainOne(t *testing.T, n *Notifier, alerts *Alerts, a *Alert) *State {
 // provider: it is a third party, and a bill.
 func TestResearchTurnedOffWhileAnAlertWaits(t *testing.T) {
 	ai := &aiServer{answer: "should never be asked"}
-	n, nt := researchNotifier(t, ai)
+	n, nt, alerts := researchNotifier(t, ai)
 
-	// Matched under a rule that asked for research; delivered under one that no longer does.
+	// Matched under a rule that asked for research; delivered under one that no longer
+	// does. The provider stays configured throughout, so the only thing that can stop
+	// the call is the rule itself.
 	a := testAlert()
 	a.Trigger, a.ResearchPrompt = "watch", defaultResearchPrompt
-	alerts := defaultAlerts()
 	alerts.Rules = []Rule{{Name: "watch"}}
 
 	state := drainOne(t, n, alerts, a)
@@ -297,12 +299,11 @@ func TestResearchTurnedOffWhileAnAlertWaits(t *testing.T) {
 // what decides — including a prompt edited in that same window.
 func TestResearchTurnedOnWhileAnAlertWaits(t *testing.T) {
 	ai := &aiServer{answer: "Operated by the Garland PD air unit."}
-	n, nt := researchNotifier(t, ai)
+	n, nt, alerts := researchNotifier(t, ai)
 
 	a := testAlert()
 	a.Trigger = "watch" // matched before the rule asked for anything
 	on := true
-	alerts := defaultAlerts()
 	alerts.Rules = []Rule{{Name: "watch", Research: &on, ResearchPrompt: "Who flies this?"}}
 
 	drainOne(t, n, alerts, a)

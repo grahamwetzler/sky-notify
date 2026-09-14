@@ -17,6 +17,11 @@ import (
 const defaultResearchPrompt = "Research this aircraft and reply with only the owner, " +
 	"the operator, and its most likely use, in one concise sentence."
 
+// aiKeyPath is the config path of the provider credential. Named because three places
+// have to agree on which value is the secret one: the env-lock listing, the GET that
+// blanks it, and the PUT that keeps it.
+const aiKeyPath = "ai.key"
+
 // researchLimit caps what we will paste into a notification. ntfy renders the body in a
 // phone's notification shade; a model that ignores "concise" must not fill it.
 const researchLimit = 400
@@ -32,15 +37,17 @@ type researcher struct {
 }
 
 // newResearcher returns nil when no provider is configured, which is how research stays
-// off by default.
-func newResearcher(cfg *Config, client *http.Client) *researcher {
+// off by default. Built per alert rather than once at startup: the block is hot-reloaded
+// with the rest of alerts.yaml, so a model swapped on the settings page takes effect on
+// the next notification instead of the next restart.
+func newResearcher(cfg *Alerts, client *http.Client) *researcher {
 	if !cfg.aiEnabled() {
 		return nil
 	}
 	return &researcher{
 		client: client,
 		url:    strings.TrimSuffix(cfg.AI.URL, "/") + "/chat/completions",
-		key:    cfg.AI.Key,
+		key:    cfg.aiKey(),
 		model:  cfg.AI.Model,
 	}
 }
@@ -144,9 +151,7 @@ func researchPromptFor(cfg *Alerts, trigger string) string {
 }
 
 // researchRules names the rules that asked for research, for the startup warning when
-// nothing is configured to answer them. Cross-file validation is not possible — the UI
-// validates Alerts, which has never been able to see Config — so this is where an
-// operator finds out.
+// nothing is configured to answer them.
 func researchRules(a *Alerts) []string {
 	var names []string
 	for i := range a.Rules {

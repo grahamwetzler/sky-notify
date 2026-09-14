@@ -146,8 +146,9 @@ Research: Owned by Hillwood Development, operated by the Garland PD air unit; mo
   likely a police patrol orbit.
 ```
 
-Configure a provider in `config.yaml` — the credentials are deliberately not in
-`alerts.yaml`, which the web UI is served in full:
+Configure a provider under **Settings ▸ AI research** in the web UI, or in `alerts.yaml`
+directly — it is hot-reloaded like the rest of that file, so a model can be swapped
+without a restart:
 
 ```yaml
 ai:
@@ -156,6 +157,11 @@ ai:
   model: perplexity/sonar
   timeout: 20s
 ```
+
+The key is the one setting the page never reads back. `GET /api/alerts` reports only
+whether one is stored, never the value, and a save that carries no key keeps the stored
+one — so editing anything else in the UI cannot wipe the credential. Clearing the box
+after typing in it removes it, and `SKY_AI_KEY` locks it against the page entirely.
 
 `url` is a base, as `ntfy.url` is: `/chat/completions` is appended. Anything speaking the
 OpenAI shape works — OpenRouter, vLLM, Ollama, LiteLLM, Together, Groq, OpenAI — and
@@ -212,7 +218,7 @@ config path. Missing files are fine. See both example files for the exact split.
 | `SKY_MAP_TILES_URL` | `https://tiles.openfreemap.org/planet` | TileJSON endpoint; point at your own OpenFreeMap |
 | `SKY_AI_URL` | — | base URL of an OpenAI-compatible provider; `/chat/completions` is appended |
 | `SKY_AI_MODEL` | — | set with `SKY_AI_URL` to enable `research: true` rules |
-| `SKY_AI_KEY` | — | omitted from the request when unset, for a keyless local provider |
+| `SKY_AI_KEY` | — | omitted from the request when unset, for a keyless local provider; locks the field in the UI |
 | `SKY_AI_TIMEOUT` | `20s` | how long one research call may take |
 | `SKY_LAT` / `SKY_LON` | — | your receiver; needed by rules with `max_distance_nm` or `passes_within_nm` |
 | `SKY_LOG_LEVEL` | `info` | |
@@ -265,6 +271,11 @@ never sent.
 The file remains authoritative, hand edits still work, and environment variables still win
 over it. Saved changes are picked up within the next 5-second reload tick. Comments do not
 survive a save. There is no authentication — put it on a local network or behind a proxy.
+
+The AI provider's API key is the one setting the page is never shown: it is reported as
+stored or not stored, and a save that carries no key keeps the one on disk. It still
+travels in the clear when you do type a new one, so set it over HTTPS or on a network you
+trust — or keep it out of the page entirely with `SKY_AI_KEY`, which locks the field.
 
 ## Things worth knowing
 
