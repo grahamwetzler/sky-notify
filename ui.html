@@ -220,8 +220,13 @@ td.num{white-space:nowrap;font-variant-numeric:tabular-nums}
   width:20px;height:20px;flex:none}
 .chip button:hover{color:var(--bad);background:var(--bad-soft)}
 .chip.toggle{cursor:pointer;transition:background .12s ease,border-color .12s ease}
-.chip.toggle[aria-pressed=false]{background:none;border-style:dashed;color:var(--fg2)}
-.chip.toggle[aria-pressed=true]{background:var(--acc-soft);border-color:var(--acc);color:var(--acc)}
+.chip.toggle[aria-pressed=false],.chip.radio:not(:has(:checked)){background:none;border-style:dashed;color:var(--fg2)}
+.chip.toggle[aria-pressed=true],.chip.radio:has(:checked){background:var(--acc-soft);border-color:var(--acc);color:var(--acc)}
+/* A real radio, sized away rather than display:none so it stays focusable and keeps the
+   arrow keys and the group semantics the browser gives for free. */
+.chip.radio{cursor:pointer;padding:3px 11px;transition:background .12s ease,border-color .12s ease}
+.chip.radio input{position:absolute;width:0;height:0;opacity:0}
+.chip.radio:has(:focus-visible){outline:2px solid var(--acc);outline-offset:2px}
 .chip.toggle{padding-right:11px}
 .mini{border:1px dashed var(--line2);border-radius:99px;padding:3px 12px;font-size:12.5px;
   color:var(--fg2);font-weight:550;white-space:nowrap;
@@ -1660,8 +1665,7 @@ async function loadHistory(r, after = '') {
 
 /* Priority and When both say what happens when a rule matches, and neither filters, so
    they are one band rather than a condition each. */
-const NOTIFY_WHEN = [['', 'As soon as it is seen'],
-                     ['closest_pass', 'At its closest pass to the receiver']];
+const NOTIFY_WHEN = [['', 'Immediately'], ['closest_pass', 'At Closest Pass']];
 
 function notificationBand(r) {
   const sec = el('div', 'group');
@@ -1678,18 +1682,35 @@ function notificationBand(r) {
   return sec;
 }
 
+/* Both choices on screen at once, because the whole question is which of the two this
+   rule is. A div rather than a label: a label names one control, and this is two. */
 function whenField(r) {
-  const wrap = el('label', 'field narrow');
+  const wrap = el('div', 'field narrow');
   wrap.append(el('span', 'lbl', 'When'));
-  const s = el('select');
-  for (const [v, t] of NOTIFY_WHEN) s.append(new Option(t, v));
   const held = r.notify === 'closest_pass';
-  s.value = held ? 'closest_pass' : '';
-  s.onchange = () => {
-    if (s.value) r.notify = s.value; else delete r.notify;
-    markDirty(); renderPane(); renderList();
-  };
-  wrap.append(s);
+  const group = el('div', 'vals');
+  group.setAttribute('role', 'radiogroup');
+  group.setAttribute('aria-label', 'When');
+  for (const [v, t] of NOTIFY_WHEN) {
+    const opt = el('label', 'chip radio');
+    const input = el('input');
+    input.type = 'radio';
+    input.name = 'notify-when';
+    /* An id, because renderPane puts the focus back by id: without one, arrowing from
+       one choice to the other would re-render the band and drop the keyboard on
+       the floor, and so would a preview landing mid-choice. */
+    input.id = 'notify-when-' + (v || 'on-sight');
+    input.checked = v === (held ? 'closest_pass' : '');
+    input.onchange = () => {
+      if (v) r.notify = v; else delete r.notify;
+      markDirty(); renderPane(); renderList();
+    };
+    /* The text sits loose in the label rather than in a .v, which is the chip's
+       one-line-with-an-ellipsis span — this one may wrap on a phone. */
+    opt.append(input, document.createTextNode(t));
+    group.append(opt);
+  }
+  wrap.append(group);
   /* The server refuses a held rule with nowhere to be closest to, so say it here rather
      than at the bottom of the page after a failed write. */
   const noReceiver = setting('lat', doc.lat) == null || setting('lon', doc.lon) == null;
