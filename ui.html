@@ -1851,6 +1851,12 @@ function receiver() {
   return lat && lon ? {lat, lon} : {lat: '', lon: ''};
 }
 
+/* What a preview answered, written down: the rule exactly as it was sent, and the
+   receiver it measured from. Held against the rule on screen it says whether the count
+   in hand is an answer about this rule or about the one it used to be — which an
+   age cannot say, and which a save must not guess at. */
+const question = r => JSON.stringify([payloadRule(r), receiver()]);
+
 /* An answer is usable unless the question has moved on, or a later answer to the same
    question already landed. Marking the landing here is what stops the older of two
    answers in flight from painting over the newer one. */
@@ -1862,6 +1868,7 @@ function stale(m, seq, req) {
 
 async function runPreview(r, offset = 0, refresh = false) {
   const m = meta(r);
+  const asked = question(r);
   /* Two numbers, because "superseded" and "out of date" are not the same thing. seq is
      the question: an edit asks a new one, so answers to the old one are wrong and must
      be dropped. req is the asking: a timed refresh re-asks the same question, so its
@@ -1900,6 +1907,7 @@ async function runPreview(r, offset = 0, refresh = false) {
         ? {...body, aircraft: prev.aircraft}
         : body;
     m.at = Date.now();
+    m.answered = asked;
     if (body.key) m.key = body.key;
     if (body.database != null && body.database !== dbRows) {
       dbRows = body.database;
@@ -2004,17 +2012,21 @@ function payload() {
    But the shape of a rule is only a proxy for the thing worth warning about: how many
    pushes land the moment the save does. The preview already answers that for every
    rule, against the last poll and the whole rule, so the warning asks it instead — and
-   falls back to the shape when there is no fresh poll to ask. Both are legitimate
+   falls back to the shape when there is no current answer to ask. Both are legitimate
    things to want and very easy things to leave behind by accident, so they cost a
    confirmation rather than being refused. Priority 0 is muted and sends nothing, so it
    needs no warning. */
 const FLOOD = 3;
 /* How many pushes a rule sends the instant it is saved. Infinity is the honest answer
-   for an unbounded rule with no poll to count against: unknown, and certainly not a
-   number to save without being told. */
+   for an unbounded rule with no count to go on: unknown, and certainly not a number to
+   save without being told. */
 function immediate(r) {
   if (r.priority === 0) return 0;
-  if (!liveFresh(r)) return stated(r).every(k => k === 'listed') ? Infinity : 0;
+  /* An edit's preview is still in flight, or 300ms from being asked for: the count on
+     hand answers the rule as it was before the edit, and the condition just removed is
+     exactly the one keeping that count small. */
+  if (!liveFresh(r) || meta(r).answered !== question(r))
+    return stated(r).every(k => k === 'listed') ? Infinity : 0;
   return meta(r).preview?.live?.total || 0;
 }
 
