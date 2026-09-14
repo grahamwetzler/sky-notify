@@ -434,6 +434,54 @@ func TestRegAndICAOTypeMatchFromEitherSource(t *testing.T) {
 	}
 }
 
+// callsign is the one condition that is not exact: the feed carries SWA2504 and the
+// thing worth asking for is SWA. A prefix, not a substring — WA must not catch
+// Southwest — and a blank must not quietly widen a rule to everything overhead.
+func TestCallsignMatchesOnItsStart(t *testing.T) {
+	cfg := testConfig(t)
+	db := dbWith(t, cfg, mustParse(t, sampleCSV))
+	alerts := defaultAlerts()
+
+	for _, tc := range []struct {
+		name   string
+		want   []string
+		flight string
+		match  bool
+	}{
+		{"airline prefix", []string{"SWA"}, "SWA2504 ", true},
+		{"case and space ignored", []string{" swa "}, "swa900", true},
+		{"the whole callsign", []string{"SWA2504"}, "SWA2504", true},
+		{"another airline", []string{"SWA"}, "ASA100", false},
+		{"not a substring", []string{"WA"}, "SWA2504", false},
+		{"one of several", []string{"ASA", "SWA"}, "SWA11", true},
+		{"blank matches nothing", []string{""}, "SWA2504", false},
+		{"blank beside a real value", []string{"", "SWA"}, "SWA2504", true},
+		{"no callsign broadcast", []string{"SWA"}, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			alerts.Rules = []Rule{{Name: "by callsign", Callsign: tc.want}}
+			got := Evaluate(at(Aircraft{Hex: "ffffff", Flight: tc.flight}), db, alerts, nil)
+			if (got != nil) != tc.match {
+				t.Errorf("callsign %q against flight %q: matched %v, want %v", tc.want, tc.flight, got != nil, tc.match)
+			}
+		})
+	}
+}
+
+// A database row has no callsign, so the preview has to drop the condition rather than
+// fail it closed — otherwise every callsign rule previews as zero and reads as dead.
+func TestCallsignRulePreviewsAgainstTheDatabase(t *testing.T) {
+	rows := mustParse(t, sampleCSV)
+	rule := Rule{Callsign: []string{"SWA"}, CMPG: []string{"Mil"}}
+	if !rule.matchesPlane(&rows[0]) {
+		t.Error("a callsign rule should still preview the database rows its other conditions select")
+	}
+	rule.CMPG = []string{"Civ"}
+	if rule.matchesPlane(&rows[0]) {
+		t.Error("dropping the callsign must not drop the rest of the rule")
+	}
+}
+
 func TestPerRuleLimitsSelectLaterRule(t *testing.T) {
 	cfg := testConfig(t)
 	db := dbWith(t, cfg, nil)

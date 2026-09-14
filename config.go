@@ -77,6 +77,9 @@ type Rule struct {
 	Reg      []string `yaml:"reg,omitempty" json:"reg,omitempty"`
 	ICAOType []string `yaml:"icao_type,omitempty" json:"icao_type,omitempty"`
 	Squawk   []string `yaml:"squawk,omitempty" json:"squawk,omitempty"`
+	// Callsign matches on the start of what the aircraft broadcasts, not the whole of
+	// it: the feed carries SWA2504, and the thing worth asking for is SWA.
+	Callsign []string `yaml:"callsign,omitempty" json:"callsign,omitempty"`
 	Operator []string `yaml:"operator,omitempty" json:"operator,omitempty"`
 	Type     []string `yaml:"type,omitempty" json:"type,omitempty"`
 	CMPG     []string `yaml:"cmpg,omitempty" json:"cmpg,omitempty"`

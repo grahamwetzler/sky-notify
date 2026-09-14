@@ -143,7 +143,8 @@ func (r *Rule) matchesIdentity(ac Aircraft, p *Plane, a *Alert) bool {
 	if p != nil {
 		db = *p
 	}
-	if !matches(r.ICAO, a.Hex) || !matches(r.Squawk, strings.TrimSpace(ac.Squawk)) {
+	if !matches(r.ICAO, a.Hex) || !matches(r.Squawk, strings.TrimSpace(ac.Squawk)) ||
+		!matchesPrefix(r.Callsign, ac.Flight) {
 		return false
 	}
 	if !matches(r.Operator, db.Operator) || !matches(r.Type, db.Type) ||
@@ -160,13 +161,13 @@ func (r *Rule) matchesIdentity(ac Aircraft, p *Plane, a *Alert) bool {
 }
 
 // matchesPlane previews a rule against one database row. It applies only the conditions
-// a database row can answer: squawk comes from the live feed, and position and flight
-// path ask where an aircraft is right now, so neither is knowable here and all fail
-// closed if asked. The preview therefore answers "which aircraft can this rule select",
-// not "which would alert this second" — the UI says so next to the count.
+// a database row can answer: squawk and callsign come from the live feed, and position
+// and flight path ask where an aircraft is right now, so none is knowable here and all
+// fail closed if asked. The preview therefore answers "which aircraft can this rule
+// select", not "which would alert this second" — the UI says so next to the count.
 func (r *Rule) matchesPlane(p *Plane) bool {
 	identity := *r
-	identity.Squawk = nil
+	identity.Squawk, identity.Callsign = nil, nil
 	ac := Aircraft{Hex: p.ICAO, Reg: p.Reg, Type: p.ICAOType}
 	return identity.matchesIdentity(ac, p, &Alert{Hex: p.ICAO})
 }
@@ -232,6 +233,26 @@ func (r *Rule) passesOverhead(ac Aircraft, a *Alert) bool {
 	}
 	a.PassNM, a.PassIn, a.HasPass = nm, in, true
 	return true
+}
+
+// matchesPrefix is matches for the callsign, the one condition that is not exact: the
+// feed carries SWA2504 and the thing worth asking for is SWA, so a value matches what
+// it starts. A blank value is skipped rather than honoured — "" is a prefix of every
+// string, so one stray empty value would otherwise widen a rule to every aircraft
+// overhead. A condition holding nothing else then matches nothing, which is how every
+// runtime condition fails.
+func matchesPrefix(want []string, got string) bool {
+	if len(want) == 0 {
+		return true
+	}
+	got = strings.ToUpper(strings.TrimSpace(got))
+	for _, value := range want {
+		value = strings.ToUpper(strings.TrimSpace(value))
+		if value != "" && strings.HasPrefix(got, value) {
+			return true
+		}
+	}
+	return false
 }
 
 func matches(want []string, got string) bool {

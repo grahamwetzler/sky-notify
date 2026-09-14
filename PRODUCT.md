@@ -65,12 +65,13 @@ first matching rule wins; a rule stating no condition is the wildcard and matche
 
 - identity, from the database: `operator`, `type`, `cmpg`, `category`, `tags`, `listed`
 - identity, matched against database **and** live feed: `reg`, `icao_type`
-- identity, from the feed only: `icao`, `squawk`
+- identity, from the feed only: `icao`, `squawk`, `callsign`
 - where it is: `min_altitude_ft`, `max_altitude_ft`, `max_distance_nm`
 - how it is flying: `circling`, `passes_within_nm`, `passes_within`
 
-The preview searches the database only. Altitude, distance, flight path and squawk cannot
-narrow it, and the UI must say so on each such condition rather than looking broken.
+The preview searches the database only. Altitude, distance, flight path, squawk and
+callsign cannot narrow it, and the UI must say so on each such condition rather than
+looking broken.
 Conditions fail closed: a rule stating altitude does not match an aircraft that has not
 reported one.
 

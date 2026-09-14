@@ -417,6 +417,11 @@ const CONDITIONS = [
    quick: [['7700', '7700 — general emergency'], ['7600', '7600 — radio failure'],
            ['7500', '7500 — hijack']],
    help: 'The transponder code the aircraft is broadcasting right now.'},
+  {key: 'callsign', label: 'Callsign', short: 'the callsign', group: 'identity',
+   source: 'feed', kind: 'free',
+   help: 'What the aircraft broadcasts as its flight number, e.g. SWA2504. This one is '
+     + 'matched on the start of the callsign, not the whole of it, so SWA is every '
+     + 'Southwest flight.'},
   {key: 'listed', label: 'In the aircraft database', group: 'identity', source: 'db',
    kind: 'tri',
    options: [['', 'Either'], ['true', 'Only listed aircraft'], ['false', 'Only unlisted aircraft']],
@@ -531,6 +536,9 @@ function summarise(r) {
   say('reg', v => 'registered ' + list(v));
   say('icao', v => 'hex ' + list(v));
   say('squawk', v => 'squawking ' + list(v));
+  /* "starting" carries the whole difference from every other clause here, which reads
+     as exact. Saying just "callsign SWA" would describe a rule nothing satisfies. */
+  say('callsign', v => 'callsign starting ' + list(v));
   if (r.listed === true) parts.push('listed in the database');
   if (r.listed === false) parts.push('not in the database');
   const lo = hasValue(r.min_altitude_ft), hi = hasValue(r.max_altitude_ft);

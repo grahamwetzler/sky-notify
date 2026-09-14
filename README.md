@@ -64,7 +64,7 @@ aircraft in plane-alert-db. Every condition is an optional filter of the same ki
 
 | | |
 |---|---|
-| identity, from the feed | `icao`, `reg`, `icao_type`, `squawk` |
+| identity, from the feed | `icao`, `reg`, `icao_type`, `squawk`, `callsign` |
 | identity, from the database | `operator`, `type`, `cmpg`, `category`, `tags`, `listed` |
 | altitude and distance | `min_altitude_ft`, `max_altitude_ft`, `max_distance_nm` |
 | flight path | `circling`, `passes_within_nm`, `passes_within` |
@@ -72,8 +72,10 @@ aircraft in plane-alert-db. Every condition is an optional filter of the same ki
 Values within one field are ORed, conditions are ANDed, and the first matching rule wins.
 A rule that states **no** condition is the wildcard — it matches every aircraft, so it
 goes last, and `listed: true` alone is "everything in plane-alert-db". Matches ignore case
-and surrounding space but must be exact—not substrings. A rule without `priority` uses
-`ntfy.priority`; `priority: 0` mutes and stops evaluation. Put exceptions first.
+and surrounding space but must be exact—not substrings. `callsign` is the one exception:
+it matches what the callsign *starts with*, because the feed carries `SWA2504` and the
+thing worth asking for is `SWA`. A rule without `priority` uses `ntfy.priority`;
+`priority: 0` mutes and stops evaluation. Put exceptions first.
 
 `name` is optional and never reaches the notification — it is the cooldown key and the
 log label, so it is worth setting on a rule you want to recognise in the log and not

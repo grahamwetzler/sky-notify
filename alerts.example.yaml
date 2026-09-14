@@ -38,6 +38,12 @@ rules:
     max_altitude_ft: 2000
     max_distance_nm: 3
 
+  # Callsigns are matched on their start, so SWA is every Southwest flight and
+  # SWA2504 is one of them.
+  - name: Southwest overhead
+    callsign: [SWA]
+    max_distance_nm: 10
+
   # Predicted from current ground track and speed: will come within 1 NM in the next 5
   # minutes. No name: the conditions are the description.
   - passes_within_nm: 1
