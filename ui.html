@@ -1851,11 +1851,18 @@ function receiver() {
   return lat && lon ? {lat, lon} : {lat: '', lon: ''};
 }
 
-/* What a preview answered, written down: the rule exactly as it was sent, and the
-   receiver it measured from. Held against the rule on screen it says whether the count
-   in hand is an answer about this rule or about the one it used to be — which an
-   age cannot say, and which a save must not guess at. */
-const question = r => JSON.stringify([payloadRule(r), receiver()]);
+/* What a preview answered, written down: the conditions exactly as they were sent, and
+   the receiver they were measured from. Held against the rule on screen it says whether
+   the count in hand is an answer about this rule or about the one it used to be — which
+   an age cannot say, and which a save must not guess at.
+
+   The name and the priority are dropped: neither reaches the matching, so neither can
+   move the count, and a rename does not even ask for a new preview. Keeping them here
+   would leave a renamed rule permanently mismatched and quietly unwarned. */
+const question = r => {
+  const {name, priority, ...conditions} = payloadRule(r);
+  return JSON.stringify([conditions, receiver()]);
+};
 
 /* An answer is usable unless the question has moved on, or a later answer to the same
    question already landed. Marking the landing here is what stops the older of two
