@@ -1,10 +1,15 @@
 package main
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const defaultPassHorizon = 5 * time.Minute
@@ -348,4 +353,65 @@ func MatchLive(rule Rule, overhead []Aircraft, circling map[string]bool, db *DB,
 		hits = hits[:limit]
 	}
 	return total, hits
+}
+
+type Rule struct {
+	Name     string   `yaml:"name,omitempty" json:"name"`
+	Priority *int     `yaml:"priority,omitempty" json:"priority,omitempty"`
+	ICAO     []string `yaml:"icao,omitempty" json:"icao,omitempty"`
+	Reg      []string `yaml:"reg,omitempty" json:"reg,omitempty"`
+	ICAOType []string `yaml:"icao_type,omitempty" json:"icao_type,omitempty"`
+	Squawk   []string `yaml:"squawk,omitempty" json:"squawk,omitempty"`
+	// Callsign matches on the start of what the aircraft broadcasts, not the whole of
+	// it: the feed carries SWA2504, and the thing worth asking for is SWA.
+	Callsign []string `yaml:"callsign,omitempty" json:"callsign,omitempty"`
+	Operator []string `yaml:"operator,omitempty" json:"operator,omitempty"`
+	Type     []string `yaml:"type,omitempty" json:"type,omitempty"`
+	CMPG     []string `yaml:"cmpg,omitempty" json:"cmpg,omitempty"`
+	Category []string `yaml:"category,omitempty" json:"category,omitempty"`
+	Tags     []string `yaml:"tags,omitempty" json:"tags,omitempty"`
+	Listed   *bool    `yaml:"listed,omitempty" json:"listed,omitempty"`
+	// All is gone: a rule with no conditions already matches every aircraft. It survives
+	// only to say so, since KnownFields would otherwise report it as a typo. json:"-" so
+	// a UI save cannot resurrect it.
+	All            *bool     `yaml:"all,omitempty" json:"-"`
+	MinAltitudeFt  *int      `yaml:"min_altitude_ft,omitempty" json:"min_altitude_ft,omitempty"`
+	MaxAltitudeFt  *int      `yaml:"max_altitude_ft,omitempty" json:"max_altitude_ft,omitempty"`
+	MaxDistanceNM  *float64  `yaml:"max_distance_nm,omitempty" json:"max_distance_nm,omitempty"`
+	Circling       *bool     `yaml:"circling,omitempty" json:"circling,omitempty"`
+	PassesWithinNM *float64  `yaml:"passes_within_nm,omitempty" json:"passes_within_nm,omitempty"`
+	PassesWithin   *Duration `yaml:"passes_within,omitempty" json:"passes_within,omitempty"`
+}
+
+// Key is what the cooldown ledger and the logs call this rule. A name is optional: a
+// named rule titles its own notifications, an unnamed one lets the aircraft do it.
+//
+// An unnamed rule is keyed by a fingerprint of its own conditions rather than by its
+// position, so reordering the list leaves its cooldowns alone — and editing what it
+// matches resets them, which is right, since the ledger's entries were recorded for a
+// rule that no longer exists. Name and priority are excluded: neither changes which
+// aircraft the rule claims.
+func (r *Rule) Key() string {
+	if r.Name != "" {
+		return r.Name
+	}
+	conds := *r
+	conds.Name, conds.Priority, conds.All = "", nil, nil
+	blob, err := yaml.Marshal(conds)
+	if err != nil {
+		// A struct of scalars and string slices cannot fail to marshal, but a key that
+		// silently collapsed to one value for every rule would merge their cooldowns.
+		panic("rule fingerprint: " + err.Error())
+	}
+	sum := sha256.Sum256(blob)
+	return fmt.Sprintf("#%x", sum[:4])
+}
+
+// label names a rule in an error message. An unnamed one is identified the way the log
+// and the ledger will identify it, so a validation error points at something findable.
+func (r *Rule) label() string {
+	if r.Name != "" {
+		return strconv.Quote(r.Name)
+	}
+	return "unnamed, " + r.Key()
 }
