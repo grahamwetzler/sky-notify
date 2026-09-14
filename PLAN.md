@@ -139,9 +139,12 @@ Ranked. Each is small and independent.
    direct `env["SKY_LAT"]` / `env["SKY_LON"]` lookups say the same thing and grep.
 
 6. **`ui.html` line 12 is a 35 KB base64 `woff2` on a single line.** Embedding the font as
-   its own file and serving it takes `ui.html` from 136 KB to ~40 KB and makes its diffs
-   readable. The no-network property DESIGN.md requires is unchanged: the font still ships
-   in the binary, it is just not inlined into the page source.
+   its own file and serving it takes `ui.html` from 135,979 to 100,411 bytes — 136 KB to
+   ~98 KB, a 26% cut, not the order-of-magnitude one the single line makes it look like.
+   The size is not the reason to do it; a 35 KB line in the middle of a source file is.
+   The binary does not shrink at all — the same ~26 KB of font ships either way — and the
+   no-network property DESIGN.md requires is unchanged, since the font still comes off the
+   binary rather than off the network. Low value, listed last on purpose.
 
 7. **`.DS_Store` is untracked but not in `.gitignore`.**
 
