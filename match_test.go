@@ -430,6 +430,37 @@ func TestClosestApproach(t *testing.T) {
 	}
 }
 
+// receding is what decides an aircraft has passed, so the abeam case matters most: a
+// dot product of zero is the moment of closest approach, and reading it as "not yet"
+// would hold an alert for a pass that has already happened.
+func TestReceding(t *testing.T) {
+	lat, lon := 51.5, -0.12
+	south := lat - 10.0/60
+	for _, tc := range []struct {
+		name      string
+		lat, lon  float64
+		gs, track float64
+		want      bool
+	}{
+		{"inbound", south, lon, 120, 0, false},
+		{"outbound", south, lon, 120, 180, true},
+		{"abeam counts as passed", south, lon, 120, 90, true},
+		{"stationary never gets nearer", south, lon, 0, 0, true},
+		// Receiver just west of the antimeridian, aircraft just east of it: the
+		// longitude difference is 0.2°, not 359.8°.
+		{"eastbound across the antimeridian", lat, -179.9, 120, 90, true},
+		{"westbound across the antimeridian", lat, -179.9, 120, 270, false},
+	} {
+		recvLon := lon
+		if tc.lon < -179 || tc.lon > 179 {
+			recvLon = 179.9
+		}
+		if got := receding(lat, recvLon, tc.lat, tc.lon, tc.gs, tc.track); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 // fly integrates 15s steps at gs knots; turns[i] is the heading change before step i.
 func fly(gs float64, turns []float64) *track {
 	lat, lon, hdg := 51.5, -0.12, 0.0

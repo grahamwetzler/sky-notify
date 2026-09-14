@@ -40,3 +40,18 @@ func closestApproach(lat0, lon0, lat, lon, gsKt, trackDeg float64, age, horizon 
 func wrap180(deg float64) float64 {
 	return math.Mod(math.Mod(deg+180, 360)+360, 360) - 180
 }
+
+// receding reports whether an aircraft holding this ground track and speed is moving
+// away from (lat0, lon0) — the radial velocity, which is the sign of the dot product of
+// the receiver→aircraft vector and the velocity. A stationary aircraft counts as
+// receding: it will never get nearer than it is now.
+func receding(lat0, lon0, lat, lon, gsKt, trackDeg float64) bool {
+	rad := math.Pi / 180
+	x := wrap180(lon-lon0) * math.Cos(lat0*rad) * 60
+	y := (lat - lat0) * 60
+	vx, vy := gsKt*math.Sin(trackDeg*rad), gsKt*math.Cos(trackDeg*rad)
+	// Abeam is a dot product of zero, and sin/cos leave that at ~1e-13 of either sign;
+	// real closing traffic is thousands of times larger, so the slack costs nothing and
+	// keeps the abeam moment on the "passed" side it is documented to be on.
+	return x*vx+y*vy >= -1e-6
+}
