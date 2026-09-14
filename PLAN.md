@@ -1,12 +1,16 @@
 # Restructuring plan
 
-A review of the Go sources as they stand at `8ab9ac6`: what is dead, where the files
-disagree with the seams in the code, and what is worth changing. Nothing here has been
-applied. Every claim about compilation or test results was checked by making the change,
-running it, and reverting.
+A review of the Go sources as they stood at `8ab9ac6`: what is dead, where the files
+disagree with the seams in the code, and what is worth changing.
 
-The repo is one `package main`, 15 files, ~5,500 non-test lines, plus a 3,577-line test
-file and a 2,094-line embedded UI.
+**Applied on this branch, in the order below, one commit per step, `go vet` and the full
+suite green after each.** The one exception is 1b, which is gated on a file that is not
+in this repo and is still waiting on that answer. Everything else is done, and the
+sections below describe what was done rather than what was proposed.
+
+The repo was one `package main`, 15 files, ~5,500 non-test lines, plus a 3,577-line test
+file and a 2,094-line embedded UI. It is still one package; it is now 22 non-test files,
+seven test files, and a UI whose largest line is no longer a font.
 
 ## Not proposed: splitting into packages
 
@@ -55,8 +59,10 @@ The repo has zero tags and zero releases, and no file in the tree — including
 The only config that could reach these messages is the live one under the `/config` bind
 mount, which is not in this repo and was not inspected.
 
-**Gate:** check the deployed `alerts.yaml` for those keys first. If it is clean, delete
-all of it. If it is not, migrate the file and then delete all of it.
+**Gate — NOT APPLIED.** Check the deployed `alerts.yaml` for those keys first. If it is
+clean, delete all of it. If it is not, migrate the file and then delete all of it. The
+file lives in the `sky-notify-config` Docker volume, which is not on the machine this was
+written on, so the question is still open.
 
 ### 1c. Nothing else
 
@@ -108,14 +114,18 @@ aircraft.go → geo.go  haversineNM, closestApproach, earthRadiusNM,
                       (all four are consumed by view.go, track.go, match.go, mapsnap.go)
 ```
 
-Order to apply: `sky_test.go` first — it is the largest file, the split is mechanical, and
-a green suite afterwards is the evidence that nothing moved that should not have.
+Applied in that order, `sky_test.go` first: it is the largest file, the split is
+mechanical, and a green suite afterwards is the evidence that nothing moved that should
+not have. All 162 test functions survived it unchanged.
+
+One addition to the list above: the helpers section of `sky_test.go` became
+`helpers_test.go`, since every one of the six new test files uses it.
 
 ---
 
 ## 3. Refactors
 
-Ranked. Each is small and independent.
+Ranked. Each is small and independent. All seven are applied.
 
 1. **Cache the vocabulary.** Every `GET /api/alerts` calls `DB.Vocabulary()`, which is
    `Facets(Rule{})`: one full scan of `merged` per pickable field — six passes over the
@@ -147,6 +157,11 @@ Ranked. Each is small and independent.
    Neither saving is the reason to do it; a 35 KB line in the middle of a source file is.
    The no-network property DESIGN.md requires is unchanged — the font still comes off the
    binary rather than off the network. Low value, listed last on purpose.
+
+   As applied: `ui.html` is 100,457 bytes, `__rodata` fell 8,768, and the binary fell
+   16,448 — more than the payload, because `__TEXT` is 16 KB-aligned on arm64 and the
+   saving crossed a page. DESIGN.md said "one file" and "a base64 `woff2`"; it records the
+   artifact, so it now says what the artifact does.
 
 7. **`.DS_Store` is untracked but not in `.gitignore`.**
 
