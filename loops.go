@@ -241,14 +241,18 @@ func notifyLoop(ctx context.Context, live *Live, n *Notifier, state *State, q *q
 		case <-time.After(time.Second):
 		}
 
-		cfg := live.Get()
-		cooldown := cfg.Cooldown.Std()
-		alerting := alertingKeys(cfg)
 		for {
 			a := q.take()
 			if a == nil {
 				break
 			}
+			// Read per alert, not per drain: one publish can spend the whole 30s
+			// budget retrying, and the rules are re-read every five seconds, so a drain
+			// outlives several reloads. The alert about to be sent must be weighed
+			// against the config as it is now, not as it was when the drain began.
+			cfg := live.Get()
+			cooldown := cfg.Cooldown.Std()
+			alerting := alertingKeys(cfg)
 			key := cooldownKey(a.Hex, a.Trigger)
 
 			// The last gate before something is sent, and the only one the queue is

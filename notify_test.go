@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -334,5 +335,60 @@ func TestAMutedRuleStopsAnAlertAlreadyQueued(t *testing.T) {
 	}
 	if !state.Eligible(cooldownKey("bbbbbb", "muted"), cooldown) {
 		t.Error("a muted rule's queued alert must not be published")
+	}
+}
+
+// The same question, asked of a drain rather than of one alert: a publish can spend the
+// whole 30s budget retrying while the rules are re-read every five seconds, so the
+// config read has to belong to the alert and not to the batch it arrived in.
+func TestMutingDuringADrainStopsTheNextAlert(t *testing.T) {
+	arrived, release := make(chan struct{}), make(chan struct{})
+	var first sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		blocked := false
+		first.Do(func() { blocked = true })
+		if blocked {
+			close(arrived)
+			<-release // the operator gets their edit in while this one is in flight
+		}
+		w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+
+	cfg := testConfig(t)
+	cfg.Ntfy.URL = srv.URL
+	n, err := NewNotifier(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alerts := defaultAlerts()
+	alerts.Rules = []Rule{{Name: "first"}, {Name: "second"}}
+	live := NewLive(alerts)
+	state := NewState(t.TempDir())
+	q := newQueue(maxPending)
+	// The emergency is taken first, so which alert blocks is not left to map order.
+	q.add(&Alert{Hex: "aaaaaa", Trigger: "first", Priority: 5, Emergency: true, Squawk: "7700"})
+	q.add(&Alert{Hex: "bbbbbb", Trigger: "second", Priority: 3})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go notifyLoop(ctx, live, n, state, q)
+
+	<-arrived
+	// A reload, exactly as reloadConfig performs it, while the drain is mid-publish.
+	next := defaultAlerts()
+	next.Rules = []Rule{{Name: "first"}, {Name: "second", Priority: intp(0)}}
+	live.p.Store(next)
+	close(release)
+
+	for i := 0; i < 200 && q.depth() > 0; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cooldown := alerts.Cooldown.Std()
+	if state.Eligible(cooldownKey("aaaaaa", "first"), cooldown) {
+		t.Error("the alert that was already in flight should have been published")
+	}
+	if !state.Eligible(cooldownKey("bbbbbb", "second"), cooldown) {
+		t.Error("a rule muted during the drain must stop the alert still waiting in it")
 	}
 }
