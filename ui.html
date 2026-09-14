@@ -15,7 +15,7 @@
    palette blocks names a colour directly, so both themes stay in step. */
 :root{
   --bg:#F5F6F9; --panel:#FFF; --sunk:#EFF1F5; --line:#E1E4EB; --line2:#C9D0DA;
-  --fg:#12161C; --fg2:#57616F; --fg3:#828D9C;
+  --fg:#12161C; --fg2:#57616F; --fg3:#697485;
   --acc:#2B55C8; --acc-fg:#FFF; --acc-soft:#E9EEFB;
   --warn:#8A4A0B; --warn-soft:#FBF1E3; --warn-line:#E3C599;
   --bad:#A8261E; --bad-soft:#FCEBE9; --bad-line:#EDB9B4;
@@ -27,7 +27,7 @@
 }
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
   --bg:#0C0F13; --panel:#151A20; --sunk:#1C222A; --line:#262D36; --line2:#39424E;
-  --fg:#E7ECF2; --fg2:#98A3B1; --fg3:#6B7686;
+  --fg:#E7ECF2; --fg2:#98A3B1; --fg3:#7F8A99;
   --acc:#88A6FF; --acc-fg:#0C0F13; --acc-soft:#1A2440;
   --warn:#E4B173; --warn-soft:#2A2115; --warn-line:#4A3A1E;
   --bad:#F09189; --bad-soft:#2B1817; --bad-line:#4D2723;
@@ -38,7 +38,7 @@
 }}
 :root[data-theme=dark]{
   --bg:#0C0F13; --panel:#151A20; --sunk:#1C222A; --line:#262D36; --line2:#39424E;
-  --fg:#E7ECF2; --fg2:#98A3B1; --fg3:#6B7686;
+  --fg:#E7ECF2; --fg2:#98A3B1; --fg3:#7F8A99;
   --acc:#88A6FF; --acc-fg:#0C0F13; --acc-soft:#1A2440;
   --warn:#E4B173; --warn-soft:#2A2115; --warn-line:#4A3A1E;
   --bad:#F09189; --bad-soft:#2B1817; --bad-line:#4D2723;
@@ -62,12 +62,11 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 input,select{font:inherit;color:inherit}
 svg{display:block;fill:none;stroke:currentColor;stroke-width:1.6;
   stroke-linecap:round;stroke-linejoin:round}
-code{font:500 .92em/1 ui-monospace,SFMono-Regular,Menlo,monospace;
-  background:var(--sunk);border-radius:4px;padding:1px 4px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 
 .lbl{font-size:11.5px;font-weight:650;letter-spacing:.055em;text-transform:uppercase;
   color:var(--fg2);line-height:1.4}
+.group-h .lbl{font-size:12.5px;color:var(--fg)}
 .help{font-size:12.5px;line-height:1.5;color:var(--fg2);max-width:72ch}
 .help.warn{color:var(--warn)}
 .help.bad{color:var(--bad)}
@@ -122,8 +121,7 @@ code{font:500 .92em/1 ui-monospace,SFMono-Regular,Menlo,monospace;
 .row .n{color:var(--fg3);font-size:12px;font-weight:650;line-height:1.65}
 .r-name{font-weight:600;font-size:14px;display:block;overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap}
-.r-name.anon{font-weight:400;color:var(--fg3);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
-  font-size:13px}
+.r-name.anon{font-weight:500;color:var(--fg3)}
 .r-sub{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
   color:var(--fg2);font-size:12.5px;line-height:1.45;margin-top:2px}
 .row.shadowed .r-sub{color:var(--warn)}
@@ -131,50 +129,50 @@ code{font:500 .92em/1 ui-monospace,SFMono-Regular,Menlo,monospace;
 .badge{border-radius:99px;padding:2px 9px;font-size:11.5px;font-weight:650;white-space:nowrap;
   background:var(--sunk);color:var(--fg2);line-height:1.5}
 .badge.wild{background:var(--warn-soft);color:var(--warn)}
-.badge.blind{background:var(--sunk);color:var(--fg3)}
+.badge.blind{background:var(--sunk);color:var(--fg2)}
 .badge.dead{background:var(--bad-soft);color:var(--bad)}
-.badge.wait{color:var(--fg3)}
+.badge.wait{color:var(--fg2)}
 .list-f{padding:11px 15px;display:grid;gap:8px}
+.list-f[hidden]{display:none}
 .list-f .btn{width:100%}
 .row{cursor:grab}
+.row .grip{color:var(--fg3);opacity:.4;align-self:center}
+.row:hover .grip,.row[aria-current=true] .grip{opacity:1}
 .row.drag{opacity:.4}
 .btn.icon[aria-pressed=true]{background:var(--acc-soft);border-color:var(--acc);color:var(--acc)}
 
 /* ── Detail pane ──────────────────────────────────────────────────────── */
 .pane{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
   box-shadow:var(--sh1);overflow:hidden;min-width:0}
+.hist{grid-column:2}
+.hist[hidden]{display:none}
 .pane-h{padding:13px 18px;border-bottom:1px solid var(--line);display:flex;
-  align-items:center;gap:10px}
+  align-items:center;gap:10px;flex-wrap:wrap}
+.pane-h .name{flex:1 1 160px;width:auto;font-size:17px;font-weight:600;letter-spacing:-.02em;
+  background:none;border-color:transparent;padding:5px 8px}
+.pane-h .name:hover{border-color:var(--line2)}
+.pane-h .name:focus{background:var(--panel);border-color:var(--acc)}
+.pane-h .name::placeholder{font-weight:500}
 .pane-h h2{font-size:17px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap}
-.pane-h h2.anon{color:var(--fg3);font-weight:400;
-  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px}
+.pane-h h2.anon{color:var(--fg3);font-weight:500}
 .pane-h .back{display:none}
 
 .group{padding:16px 18px;border-bottom:1px solid var(--line);display:grid;gap:10px}
 .group:last-child{border-bottom:0}
+.group.ans{background:var(--sunk);border-top:1px solid var(--line)}
 .group-h{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
 .group-h .help{margin-top:3px}
 .group-t{min-width:0}
 
-/* ── Result band ──────────────────────────────────────────────────────── */
-.result{background:var(--sunk);border-bottom:1px solid var(--line);padding:16px 18px;
-  display:grid;gap:10px}
-.result-top{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
-.big{font-size:32px;font-weight:600;letter-spacing:-.025em;line-height:1;
-  font-variant-numeric:tabular-nums}
-.big.dead{color:var(--bad)}
-.big.wild{color:var(--warn)}
-.result-top p{flex:1 1 240px;font-size:13px;line-height:1.5;color:var(--fg2)}
-.result-top p.dead{color:var(--bad)}
 .hits{border:1px solid var(--line);border-radius:var(--rs);overflow:auto;
   max-height:260px;background:var(--panel);overscroll-behavior-x:contain}
-table{width:100%;min-width:430px;border-collapse:collapse;font-size:13px}
+table{width:100%;min-width:520px;border-collapse:collapse;font-size:13px}
 th{position:sticky;top:0;background:var(--panel);text-align:left;padding:7px 12px;
   border-bottom:1px solid var(--line);font-size:11.5px;font-weight:650;letter-spacing:.055em;
   text-transform:uppercase;color:var(--fg2);z-index:1}
 td{padding:7px 12px;border-bottom:1px solid var(--line);vertical-align:top;
-  overflow-wrap:anywhere}
+  overflow-wrap:break-word}
 tbody tr:last-child td{border-bottom:0}
 td.reg{font-weight:600;white-space:nowrap}
 td.tg{color:var(--fg3)}
@@ -195,7 +193,8 @@ td.num{white-space:nowrap;font-variant-numeric:tabular-nums}
   overflow-wrap:anywhere;margin:0}
 .sent-f{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;font-size:11.5px;
   color:var(--fg3)}
-.sent-f a{color:var(--fg3);text-decoration:underline;overflow-wrap:anywhere}
+.sent-f a{color:var(--fg3);text-decoration:underline;text-underline-offset:2px;
+  text-decoration-thickness:from-font;overflow-wrap:anywhere}
 
 /* ── Condition cards ──────────────────────────────────────────────────── */
 .cond{border:1px solid var(--line);border-radius:var(--r);padding:10px 12px 11px;
@@ -229,6 +228,7 @@ td.num{white-space:nowrap;font-variant-numeric:tabular-nums}
   transition:border-color .14s ease,color .14s ease}
 .mini:hover:not(:disabled){border-color:var(--acc);color:var(--acc);border-style:solid}
 .mini:disabled{opacity:.5;cursor:default}
+.mini.plus{padding-left:9px;padding-right:9px;font-size:15px;line-height:1}
 .numrow{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
 .numrow .unit{color:var(--fg2);flex:none}
 input[type=text],input[type=number],select{border:1px solid var(--line2);background:var(--panel);
@@ -239,6 +239,7 @@ input::placeholder{color:var(--fg3)}
 
 .fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px 18px}
 .field{display:grid;gap:5px;align-content:start;min-width:0}
+.field.narrow{max-width:300px}
 
 .empty{padding:48px 20px;text-align:center;display:grid;gap:8px;justify-items:center}
 .empty .help{max-width:46ch}
@@ -262,24 +263,31 @@ input::placeholder{color:var(--fg3)}
   flex:none;translate:0 2px;display:grid;place-items:center;color:transparent}
 .opt.on .box{background:var(--acc);border-color:var(--acc);color:var(--acc-fg)}
 .opt .t{min-width:0;overflow-wrap:anywhere}
-.opt small{display:block;color:var(--fg3);font-size:11.5px;line-height:1.35;margin-top:1px}
 .opt .n{margin-left:auto;color:var(--fg3);font-size:12px;flex:none;
   font-variant-numeric:tabular-nums}
 .pop-e{padding:14px 12px;color:var(--fg2);font-size:13px;line-height:1.5}
 
-.lock{color:var(--warn)}
+.lock .env{font-weight:600;color:var(--fg)}
 
 @media (max-width:600px){
   .group-h{flex-direction:column;align-items:stretch}
   .group-h .mini{align-self:flex-start}
-  .result-top{gap:8px}
+}
+@media (pointer:coarse){
+  .chip button{width:24px;height:24px}
+  .opt{padding-top:10px;padding-bottom:10px}
 }
 @media (max-width:900px){
+  .list-f[hidden]{display:grid}
+  /* Anything under 16px is a field iOS zooms into on focus, and this page is read
+     one-handed while something is overhead. */
+  input[type=text],input[type=number],select{font-size:16px}
   .shell{grid-template-columns:1fr;padding:12px 12px 80px}
   .list{position:static}
   .rows{max-height:none}
   body[data-view=detail] .list{display:none}
   body[data-view=list] .pane{display:none}
+  .hist{grid-column:1}
   .pane-h .back{display:grid}
   .top{padding:10px 12px}
 }
@@ -302,15 +310,13 @@ FORM: The category canon, taken as the standing exit from the direction roll (se
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
 -->
 <div class="top">
-  <h1>sky-notify</h1>
+  <h1>Sky Notify</h1>
   <div class="meta">
     <span id="path">loading…</span>
-    <span id="dbrows" class="ltr"></span>
   </div>
   <div class="acts">
     <button class="btn icon" id="settings" aria-pressed="false" aria-label="Settings"></button>
     <button class="btn icon" id="theme" aria-label="Switch between light and dark"></button>
-    <button class="btn primary" id="save" disabled>Save</button>
   </div>
 </div>
 
@@ -320,8 +326,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   <nav class="list" aria-label="Rules">
     <div class="list-h">
       <h2>Rules</h2>
-      <p class="help">Read in order; the first rule that matches an aircraft claims it.
-      Nothing alerts unless a rule matches — emergency squawks included.</p>
+      <p class="help">Checked in order. The first match wins.</p>
     </div>
     <div class="rows" id="rows"></div>
     <div class="list-f">
@@ -330,6 +335,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   </nav>
 
   <section class="pane" id="pane" aria-live="polite"></section>
+  <section class="pane hist" id="hist" hidden></section>
 </div>
 
 <script>
@@ -360,6 +366,7 @@ const I = {
   sun: '<circle cx="8" cy="8" r="3.1"/><path d="M8 1v1.6M8 13.4V15M1 8h1.6M13.4 8H15M3.1 3.1l1.1 1.1M11.8 11.8l1.1 1.1M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1"/>',
   moon: '<path d="M13.2 9.8A5.8 5.8 0 0 1 6.2 2.8a5.8 5.8 0 1 0 7 7z"/>',
   sliders: '<path d="M2 5h3.2M8.8 5H14M2 11h6.2M11.8 11H14"/><circle cx="7" cy="5" r="1.8"/><circle cx="10" cy="11" r="1.8"/>',
+  grip: '<path d="M2.5 5h11M2.5 8h11M2.5 11h11"/>',
 };
 
 /* Every scalar setting, by the dotted path the API and the YAML both use. */
@@ -386,66 +393,68 @@ const ROW_CHUNK = 150;
      both  matched against the database and the live feed
      feed  only the live feed knows, so the preview is blind to it            */
 const GROUPS = [
-  {id: 'identity', label: 'Which aircraft it is',
-   help: 'All of these must be true at once. Several values inside one condition mean “any of these”.'},
-  {id: 'position', label: 'Where it is right now',
-   help: 'Read from the live feed, and each fails closed: an aircraft that has not reported one does not match, rather than matching on a zero.'},
-  {id: 'path', label: 'How it is flying',
-   help: 'Read from the aircraft’s recent motion, held in memory only — a restart starts it again.'},
+  {id: 'identity', label: 'Aircraft'},
+  {id: 'position', label: 'Location'},
+  {id: 'path', label: 'Flight Path',
+   help: 'Based on recent movement.'},
 ];
 
 const CONDITIONS = [
   {key: 'cmpg', label: 'Operator class', group: 'identity', source: 'db', kind: 'fixed',
    options: [['Civ', 'Civilian'], ['Gov', 'Government'], ['Mil', 'Military'], ['Pol', 'Police']],
-   help: 'Who operates the aircraft, as the database classifies it.'},
+   help: 'Who operates the aircraft.'},
   {key: 'category', label: 'Category', group: 'identity', source: 'db', kind: 'pick',
-   help: 'The database’s own interest lists — USAF, Heads of State, Police Forces, Aerial Firefighter and the rest.'},
+   help: 'Interest lists like USAF, Heads of State and Police Forces.'},
   {key: 'tags', label: 'Tags', group: 'identity', source: 'db', kind: 'pick',
-   help: 'Free-form labels: squadron names, nicknames, notable owners and passengers.'},
+   help: 'Squadron names, nicknames, notable owners and passengers.'},
   {key: 'operator', label: 'Operator', group: 'identity', source: 'db', kind: 'pick',
-   help: 'The airline, air force or owner on record.'},
+   help: 'The airline, air force or owner.'},
   {key: 'type', label: 'Aircraft type', group: 'identity', source: 'db', kind: 'pick',
    help: 'The full type name, e.g. A-10 Thunderbolt II.'},
   {key: 'icao_type', label: 'ICAO type code', group: 'identity', source: 'both', kind: 'pick',
    open: true,
-   help: 'The four-character code, e.g. A320 or C17. Matched against the database and the live feed, so a code no listed aircraft carries still alerts when one broadcasts it.'},
+   help: 'The four-character code, e.g. A320 or C17.'},
   {key: 'reg', label: 'Registration', group: 'identity', source: 'both', kind: 'free',
-   help: 'Any tail number, e.g. N12345. Matched against the database and the live feed, so it never has to be a listed aircraft.'},
-  {key: 'icao', label: 'ICAO hex address', group: 'identity', source: 'both', kind: 'free',
-   help: 'The 24-bit address, e.g. adfdf8.'},
+   help: 'A tail number, e.g. N12345.'},
+  {key: 'icao', label: 'Hex address', group: 'identity', source: 'both', kind: 'free',
+   help: 'The aircraft’s unique address, e.g. adfdf8.'},
   {key: 'squawk', label: 'Squawk', short: 'the squawk', group: 'identity', source: 'feed', kind: 'free',
    quick: [['7700', '7700 — general emergency'], ['7600', '7600 — radio failure'],
            ['7500', '7500 — hijack']],
-   help: 'The transponder code the aircraft is broadcasting right now.'},
+   help: 'The transponder code being broadcast right now.'},
   {key: 'callsign', label: 'Callsign', short: 'the callsign', group: 'identity',
    source: 'feed', kind: 'free',
-   help: 'What the aircraft broadcasts as its flight number, e.g. SWA2504. This one is '
-     + 'matched on the start of the callsign, not the whole of it, so SWA is every '
+   help: 'The flight number, e.g. SWA2504. Matched on the start, so SWA is every '
      + 'Southwest flight.'},
-  {key: 'listed', label: 'In the aircraft database', group: 'identity', source: 'db',
+  {key: 'listed', label: 'In the database', group: 'identity', source: 'db',
    kind: 'tri',
    options: [['', 'Either'], ['true', 'Only listed aircraft'], ['false', 'Only unlisted aircraft']],
-   help: 'Whether plane-alert-db knows the aircraft at all. Every condition above already describes a listed aircraft, so this is worth stating on its own.'},
+   help: 'Whether the aircraft is in the database at all.'},
 
-  {key: 'min_altitude_ft', label: 'Altitude at least', short: 'a minimum altitude',
+  {key: 'min_altitude_ft', label: 'Altitude above', short: 'a minimum altitude',
    group: 'position', source: 'feed', kind: 'num', unit: 'ft', min: 0, integer: true},
-  {key: 'max_altitude_ft', label: 'Altitude at most', short: 'a maximum altitude',
+  {key: 'max_altitude_ft', label: 'Altitude below', short: 'a maximum altitude',
    group: 'position', source: 'feed', kind: 'num', unit: 'ft', min: 0, integer: true},
-  {key: 'max_distance_nm', label: 'Within this far of the receiver',
-   short: 'the distance from the receiver', group: 'position', source: 'feed', kind: 'num',
-   unit: 'NM', min: 0, step: 'any', needsPosition: true},
+  {key: 'max_distance_nm', label: 'Distance from receiver',
+   short: 'a distance', group: 'position', source: 'feed', kind: 'num',
+   unit: 'NM', min: 0, step: 'any', needsPosition: true,
+   help: 'Matches while the aircraft is within this many NM of the receiver.'},
 
   {key: 'circling', label: 'Circling', short: 'circling', group: 'path', source: 'feed', kind: 'tri',
    options: [['', 'Either'], ['true', 'Only while circling'], ['false', 'Only while not circling']],
    needsFastPoll: true,
-   help: 'A full turn inside 2 NM during the last 10 minutes — how news and police helicopters fly.'},
+   help: 'A full turn within 2 NM in the last 10 minutes — how news and police helicopters fly.'},
   {key: 'passes_within_nm', label: 'Predicted to pass within', short: 'a predicted pass overhead',
    group: 'path', source: 'feed', kind: 'num', unit: 'NM', min: 0, step: 'any', needsPosition: true,
-   help: 'Runs the current ground track and speed forward from the receiver’s position.'},
-  {key: 'passes_within', label: '…within this long', short: 'how far ahead to predict',
+   help: 'Based on where the aircraft is heading now and how fast.'},
+  {key: 'passes_within', label: '…within', short: 'how far ahead to look',
    group: 'path', source: 'feed', kind: 'text', placeholder: '5m', requires: 'passes_within_nm',
-   help: 'A duration like 5m or 30s. Defaults to 5m.'},
+   help: 'Like 5m or 30s. Defaults to 5m.'},
 ];
+/* Which side answers a condition, said in the menu that offers it: a rule built out of
+   the bottom two can be checked against the database before it is saved, and one built
+   out of the third cannot be. */
+const SOURCE = {db: 'Database', both: 'Database + live'};
 const BY_KEY = Object.fromEntries(CONDITIONS.map(c => [c.key, c]));
 const PICKABLE = CONDITIONS.filter(c => c.kind === 'pick').map(c => c.key);
 /* Values inside these are lists in the YAML; everything else holds one value. */
@@ -456,6 +465,12 @@ const LIST_KEYS = CONDITIONS.filter(c => c.kind === 'pick' || c.kind === 'free' 
    `doc` is the alerts document exactly as it will be PUT back — nothing else is
    ever added to it, so saving is a serialisation and not a reconstruction.   */
 let doc = null, vocab = {}, feedTypes = [], locks = {}, dbRows = null, alertsPath = '';
+/* Save lives at the end of whatever the pane is showing, so it is re-appended by every
+   paint. Held, because between the paint and the next one it is in no document. */
+const saveBtn = el('button', 'btn primary', 'Save');
+saveBtn.id = 'save';
+saveBtn.type = 'button';
+saveBtn.disabled = true;
 let sel = 0;            // rule index, or 'settings'
 let dirty = false;
 
@@ -550,16 +565,11 @@ function summarise(r) {
   if (r.circling === false) parts.push('while not circling');
   say('passes_within_nm', v => `predicted to pass within ${v} NM in the next ` +
     (hasValue(r.passes_within) ? r.passes_within : '5m'));
-  if (!parts.length) return 'Every aircraft — this rule states no condition.';
+  if (!parts.length) return 'Every aircraft — no conditions set.';
   return parts.join(', ').replace(/^./, c => c.toUpperCase()) + '.';
 }
 
-/* The cooldown key of an unnamed rule is a fingerprint of its conditions, computed by
-   the server — Rule.Key in config.go — and carried back on both endpoints. The page
-   never derives it: a key invented here would be a different string from the one the
-   ledger and the logs actually use, which is worse than showing nothing. */
-const ruleKey = r => meta(r).key;
-const ruleLabel = r => r.name || ruleKey(r) || 'unlabelled';
+const ruleLabel = r => r.name || 'Unnamed rule';
 
 /* ── What the preview can honestly say ────────────────────────────────────
    The preview searches the database, so a count is only a count when a database
@@ -570,29 +580,29 @@ function coverage(r) {
   const keys = stated(r);
   const p = meta(r).preview;
   if (!keys.length) return {kind: 'wild', figure: 'Every',
-    note: 'This rule states no condition, so it matches every aircraft and no rule below it is ever reached.'};
+    note: 'No conditions, so this matches every aircraft and no rule below it is ever reached.'};
   if (r.listed === false) {
     /* Nothing broadcasts an operator or a tag: those come off the database row, and
        this rule has just asked for aircraft that have no row. It can never match. */
     const owned = DB_ONLY.filter(k => hasValue(r[k]));
     if (owned.length) return {kind: 'dead', figure: '—',
-      note: 'This rule asks for aircraft the database does not list, then asks for '
+      note: 'This rule wants aircraft that are not in the database, but '
         + list(owned.map(k => BY_KEY[k].short || BY_KEY[k].label.toLowerCase()), ' and ')
-        + ', which only a database row can answer. It will never alert.'};
+        + ' is only known for aircraft that are. It will never alert.'};
     return {kind: 'blind', figure: '—',
-      note: 'This rule matches only aircraft the database does not list, so there is nothing here to count. It alerts on what the feed brings.'};
+      note: 'This rule matches only aircraft that are not in the database, so there is nothing to count.'};
   }
   if (!keys.some(k => BY_KEY[k].source !== 'feed')) return {kind: 'blind', figure: '—',
-    note: 'Every condition here is read off the live feed, so the database has nothing to count. The rule alerts the moment an aircraft broadcasts a match.'};
-  if (!p) return {kind: 'wait', figure: '…', note: 'Checking which aircraft this selects…'};
-  if (p.error) return {kind: 'error', figure: '—', note: 'Could not preview this rule: ' + p.error};
+    note: 'Nothing here can be counted in advance. See Overhead right now, below.'};
+  if (!p) return {kind: 'wait', figure: '…', note: 'Checking…'};
+  if (p.error) return {kind: 'error', figure: '—', note: 'Could not check this rule: ' + p.error};
 
   const feedToo = canMatchFeed(r);
   if (p.total === 0) return feedToo
-    ? {kind: 'zero', figure: '0', note: 'No aircraft in the database — but this rule can still be satisfied from the live feed, so a zero here is inconclusive.'}
-    : {kind: 'dead', figure: '0', note: 'No aircraft in the database can satisfy this rule, and nothing on the live feed can either. It will never alert.'};
+    ? {kind: 'zero', figure: '0', note: 'No aircraft in the database match, but one broadcasting a match still alerts.'}
+    : {kind: 'dead', figure: '0', note: 'Nothing can match this rule. It will never alert.'};
   return {kind: 'count', figure: p.total.toLocaleString(),
-    note: `of the ${(p.database ?? 0).toLocaleString()} aircraft in the database can satisfy this rule’s identity conditions.`};
+    note: `of the ${(p.database ?? 0).toLocaleString()} aircraft in the database match who this rule is looking for.`};
 }
 
 /* A zero is inconclusive two different ways. reg and icao_type are matched against either
@@ -627,24 +637,24 @@ function problem(r, key) {
   if (spec.kind === 'num' && hasValue(r[key]) && !Number.isFinite(Number(r[key])))
     return spec.integer ? 'Must be a whole number.' : 'Must be a number.';
   if (DB_ONLY.includes(key) && hasValue(r[key]) && r.listed === false)
-    return 'Only a database row carries this, and this rule asks for aircraft that have no row, so it can never match. Remove this or the “not in the database” condition.';
+    return 'Only aircraft in the database have this, and this rule wants ones that are not. Remove this or the “in the database” condition.';
   if (spec.needsPosition && hasValue(r[key]) && (setting('lat', doc.lat) == null || setting('lon', doc.lon) == null))
-    return 'Needs the receiver’s latitude and longitude, which are not set. Open Settings to add them.';
+    return 'Set the receiver position in Settings first.';
   if (spec.needsFastPoll && r.circling === true) {
     const iv = setting('source.poll_interval', doc.source.poll_interval);
     const s = parseDuration(iv);
     if (s != null && s > 30)
-      return `Needs the feeder polled every 30 seconds or less; it is currently ${iv}.`;
+      return `Needs a check interval of 30s or less; it is ${iv}.`;
   }
   if (key === 'max_altitude_ft' && hasValue(r.min_altitude_ft) && hasValue(r.max_altitude_ft)
       && +r.max_altitude_ft <= +r.min_altitude_ft)
-    return 'Must be above the lowest altitude, or no aircraft can be between the two.';
+    return 'Must be above the lowest altitude.';
   if (key === 'passes_within' && hasValue(r.passes_within)) {
     /* Signed durations parse, so a negative one is a number rather than a refusal, and
        the server rejects it on a rule that would otherwise have looked fine here. */
     const ahead = parseDuration(r.passes_within);
     if (ahead === null) return 'Must be a duration like 5m or 30s.';
-    if (ahead <= 0) return 'Must be longer than zero — the prediction needs a stretch of time to look ahead into.';
+    if (ahead <= 0) return 'Must be longer than zero.';
   }
   return null;
 }
@@ -688,7 +698,7 @@ function message(text, kind) {
 
 function markDirty() {
   dirty = true;
-  const b = $('#save');
+  const b = saveBtn;
   b.disabled = false;
   b.classList.remove('done');
   b.textContent = 'Save';
@@ -787,9 +797,8 @@ function valuePicker(anchor, r, key, after) {
           el('span', 'n', item.feed ? item.count.toLocaleString() + ' on your feed'
                                     : item.count.toLocaleString()));
         if (item.feed) b.title = item.inDb
-          ? 'No aircraft matching this rule’s other conditions carries this code in the '
-            + 'database; your receiver has heard it.'
-          : 'No aircraft in the database carries this code; your receiver has heard it.';
+          ? 'Heard by your receiver. No aircraft in the database matches this rule and carries it.'
+          : 'Heard by your receiver, but not in the database.';
         batch.append(b);
       }
       body.append(batch);
@@ -817,16 +826,15 @@ function valuePicker(anchor, r, key, after) {
         active = +b.dataset.i; paint();
       };
       grow();
-      const scope = narrowed() ? ' matching this rule’s other conditions' : '';
+      const scope = narrowed() ? ' left for this rule' : '';
       const note = el('div', 'pop-note');
       if (!shown.length) note.textContent = q.value.trim()
         ? (spec.open
-          ? 'Nothing in the database or on your feed matches that. Press Enter to use it anyway — an aircraft may still broadcast it.'
+          ? 'No match here. Press Enter to use it anyway.'
           : 'No value matching that' + (scope || ' in the database') + '.')
-        : 'Everything reachable here is already selected.';
+        : 'Everything here is already selected.';
       else note.textContent = `${shown.length.toLocaleString()} ` +
-        `${shown.length === 1 ? 'value' : 'values'}${scope}, with how many aircraft each covers.` +
-        (extra.length ? ' Codes your receiver has heard are listed too.' : '');
+        `${shown.length === 1 ? 'value' : 'values'}${scope}, with how many aircraft each covers.`;
       listEl.replaceChildren(note, body);
       listEl.scrollTop = 0;
     };
@@ -923,11 +931,8 @@ function conditionPicker(anchor, r, groupId, after) {
       && (!c.requires || open.has(c.requires)));
     for (const c of items) {
       const b = el('button', 'opt'); b.type = 'button';
-      const t = el('span', 't', c.label);
-      if (c.source !== 'db') t.append(el('small', '', c.source === 'feed'
-        ? 'Live feed only — narrows what is overhead, not the database figure'
-        : 'Matched against the database and the live feed'));
-      b.append(t);
+      b.append(el('span', 't', c.label));
+      if (SOURCE[c.source]) b.append(el('span', 'n', SOURCE[c.source]));
       b.onclick = () => {
         /* An added condition starts empty and states nothing until it is given a
            value: a blank one contributes nothing to the saved rule. `tri` is the
@@ -940,7 +945,7 @@ function conditionPicker(anchor, r, groupId, after) {
       listEl.append(b);
     }
     if (!items.length) listEl.append(el('div', 'pop-e',
-      'Every condition in this group is already on this rule.'));
+      'All of these are already in use.'));
   });
 }
 
@@ -993,7 +998,7 @@ function conditionCard(r, key) {
            so does the figure above, which stops counting the moment it stops parsing. */
         : !Number.isFinite(n) ? input.value
         : spec.integer ? Math.round(n) : n;
-      markDirty(); schedulePreview(r); refreshFigures();
+      markDirty(); schedulePreview(r); renderList();
     };
     row.append(input);
     if (spec.unit) row.append(el('span', 'unit lbl', spec.unit));
@@ -1029,18 +1034,10 @@ function conditionCard(r, key) {
   }
 
   if (bad) card.append(el('p', 'help bad', bad));
-  /* Plain rather than a warning: the figure above cannot see this condition, but the
-     roll call of what is overhead does apply it, so it is a limit of the figure and no
-     longer a blind spot in the rule. */
-  else if (spec.source === 'feed') card.append(el('p', 'help',
-    (spec.group === 'identity'
-      ? 'Read off the live feed. No database row can answer it, so it does not narrow the figure above'
-      : spec.group === 'position'
-        ? 'Describes where the aircraft is, not which aircraft it is, so it does not narrow the figure above'
-        : 'Describes how the aircraft is flying, so it does not narrow the figure above')
-    + ' — only what is overhead right now, further down.'));
+  /* The figure's own band already names every condition it cannot count, so a feed
+     condition says nothing here. `both` is the one that adds something. */
   else if (spec.source === 'both') card.append(el('p', 'help',
-    'Matched against the database and the live feed, so a value no listed aircraft carries still alerts when one broadcasts it.'));
+    'A value no aircraft in the database carries still alerts when one broadcasts it.'));
   if (spec.help && !bad) card.append(el('p', 'help', spec.help));
   return card;
 }
@@ -1074,14 +1071,14 @@ function valueChips(r, key) {
         chip.append(el('span', 'n', !spec.open ? 'not found'
           : heard.has(low) ? heard.get(low).toLocaleString() + ' on your feed' : 'feed only'));
         chip.title = spec.open
-          ? 'No aircraft in the database carries this code. It still alerts on any aircraft broadcasting it on the live feed.'
-          : 'Not found in the aircraft database — this value will never match.';
+          ? 'Not in the database, but still alerts on any aircraft broadcasting it.'
+          : 'Not in the database — this value will never match.';
       } else if (reach) {
         chip.classList.add(spec.open ? 'feed' : 'miss');
         chip.append(el('span', 'n', 'clashes'));
         chip.title = spec.open
-          ? 'No aircraft matching this rule’s other conditions has this value in the database, so only a live-feed match can satisfy this rule.'
-          : 'No aircraft matching this rule’s other conditions has this value, so the rule matches nothing. Remove this or the condition that clashes with it.';
+          ? 'Nothing in the database has this and matches the rule’s other conditions. Only a broadcast can.'
+          : 'No aircraft has this and matches the rule’s other conditions, so the rule matches nothing.';
       }
     }
     const drop = el('button'); drop.type = 'button';
@@ -1095,8 +1092,10 @@ function valueChips(r, key) {
     vals.append(chip);
   }
 
-  const add = el('button', 'mini', (r[key] || []).length ? 'Add another' : 'Choose a value');
+  const many = (r[key] || []).length;
+  const add = el('button', 'mini' + (many ? ' plus' : ''), many ? '+' : 'Choose a value');
   add.type = 'button';
+  if (many) add.setAttribute('aria-label', 'Add another value');
   const after = () => { markDirty(); schedulePreview(r); renderPane(); renderList(); };
   add.onclick = () => (spec.kind === 'free' ? freePicker(add, r, key, after)
                                             : valuePicker(add, r, key, after));
@@ -1184,18 +1183,21 @@ function renderList() {
       : summarise(r)));
     b.append(mid);
 
-    const cls = {wild: 'wild', blind: 'blind', dead: 'dead', zero: 'blind',
-                 wait: 'wait', error: 'dead'}[cov.kind] || '';
-    b.append(el('span', 'badge ' + cls, cov.kind === 'wild' ? 'all' : cov.figure));
+    /* The whole row is the drag handle — this only says so. */
+    const grip = el('span', 'grip');
+    grip.innerHTML = svg(I.grip, 14);
+    b.append(grip);
+
     box.append(b);
     if (cov.kind === 'wild') shadowed = true;
   });
 
   if (!doc.rules.length) {
     const p = el('div', 'pop-e');
-    p.textContent = 'No rules yet. Nothing will alert you until there is one — a rule is an allowlist, and with none there is nothing to match.';
+    p.textContent = 'No rules yet.';
     box.append(p);
   }
+  $('.list-f').hidden = !doc.rules.length;
 
   $('#settings').setAttribute('aria-pressed', String(isSettings()));
 
@@ -1216,9 +1218,9 @@ function select(next) {
    slow answer takes the field out from under a half-typed number, and the scroll
    position, or reaching further down a list of matches throws you to the top.        */
 function renderPane() {
-  const pane = $('#pane');
+  const pane = $('#pane'), shell = $('.shell');
   const had = document.activeElement;
-  const id = pane.contains(had) && had.id ? had.id : null;
+  const id = shell.contains(had) && had.id ? had.id : null;
   const text = id && had.type === 'text';          // a select reports no caret
   const caret = text ? [had.selectionStart, had.selectionEnd] : null;
   const raw = text ? had.value : null;
@@ -1226,7 +1228,7 @@ function renderPane() {
   /* The table of matches scrolls inside its own box — vertically through the rows, and
      horizontally at phone width. Neither is the window's scroll, and both are where the
      operator was looking, and there are two of them. */
-  const boxes = [...pane.querySelectorAll('.hits')].map(b => [b.scrollTop, b.scrollLeft]);
+  const boxes = [...shell.querySelectorAll('.hits')].map(b => [b.scrollTop, b.scrollLeft]);
   paintPane(pane);
   const back = id && document.getElementById(id);
   if (back) {
@@ -1240,7 +1242,7 @@ function renderPane() {
     if (caret) back.setSelectionRange(caret[0], caret[1]);
   }
   /* After the focus, so that the focus cannot have moved either of them. */
-  pane.querySelectorAll('.hits').forEach((b, i) => {
+  shell.querySelectorAll('.hits').forEach((b, i) => {
     if (boxes[i]) [b.scrollTop, b.scrollLeft] = boxes[i];
   });
   if (scrollY !== y) scrollTo(0, y);
@@ -1248,15 +1250,16 @@ function renderPane() {
 
 function paintPane(pane) {
   pane.replaceChildren();
+  $('#hist').hidden = true;
   if (isSettings()) return renderSettings(pane);
 
   if (!doc.rules.length) {
     const e = el('div', 'empty');
     e.append(el('h2', '', 'No rules'));
-    e.append(el('p', 'help', 'sky-notify stays silent until a rule matches something — emergency squawks included. Add one to start.'));
+    e.append(el('p', 'help', 'Nothing alerts until a rule matches it. Add one to start.'));
     const b = el('button', 'btn primary', 'Add a rule'); b.type = 'button';
     b.onclick = addRule;
-    e.append(b);
+    e.append(b, saveBtn);
     pane.append(e);
     return;
   }
@@ -1273,7 +1276,16 @@ function paintPane(pane) {
   back.setAttribute('aria-label', 'Back to the rule list');
   back.onclick = () => { document.body.dataset.view = 'list'; };
   head.append(back);
-  head.append(el('h2', r.name ? '' : 'anon', ruleLabel(r)));
+  /* The title is the name field. Nothing else edits it, so the header cannot fall out
+     of step with it, and the id is what carries the caret through a repaint. */
+  const name = el('input', 'name');
+  name.type = 'text';
+  name.id = 'rule-name';
+  name.value = r.name || '';
+  name.placeholder = 'Unnamed rule';
+  name.setAttribute('aria-label', 'Rule name');
+  name.oninput = () => { r.name = name.value; markDirty(); renderList(); };
+  head.append(name);
   const move = (icon, delta, label) => {
     const b = el('button', 'btn icon');
     b.innerHTML = svg(icon, 15);
@@ -1287,16 +1299,25 @@ function paintPane(pane) {
     };
     return b;
   };
-  head.append(move(I.up, -1, 'Move this rule earlier'), move(I.down, 1, 'Move this rule later'));
+  const del = el('button', 'btn danger', 'Delete');
+  del.type = 'button';
+  del.setAttribute('aria-label', 'Delete this rule');
+  del.onclick = () => {
+    doc.rules.splice(i, 1);
+    if (sel > doc.rules.length - 1) sel = Math.max(0, doc.rules.length - 1);
+    markDirty(); renderList(); renderPane();
+  };
+  head.append(move(I.up, -1, 'Move this rule earlier'), move(I.down, 1, 'Move this rule later'),
+              del, saveBtn);
   pane.append(head);
 
   if (shadowed) {
     const w = el('div', 'group');
-    w.append(el('p', 'help warn', 'This rule is never reached. A rule above it states no condition, so it matches every aircraft and evaluation stops there.'));
+    w.append(el('p', 'help warn', 'Never reached. A rule above it matches every aircraft.'));
     pane.append(w);
   }
 
-  pane.append(resultBand(r, cov));
+  pane.append(priorityBand(r));
 
   /* conditions, grouped by the question they ask */
   for (const g of GROUPS) {
@@ -1305,7 +1326,7 @@ function paintPane(pane) {
     const gh = el('div', 'group-h');
     const t = el('div', 'group-t');
     t.append(el('h3', 'lbl', g.label));
-    t.append(el('p', 'help', g.help));
+    if (g.help) t.append(el('p', 'help', g.help));
     gh.append(t);
     const add = el('button', 'mini', 'Add condition'); add.type = 'button';
     add.onclick = () => conditionPicker(add, r, g.id, () => {
@@ -1314,46 +1335,29 @@ function paintPane(pane) {
     gh.append(add);
     sec.append(gh);
     for (const k of keys) sec.append(conditionCard(r, k));
+    /* Only said where it is true: a rule with a distance and a circling condition states
+       no identity, and is not the wildcard. */
     if (!keys.length) sec.append(el('p', 'help',
-      g.id === 'identity'
-        ? 'None stated. With none anywhere, this rule matches every aircraft.'
-        : 'None stated.'));
+      g.id === 'identity' && !stated(r).length
+        ? 'None. This rule matches every aircraft.'
+        : 'None.'));
     pane.append(sec);
   }
-
-  const live = liveBand(r);
-  if (live) pane.append(live);
 
   const hits = hitsBand(r, cov);
   if (hits) pane.append(hits);
 
-  pane.append(historyBand(r));
+  const hist = $('#hist');
+  hist.replaceChildren(historyBand(r));
+  hist.hidden = false;
   /* Fetched when the band is first drawn rather than when the page loads: history is
      read one rule at a time, and previewing every rule on arrival is already enough
      work for a page that has just opened. */
   if (meta(r).savedKey && !meta(r).history) loadHistory(r);
 
-  pane.append(labelBand(r, i));
-}
-
-function resultBand(r, cov) {
-  const band = el('div', 'result');
-  const top = el('div', 'result-top');
-  const big = el('div', 'big', cov.figure);
-  if (cov.kind === 'dead' || cov.kind === 'error') big.classList.add('dead');
-  if (cov.kind === 'wild') big.classList.add('wild');
-  top.append(big);
-  top.append(el('p', cov.kind === 'dead' || cov.kind === 'error' ? 'dead' : '', cov.note));
-  band.append(top);
-
-  const blind = blindKeys(r);
-  if (blind.length && cov.kind !== 'blind' && cov.kind !== 'wild') {
-    band.append(el('p', 'help', 'Not counted above: '
-      + list(blind.map(k => BY_KEY[k].short || BY_KEY[k].label.toLowerCase()), ' and ')
-      + ` — the database has no answer for ${blind.length > 1 ? 'those' : 'that'}, so ${blind.length > 1 ? 'they narrow' : 'it narrows'} what is overhead right now, further down, and not this figure.`));
-  }
-
-  return band;
+  /* Last, and sunk: it is the one band that answers rather than asks. */
+  const live = liveBand(r);
+  if (live) pane.append(live);
 }
 
 /* ── Overhead right now ───────────────────────────────────────────────────
@@ -1392,11 +1396,10 @@ function liveBand(r) {
   const L = p && !p.error && p.live;
   if (!L) return null;
 
-  const sec = el('div', 'group');
+  const sec = el('div', 'group ans');
   const gh = el('div', 'group-h');
   const t = el('div', 'group-t');
-  t.append(el('h3', 'lbl', 'Overhead right now'));
-  t.append(el('p', 'help', 'The last poll, matched on the whole rule — where the aircraft is and how it is flying, not only who it is.'));
+  t.append(el('h3', 'lbl', 'Preview'));
   gh.append(t);
   sec.append(gh);
 
@@ -1404,12 +1407,12 @@ function liveBand(r) {
      without an answer having to arrive to tell it. */
   meta(r).shownFresh = liveFresh(r);
   if (!meta(r).shownFresh) {
-    sec.append(el('p', 'help warn', 'No fresh poll from the feeder, so there is nothing to check this rule against. A zero here would not mean an empty sky.'));
+    sec.append(el('p', 'help warn', 'Nothing recent from the receiver, so there is nothing to check this rule against.'));
     return sec;
   }
   const overhead = `${(L.overhead || 0).toLocaleString()} aircraft overhead`;
   if (!L.total) {
-    sec.append(el('p', 'help', `None of the ${overhead} match this rule as things stand. That is the normal state for a rule worth having — it says nothing about whether the rule works.`));
+    sec.append(el('p', 'help', `None of the ${overhead} match this rule right now.`));
     return sec;
   }
   /* Muted is a real answer to "would this alert", not a detail: the rule matches and
@@ -1418,8 +1421,8 @@ function liveBand(r) {
   const muted = r.priority === 0;
   sec.append(el('p', 'help' + (muted ? ' warn' : ''),
     `${L.total.toLocaleString()} of the ${overhead} `
-    + (muted ? 'match this rule, but it is muted and would send nothing.'
-             : `would alert the moment this rule is saved${L.total > L.aircraft.length ? `; the nearest ${L.aircraft.length} are listed` : ''}.`)));
+    + (muted ? 'match, but this rule is muted and would send nothing.'
+             : `would alert if you saved now${L.total > L.aircraft.length ? `; the nearest ${L.aircraft.length} are shown` : ''}.`)));
 
   const wrap = el('div', 'hits');
   const table = el('table');
@@ -1452,11 +1455,12 @@ function liveBand(r) {
 function hitsBand(r, cov) {
   const p = meta(r).preview;
   if (p && !p.error && p.aircraft?.length && cov.kind !== 'blind' && cov.kind !== 'wild') {
-    const sec = el('div', 'group');
+    const sec = el('div', 'group ans');
     const gh = el('div', 'group-h');
     const t = el('div', 'group-t');
     t.append(el('h3', 'lbl', 'Aircraft this selects'));
-    t.append(el('p', 'help', 'From the database, by the identity conditions above.'));
+    t.append(el('p', 'help', `${p.total.toLocaleString()} of `
+      + `${(p.database ?? 0).toLocaleString()} aircraft in the database.`));
     gh.append(t);
     sec.append(gh);
     const wrap = el('div', 'hits db');
@@ -1545,13 +1549,12 @@ function historyBand(r) {
   const sec = el('div', 'group');
   const gh = el('div', 'group-h');
   const t = el('div', 'group-t');
-  t.append(el('h3', 'lbl', 'Sent alerts'));
-  t.append(el('p', 'help', 'What this rule has actually delivered, newest first.'));
+  t.append(el('h3', 'lbl', 'Alert History'));
   gh.append(t);
   sec.append(gh);
 
   if (!m.savedKey) {
-    sec.append(el('p', 'help', 'This rule has never been saved, so nothing has been sent under it yet.'));
+    sec.append(el('p', 'help', 'Not saved yet, so nothing has been sent.'));
     return sec;
   }
   if (!h) {
@@ -1559,18 +1562,18 @@ function historyBand(r) {
     return sec;
   }
   if (h.error) {
-    sec.append(el('p', 'help bad', 'The history could not be read: ' + h.error));
+    sec.append(el('p', 'help bad', 'Could not be read: ' + h.error));
     return sec;
   }
   if (!h.total) {
     sec.append(el('p', 'help', 'Nothing sent yet.'
       + (m.key && m.key !== m.savedKey
-        ? ' This rule has been edited since it was saved; anything it sent before is filed under what it used to be.'
+        ? ' This rule has been edited since it was saved — earlier alerts are filed under the old version.'
         : '')));
     return sec;
   }
   sec.append(el('p', 'help', `${h.total.toLocaleString()} sent`
-    + (h.next ? `; the most recent ${h.alerts.length} are listed.` : '.')));
+    + (h.next ? `; the most recent ${h.alerts.length} are shown.` : '.')));
 
   const wrap = el('div', 'hits sent');
   for (const a of h.alerts) wrap.append(sentItem(a));
@@ -1646,46 +1649,26 @@ async function loadHistory(r, after = '') {
   if (doc.rules.includes(r) && doc.rules[sel] === r) renderPane();
 }
 
-function labelBand(r, i) {
+function priorityBand(r) {
   const sec = el('div', 'group');
   const gh = el('div', 'group-h');
   const t = el('div', 'group-t');
-  t.append(el('h3', 'lbl', 'Label and priority'));
+  const h = el('h3', 'lbl', 'Priority');
+  /* Native tooltip rather than a widget: it is a footnote to a field whose own help line
+     already says what the chosen level does. */
+  h.title = 'How loudly ntfy announces an alert: 5 pops over other apps and vibrates, '
+    + '3 arrives as a normal notification, 1 arrives silently. 0 mutes the rule.';
+  t.append(h);
   gh.append(t);
   sec.append(gh);
 
   const fields = el('div', 'fields');
 
-  const lab = el('label', 'field');
-  lab.append(el('span', 'lbl', 'Label — optional'));
-  const input = el('input'); input.type = 'text';
-  input.id = 'rule-name';
-  input.value = r.name || '';
-  input.placeholder = 'unlabelled';
-  const note = el('span', 'help');
-  const sayLabel = () => {
-    const key = ruleKey(r);
-    note.textContent = r.name
-      ? 'The notification is titled with this. Cooldowns and log lines use it too.'
-      : (key ? `Cooldowns key on ${key}, a fingerprint of the conditions above. Reordering the rules leaves it alone; changing what this rule matches does not.`
-             : 'Cooldowns key on a fingerprint of the conditions above. Reordering the rules leaves it alone; changing what this rule matches does not.');
-  };
-  input.oninput = () => {
-    r.name = input.value;
-    markDirty();
-    sayLabel();
-    const h = $('.pane-h h2');
-    h.textContent = ruleLabel(r);
-    h.classList.toggle('anon', !r.name);
-    renderList();
-  };
-  sayLabel();
-  lab.append(input, note);
-  fields.append(lab);
-
-  const pl = el('label', 'field');
-  pl.append(el('span', 'lbl', 'Priority'));
+  const pl = el('label', 'field narrow');
+  /* The band heading is the field's label, so the select carries the name rather than
+     repeating it on screen. */
   const s = el('select');
+  s.setAttribute('aria-label', 'Priority');
   s.append(new Option('Use the default', INHERIT));
   for (const [v, t2] of PRIORITIES) s.append(new Option(`${v} — ${t2}`, v));
   /* ?? not ||: priority 0 is "muted", a real choice, and must not read as unset. */
@@ -1696,22 +1679,16 @@ function labelBand(r, i) {
   };
   pl.append(s);
   pl.append(el('span', 'help', r.priority === 0
-    ? 'Muted. This rule claims the aircraft and stops evaluation without notifying — which is how an exception is written.'
+    ? 'Muted. Matching aircraft stop here and nothing is sent — this is how you write an exception.'
     : r.priority == null
-      ? `Follows the default of ${doc.ntfy.priority}, and keeps following it if that default moves.`
-      : 'Overrides the default for aircraft this rule claims.'));
+      ? `Follows the default of ${doc.ntfy.priority}.`
+      : r.priority >= 4
+        ? 'Overrides the default. Pops over other apps and vibrates.'
+        : r.priority <= 2
+          ? 'Overrides the default. Arrives quietly, without a sound.'
+          : 'Overrides the default. A normal notification.'));
   fields.append(pl);
   sec.append(fields);
-
-  const del = el('button', 'btn danger', 'Delete this rule');
-  del.type = 'button';
-  del.style.justifySelf = 'start';
-  del.onclick = () => {
-    doc.rules.splice(i, 1);
-    if (sel > doc.rules.length - 1) sel = Math.max(0, doc.rules.length - 1);
-    markDirty(); renderList(); renderPane();
-  };
-  sec.append(del);
   return sec;
 }
 
@@ -1739,7 +1716,7 @@ function renderSettings(pane) {
     pane.append(sec);
   };
 
-  band('Receiver', 'Needed by any rule with a distance from the receiver or a predicted pass overhead. Leave both blank if no rule uses one.', [
+  band('Receiver', 'Needed for distance and predicted-pass conditions. Leave blank if no rule uses one.', [
     {key: 'lat', label: 'Latitude', type: 'number', step: 'any', min: -90, max: 90},
     {key: 'lon', label: 'Longitude', type: 'number', step: 'any', min: -180, max: 180},
   ]);
@@ -1748,22 +1725,22 @@ function renderSettings(pane) {
      options: PRIORITIES.filter(([v]) => v > 0).map(([v, t]) => [String(v), `${v} — ${t}`]),
      help: 'Used by any rule that does not set its own.'},
     {key: 'cooldown', label: 'Cooldown', placeholder: '24h',
-     help: 'Stay quiet this long after alerting about the same aircraft. Counted per rule, so an aircraft that just alerted under one rule can still alert under another.'},
+     help: 'Stay quiet this long after alerting about the same aircraft. Counted per rule.'},
   ]);
-  band('Polling and logging', null, [
-    {key: 'source.poll_interval', label: 'Check the feeder every', placeholder: '15s',
-     help: 'A circling condition needs 30s or less, or it can never see a full turn.'},
-    {key: 'db.refresh_interval', label: 'Refresh the database every', placeholder: '24h',
-     help: 'If a refresh fails the cached list is served rather than none.'},
+  band('Timing and logging', null, [
+    {key: 'source.poll_interval', label: 'Check for aircraft every', placeholder: '15s',
+     help: 'A circling condition needs 30s or less to see a full turn.'},
+    {key: 'db.refresh_interval', label: 'Update the database every', placeholder: '24h'},
     {key: 'log_level', label: 'Log level',
      options: ['debug', 'info', 'warn', 'error'].map(v => [v, v])},
   ]);
 
   const foot = el('div', 'group');
   foot.append(el('p', 'help',
-    'These are the hot-reloaded settings. Saved changes are picked up within the next five seconds. Startup-only settings — the feeder URL, ntfy credentials, the database mirror and the cache directory — live in config.yaml and are not editable here.'));
+    'Saved changes take effect within five seconds. The feeder address, ntfy account and cache settings live in config.yaml and are not editable here.'));
   foot.append(el('p', 'help',
-    'alerts.yaml stays authoritative: hand edits are read back on the next reload, and environment variables still win over the file. Comments do not survive a save.'));
+    'Hand edits to alerts.yaml are picked up too. Comments in it do not survive a save.'));
+  foot.append(saveBtn);
   pane.append(foot);
 }
 
@@ -1787,7 +1764,9 @@ function settingField(f) {
   if (lock) {
     input.disabled = true;
     wrap.append(input);
-    wrap.append(el('span', 'help lock', `Set by ${lock.env}, currently ${lock.value}. The environment overrides this file, so editing it here would change nothing.`));
+    const note = el('span', 'help lock', 'Set to ');
+    note.append(el('span', 'env', String(lock.value)), ' by ' + lock.env + ', which wins over this file.');
+    wrap.append(note);
     return wrap;
   }
   input.oninput = () => {
@@ -1916,10 +1895,7 @@ async function runPreview(r, offset = 0, refresh = false) {
     m.at = Date.now();
     m.answered = asked;
     if (body.key) m.key = body.key;
-    if (body.database != null && body.database !== dbRows) {
-      dbRows = body.database;
-      $('#dbrows').textContent = dbRows.toLocaleString() + ' aircraft in the database';
-    }
+    if (body.database != null) dbRows = body.database;
   } catch (err) {
     if (stale(m, seq, req)) return;
     m.preview = {error: err.message, total: 0, aircraft: []};
@@ -1934,23 +1910,6 @@ async function runPreview(r, offset = 0, refresh = false) {
   if (doc.rules[sel] !== r) return;
   if (offset > 0 && !m.preview.error && appendHits(r)) return;
   renderPane();
-}
-
-/* While a number is being typed the pane must not be rebuilt, so only the things
-   that actually moved are repainted. */
-function refreshFigures() {
-  const r = rule();
-  if (!r) return;
-  const cov = coverage(r);
-  const big = $('.result .big');
-  if (big) {
-    big.textContent = cov.figure;
-    big.classList.toggle('dead', cov.kind === 'dead' || cov.kind === 'error');
-    big.classList.toggle('wild', cov.kind === 'wild');
-  }
-  const note = $('.result-top p');
-  if (note) note.textContent = cov.note;
-  renderList();
 }
 
 /* The band claims "right now", so it has to keep earning it. Two things do that on
@@ -2047,12 +2006,11 @@ async function save() {
           : 'every aircraft the receiver hears');
       }).join('\n')
       + (loud.length > 1
-          ? '\n\nThese rules match more than they can usefully tell you about, and every '
-          : '\n\nThis rule matches more than it can usefully tell you about, and every ')
-      + 'match is a push the moment the save lands. Add a condition, or set the priority '
-      + 'to muted, to stop it.\n\nSave anyway?'))
+          ? '\n\nThese rules would send that many notifications the moment you save. '
+          : '\n\nThis rule would send that many notifications the moment you save. ')
+      + 'Add a condition, or mute it, to stop that.\n\nSave anyway?'))
     return;
-  const b = $('#save');
+  const b = saveBtn;
   b.disabled = true;
   b.textContent = 'Saving…';
   try {
@@ -2062,7 +2020,7 @@ async function save() {
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw Error(body.error || `Save failed (HTTP ${res.status}).`);
-    message('Saved to ' + alertsPath + '. sky-notify picks the change up within five seconds.', 'good');
+    message('Saved. The change takes effect within five seconds.', 'good');
     dirty = false;
     b.classList.add('done');
     b.textContent = 'Saved';
@@ -2079,7 +2037,7 @@ async function load() {
   if (!res.ok) {
     let detail;
     try { detail = (await res.json()).error; } catch {}
-    throw Error(detail || `Could not load the settings (HTTP ${res.status}).`);
+    throw Error(detail || `Could not load your settings (HTTP ${res.status}).`);
   }
   const body = await res.json();
   doc = body.alerts;
@@ -2108,7 +2066,7 @@ async function load() {
 $('#settings').innerHTML = svg(I.sliders, 15);
 $('#settings').onclick = () => select('settings');
 $('#add').onclick = addRule;
-$('#save').onclick = save;
+saveBtn.onclick = save;
 addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); if (dirty) save(); }
 });
@@ -2118,8 +2076,8 @@ document.body.dataset.view = 'list';
 load().catch(err => {
   message(err.message, 'bad');
   const e = el('div', 'empty');
-  e.append(el('h2', '', 'Settings could not be loaded'));
-  e.append(el('p', 'help', 'sky-notify is still running on whatever alerts.yaml it last read. Check the service log, then reload this page.'));
+  e.append(el('h2', '', 'Could not load'));
+  e.append(el('p', 'help', 'sky-notify is still running on its last saved settings. Check the log, then reload this page.'));
   const again = el('button', 'btn', 'Reload');
   again.type = 'button';
   again.onclick = () => location.reload();
