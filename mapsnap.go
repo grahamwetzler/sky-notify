@@ -232,38 +232,19 @@ func (m *mapRenderer) drawOverlays(dc *gg.Context, v view, a *Alert) {
 		return
 	}
 	p := v.pixel(*a.AC.Lat, *a.AC.Lon)
-	if a.AC.Track == nil {
-		// No heading, so no direction to point: a dot says where without claiming which
-		// way. One sample, no samples and no heading are all ordinary.
-		dc.SetColor(colHalo)
-		dc.DrawCircle(p.x, p.y, 14)
-		dc.Fill()
-		dc.SetColor(colAircraft)
-		dc.DrawCircle(p.x, p.y, 9)
-		dc.Fill()
+	// The shape tar1090 would draw for this aircraft: a 747 as a 747, a helicopter as a
+	// helicopter. The alert is read at a glance, and the silhouette is half of what it says.
+	if a.AC.Track != nil && drawIcon(dc, p.x, p.y, *a.AC.Track, a.AC.Type, a.AC.Category, colAircraft, colHalo) {
 		return
 	}
-	dc.Push()
-	dc.Translate(p.x, p.y)
-	dc.Rotate(gg.Radians(*a.AC.Track)) // 0° is north, and so is -Y on the canvas
-	dc.Scale(3.0, 3.0)                 // the shape is drawn at its natural size; this is the size it is shown at
-	plane := [][2]float64{{0, -11}, {2.5, -3}, {11, 4}, {11, 6.5}, {2.5, 4}, {2.5, 8},
-		{5, 10.5}, {5, 12}, {0, 10.5}, {-5, 12}, {-5, 10.5}, {-2.5, 8}, {-2.5, 4},
-		{-11, 6.5}, {-11, 4}, {-2.5, -3}}
-	for i, q := range plane {
-		if i == 0 {
-			dc.MoveTo(q[0], q[1])
-		} else {
-			dc.LineTo(q[0], q[1])
-		}
-	}
-	dc.ClosePath()
+	// No heading, so no direction to point: a dot says where without claiming which
+	// way. One sample, no samples and no heading are all ordinary.
 	dc.SetColor(colHalo)
-	dc.SetLineWidth(3.5)
-	dc.StrokePreserve()
-	dc.SetColor(colAircraft)
+	dc.DrawCircle(p.x, p.y, 14)
 	dc.Fill()
-	dc.Pop()
+	dc.SetColor(colAircraft)
+	dc.DrawCircle(p.x, p.y, 9)
+	dc.Fill()
 }
 
 // pathSegments splits a track wherever it goes quiet for longer than maxSampleGap.

@@ -98,10 +98,15 @@ memory only, so a restart starts it again. It needs `source.poll_interval` of 30
 ## The map
 
 Every notification carries a PNG of where the aircraft is: the receiver marked, the
-aircraft pointed along its heading, and the last ten minutes of its track drawn behind
-it, on [OpenFreeMap](https://openfreemap.org) tiles in the `fiord` style. It is rendered
-here — vector tiles decoded and drawn in Go, no browser and no cgo — and cached on disk
-under `cache_dir`, so a familiar patch of sky costs no network at all.
+aircraft drawn as its own silhouette and pointed along its heading, and the last ten
+minutes of its track drawn behind it, on [OpenFreeMap](https://openfreemap.org) tiles in
+the `fiord` style. The silhouettes are tar1090's own marker set, picked the way tar1090
+picks them — by ICAO type designator first, by broadcast category second — so a 747
+arrives looking like a 747 and a helicopter like a helicopter.
+
+The picture is rendered here — vector tiles decoded and drawn in Go, no browser and no
+cgo — and cached on disk under `cache_dir`, so a familiar patch of sky costs no network
+at all.
 
 The map is always optional. Tiles down, a slow fetch, a render error, or an ntfy server
 that will not take the attachment all cost the notification its picture and nothing else:
@@ -244,3 +249,8 @@ The interesting-aircraft list is [plane-alert-db](https://github.com/sdr-enthusi
 by the SDR Enthusiasts, used under ODbL 1.0 / DbCL 1.0. This service only reads it.
 `aircraft.json` comes from [readsb](https://github.com/wiedehopf/readsb) via
 [ultrafeeder](https://github.com/sdr-enthusiasts/docker-adsb-ultrafeeder).
+
+The aircraft silhouettes in [`icons.json`](icons.json) are lifted from
+[tar1090](https://github.com/wiedehopf/tar1090)'s `html/markers.js` and are licensed
+GPL-2.0-or-later, not MIT. That file and [`icons.go`](icons.go), which draws it, carry
+tar1090's licence.

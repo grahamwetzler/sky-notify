@@ -3513,3 +3513,48 @@ func varint(n int) []byte {
 	}
 	return append(out, byte(n))
 }
+
+// The shapes are third-party path data, and the parser that walks them is ours. Either
+// one can break in a way that draws nothing at all, so draw every shape in the table and
+// insist each one leaves ink.
+func TestEveryAircraftIconDraws(t *testing.T) {
+	for name, s := range icons.Shapes {
+		dc := gg.NewContext(120, 120)
+		dc.SetColor(colBackground)
+		dc.Clear()
+		if !drawShape(dc, s, 1, 60, 60, 45, colAircraft, colHalo) {
+			t.Errorf("%s: path would not parse", name)
+			continue
+		}
+		painted := 0
+		for y := range 120 {
+			for x := range 120 {
+				if !sameColor(dc.Image().At(x, y), colBackground) {
+					painted++
+				}
+			}
+		}
+		if painted < 100 {
+			t.Errorf("%s: only %d pixels painted; the shape came out empty", name, painted)
+		}
+	}
+}
+
+// The designator is what makes a 747 look like a 747. The category is the fallback and
+// says only how heavy and whether it has rotors; an aircraft with neither still gets a
+// marker rather than nothing.
+func TestTheIconFollowsTheTypeThenTheCategory(t *testing.T) {
+	for _, tc := range []struct{ typ, cat, want string }{
+		{"B744", "A3", "heavy_4e"},   // the designator wins over a category that disagrees
+		{"EC35", "A7", "helicopter"}, // no designator entry, so the category answers
+		{"ZZZZ", "A7", "helicopter"},
+		{"", "A1", "cessna"},
+		{"ZZZZ", "ZZ", "unknown"},
+		{"b738", "", "b738"}, // a lower-case type code off the feed is the same aircraft
+	} {
+		s, _ := iconFor(tc.typ, tc.cat)
+		if s != icons.Shapes[tc.want] {
+			t.Errorf("iconFor(%q, %q) is not %s", tc.typ, tc.cat, tc.want)
+		}
+	}
+}
