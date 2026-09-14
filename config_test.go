@@ -910,3 +910,68 @@ func TestNotifyIsNotACondition(t *testing.T) {
 		t.Errorf("on_sight needs no receiver: %v", err)
 	}
 }
+
+func TestAIBlockLoadsFromYAMLAndEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+ai:
+  url: https://openrouter.ai/api/v1
+  key: sk-or-v1-secret
+  model: perplexity/sonar
+  timeout: 5s
+`), 0o644)
+	env := append(requiredEnv(), "SKY_CONFIG="+path, "SKY_NTFY_TOPIC=test")
+	cfg, err := LoadConfig(env)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.AI.URL != "https://openrouter.ai/api/v1" || cfg.AI.Key != "sk-or-v1-secret" ||
+		cfg.AI.Model != "perplexity/sonar" || cfg.AI.Timeout.Std() != 5*time.Second {
+		t.Fatalf("ai = %+v", cfg.AI)
+	}
+	if !cfg.aiEnabled() {
+		t.Error("aiEnabled = false for a configured provider")
+	}
+
+	env = append(env, "SKY_AI_MODEL=anthropic/claude-sonnet-4.5", "SKY_AI_TIMEOUT=9s")
+	cfg, err = LoadConfig(env)
+	if err != nil {
+		t.Fatalf("LoadConfig with env: %v", err)
+	}
+	if cfg.AI.Model != "anthropic/claude-sonnet-4.5" || cfg.AI.Timeout.Std() != 9*time.Second {
+		t.Fatalf("env override: ai = %+v", cfg.AI)
+	}
+}
+
+// The credentials belong in config.yaml because GET /api/alerts serves alerts.yaml to
+// the browser. Putting them in the wrong file has to say which file they belong in.
+func TestAIBlockInAlertsNamesTheRightFile(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "alerts.yaml"), []byte("ai:\n  key: sk-or-v1-secret\n"), 0o644)
+	env := append(requiredEnv(), "SKY_CONFIG="+filepath.Join(dir, "config.yaml"), "SKY_NTFY_TOPIC=test")
+	_, err := LoadAlerts(env)
+	if err == nil {
+		t.Fatal("an ai block in alerts.yaml loaded without complaint")
+	}
+	if !strings.Contains(err.Error(), "ai.key") || !strings.Contains(err.Error(), "config.yaml") {
+		t.Errorf("error should name the key and the file it belongs in: %v", err)
+	}
+}
+
+// Half a block is a misconfiguration, not a way to turn research off.
+func TestPartialAIBlockRefusesToStart(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.AI.URL = "https://openrouter.ai/api/v1"
+	if err := cfg.validate(); err == nil {
+		t.Fatal("a url with no model validated")
+	}
+	cfg.AI.URL, cfg.AI.Model = "", "perplexity/sonar"
+	if err := cfg.validate(); err == nil {
+		t.Fatal("a model with no url validated")
+	}
+	cfg.AI.URL = "not-a-url"
+	if err := cfg.validate(); err == nil {
+		t.Fatal("a non-http ai.url validated")
+	}
+}

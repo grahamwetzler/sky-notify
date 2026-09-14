@@ -43,4 +43,21 @@ map:
   enabled: true
   # tiles_url: https://tiles.openfreemap.org/planet   # or your own OpenFreeMap
 
+# Optional: the AI provider that answers a rule with `research: true`, which puts a line
+# in the notification saying who the aircraft belongs to. Off unless url and model are
+# both set. Any OpenAI-compatible provider works — OpenRouter, vLLM, Ollama, LiteLLM,
+# Together, Groq, OpenAI — because url is a base and "/chat/completions" is appended.
+#
+# The key lives here rather than in alerts.yaml because the web UI is served the whole of
+# alerts.yaml: a key there would be a key on a page.
+#
+# Nothing here searches the web; pick a model that does its own (perplexity/sonar, or an
+# ":online" suffix on OpenRouter) if the answer needs more than the model remembers.
+# A call that fails costs the notification that one line, never the notification.
+# ai:
+#   url: https://openrouter.ai/api/v1
+#   key: sk-or-v1-...
+#   model: perplexity/sonar
+#   timeout: 20s        # the default
+
 listen: ":8080"

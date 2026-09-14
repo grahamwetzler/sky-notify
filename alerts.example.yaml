@@ -36,6 +36,15 @@ rules:
     cmpg: [Pol]
     max_distance_nm: 25
     notify: closest_pass
+    # research asks the AI provider configured in config.yaml who the aircraft belongs
+    # to, and puts the answer in the notification. Like notify and priority it is not a
+    # condition. research_prompt is optional: it replaces the default instruction, and
+    # what the alert knows about the aircraft is appended to whichever is used, so there
+    # is no template syntax here.
+    research: true
+    # research_prompt: >-
+    #   Research this helicopter and reply with only the owner, the operator, and its
+    #   most likely use, in one concise sentence.
 
   - name: Listed aircraft nearby
     listed: true

@@ -59,7 +59,7 @@ body{margin:0;background:var(--bg);color:var(--fg);
 h1,h2,h3{margin:0;font-weight:600;letter-spacing:-.012em;text-wrap:balance}
 p{margin:0}
 button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
-input,select{font:inherit;color:inherit}
+input,select,textarea{font:inherit;color:inherit}
 svg{display:block;fill:none;stroke:currentColor;stroke-width:1.6;
   stroke-linecap:round;stroke-linejoin:round}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
@@ -236,10 +236,11 @@ td.num{white-space:nowrap;font-variant-numeric:tabular-nums}
 .mini.plus{padding-left:9px;padding-right:9px;font-size:15px;line-height:1}
 .numrow{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
 .numrow .unit{color:var(--fg2);flex:none}
-input[type=text],input[type=number],select{border:1px solid var(--line2);background:var(--panel);
+input[type=text],input[type=number],select,textarea{border:1px solid var(--line2);background:var(--panel);
   border-radius:var(--rs);padding:7px 9px;width:100%;min-width:0}
 input:disabled,select:disabled{background:var(--sunk);color:var(--fg3);cursor:not-allowed}
-input::placeholder{color:var(--fg3)}
+input::placeholder,textarea::placeholder{color:var(--fg3)}
+textarea{resize:vertical;line-height:1.45}
 .numrow input.num{width:10ch;text-align:right}
 
 .fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px 18px}
@@ -286,7 +287,7 @@ input::placeholder{color:var(--fg3)}
   .list-f[hidden]{display:grid}
   /* Anything under 16px is a field iOS zooms into on focus, and this page is read
      one-handed while something is overhead. */
-  input[type=text],input[type=number],select{font-size:16px}
+  input[type=text],input[type=number],select,textarea{font-size:16px}
   .shell{grid-template-columns:1fr;padding:12px 12px 80px}
   .list{position:static}
   .rows{max-height:none}
@@ -470,6 +471,10 @@ const LIST_KEYS = CONDITIONS.filter(c => c.kind === 'pick' || c.kind === 'free' 
    `doc` is the alerts document exactly as it will be PUT back — nothing else is
    ever added to it, so saving is a serialisation and not a reconstruction.   */
 let doc = null, vocab = {}, feedTypes = [], locks = {}, dbRows = null, alertsPath = '';
+/* What this deployment can do, from /api/alerts: whether an AI provider is configured,
+   and the prompt a research rule asks when it names none. Both come from the server so
+   the page cannot describe a default the service does not use. */
+let aiReady = false, defaultPrompt = '';
 /* Save lives at the end of whatever the pane is showing, so it is re-appended by every
    paint. Held, because between the paint and the next one it is in no document. */
 const saveBtn = el('button', 'btn primary', 'Save');
@@ -1229,7 +1234,7 @@ function renderPane() {
   const pane = $('#pane'), shell = $('.shell');
   const had = document.activeElement;
   const id = shell.contains(had) && had.id ? had.id : null;
-  const text = id && had.type === 'text';          // a select reports no caret
+  const text = id && (had.type === 'text' || had.tagName === 'TEXTAREA'); // a select reports no caret
   const caret = text ? [had.selectionStart, had.selectionEnd] : null;
   const raw = text ? had.value : null;
   const y = scrollY;
@@ -1663,8 +1668,8 @@ async function loadHistory(r, after = '') {
   if (doc.rules.includes(r) && doc.rules[sel] === r) renderPane();
 }
 
-/* Priority and When both say what happens when a rule matches, and neither filters, so
-   they are one band rather than a condition each. */
+/* Priority, When and Research all say what happens when a rule matches, and none of them
+   filters, so they are one band rather than a condition each. */
 const NOTIFY_WHEN = [['', 'Immediately'], ['closest_pass', 'At Closest Pass']];
 
 function notificationBand(r) {
@@ -1672,14 +1677,67 @@ function notificationBand(r) {
   const gh = el('div', 'group-h');
   const t = el('div', 'group-t');
   t.append(el('h3', 'lbl', 'Notification'));
-  t.append(el('p', 'help', 'What happens when this rule matches. Neither field changes what it matches.'));
+  t.append(el('p', 'help', 'What happens when this rule matches. None of it changes which aircraft it matches.'));
   gh.append(t);
   sec.append(gh);
 
   const fields = el('div', 'fields');
   fields.append(whenField(r), priorityField(r));
   sec.append(fields);
+  sec.append(researchField(r));
   return sec;
+}
+
+/* Research is the third thing that happens when a rule matches, and like the other two it
+   changes nothing about what matches. Its own row rather than a cell in the grid above: a
+   210px column is not where anyone writes a sentence. */
+function researchField(r) {
+  const wrap = el('div', 'field');
+  wrap.append(el('span', 'lbl', 'Research'));
+  const on = r.research === true;
+  const vals = el('div', 'vals');
+  const b = el('button', 'chip toggle');
+  b.type = 'button';
+  b.id = 'rule-research';
+  b.setAttribute('aria-pressed', String(on));
+  b.append(el('span', 'v', 'Ask an AI who owns it'));
+  b.onclick = () => {
+    /* Turning it off drops the prompt with it: a prompt on a rule that asks nothing is
+       a line in the file that does nothing, and the placeholder brings the default back. */
+    if (on) { delete r.research; delete r.research_prompt; } else r.research = true;
+    markDirty(); renderPane();
+  };
+  vals.append(b);
+  wrap.append(vals);
+  if (!on) {
+    wrap.append(el('span', 'help',
+      'Off. The notification says only what the feed and the aircraft database know.'));
+    return wrap;
+  }
+  /* The server cannot refuse this at save time — the page edits alerts.yaml, and the
+     provider is a config.yaml fact the validator has never been able to see — so the
+     warning is here rather than after a save that succeeded and changed nothing. */
+  if (!aiReady) wrap.append(el('span', 'help bad',
+    'No AI provider is configured on this server, so this rule will send without its '
+    + 'research line. Set ai.url and ai.model in config.yaml and restart.'));
+  const ta = el('textarea');
+  ta.id = 'rule-research-prompt';
+  ta.rows = 3;
+  ta.placeholder = defaultPrompt;
+  ta.value = r.research_prompt || '';
+  ta.setAttribute('aria-label', 'Research prompt');
+  ta.oninput = () => {
+    const v = ta.value.trim();
+    if (v) r.research_prompt = ta.value; else delete r.research_prompt;
+    markDirty();
+  };
+  wrap.append(ta);
+  wrap.append(el('span', 'help',
+    'Asked about every aircraft this rule claims, with what the alert already knows about '
+    + 'it appended — registration, type, position, distance. The answer becomes one line '
+    + 'of the notification; a call that fails costs that line and nothing else. '
+    + 'Leave it empty to ask the default above.'));
+  return wrap;
 }
 
 /* Both choices on screen at once, because the whole question is which of the two this
@@ -1871,6 +1929,10 @@ function payloadRule(r) {
   const out = {name: r.name || ''};
   if (r.priority !== undefined && r.priority !== null) out.priority = r.priority;
   if (r.notify) out.notify = r.notify;
+  if (r.research) {
+    out.research = true;
+    if (r.research_prompt && r.research_prompt.trim()) out.research_prompt = r.research_prompt;
+  }
   for (const key of CONDITIONS.map(c => c.key)) {
     const v = r[key];
     if (!hasValue(v)) continue;
@@ -1896,12 +1958,12 @@ function receiver() {
    the count in hand is an answer about this rule or about the one it used to be — which
    an age cannot say, and which a save must not guess at.
 
-   The name, the priority and when to notify are dropped: none of them reaches the
-   matching, so none can move the count, and a rename does not even ask for a new
-   preview. Keeping them here would leave a renamed rule permanently mismatched and
-   quietly unwarned. */
+   The name, the priority, when to notify and the two research keys are dropped: none of
+   them reaches the matching, so none can move the count, and a rename does not even ask
+   for a new preview. Keeping them here would leave a renamed rule — or one whose research
+   toggle was touched — permanently mismatched and quietly unwarned. */
 const question = r => {
-  const {name, priority, notify, ...conditions} = payloadRule(r);
+  const {name, priority, notify, research, research_prompt, ...conditions} = payloadRule(r);
   return JSON.stringify([conditions, receiver()]);
 };
 
@@ -2107,6 +2169,8 @@ async function load() {
   alertsPath = body.path;
   vocab = body.vocabulary || {};
   feedTypes = body.feed_types || [];
+  aiReady = body.ai === true;
+  defaultPrompt = body.research_prompt_default || '';
   locks = Object.fromEntries((body.locked || []).map(l => [l.key, l]));
   const keys = body.rule_keys || [];
   /* key follows the draft as it is edited; savedKey is what the running service filed

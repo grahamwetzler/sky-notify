@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -102,6 +103,17 @@ func run() error {
 	} else {
 		slog.Info("map snapshots disabled: notifications will carry no image")
 	}
+	// A rule can ask for research on a server with no provider: the UI validates alerts,
+	// which has never been able to see Config, so a save cannot be rejected for it. Say
+	// so once here, and skip silently at send time.
+	notifier.ai = newResearcher(cfg, httpClient)
+	if notifier.ai == nil {
+		if asked := researchRules(alerts); len(asked) > 0 {
+			slog.Warn("rules ask for AI research but no provider is configured (set ai.url and ai.model, or SKY_AI_URL and SKY_AI_MODEL)",
+				"rules", strings.Join(asked, ", "))
+		}
+	}
+
 	// A store that will not open is a warning, not an outage: sky-notify alerts fine
 	// without a record of having done so.
 	hist, err := NewHistory(cfg.CacheDir)
@@ -112,7 +124,7 @@ func run() error {
 		notifier.history = hist
 	}
 	source := NewSource(cfg, httpClient)
-	h := &server{live: live, db: db, state: state, notifier: notifier, history: hist}
+	h := &server{cfg: cfg, live: live, db: db, state: state, notifier: notifier, history: hist}
 
 	// Cold start needs a complete list. Running with a partial or empty one would look
 	// healthy while silently matching nothing.

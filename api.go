@@ -68,6 +68,7 @@ func (s *server) mux(q *queue) http.Handler {
 		json.NewEncoder(w).Encode(map[string]any{
 			"alerts": alerts, "path": alertsPath(env), "locked": locked,
 			"rule_keys": keys, "vocabulary": s.db.Vocabulary(), "feed_types": s.feedTypes(),
+			"ai": s.aiConfigured(), "research_prompt_default": defaultResearchPrompt,
 		})
 	})
 	mux.HandleFunc("POST /api/preview", func(w http.ResponseWriter, r *http.Request) {

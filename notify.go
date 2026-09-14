@@ -44,6 +44,8 @@ type Notifier struct {
 	fileURL string
 	// maps renders the snapshot, nil when map.enabled is false.
 	maps *mapRenderer
+	// ai answers a rule with research: true, nil when no provider is configured.
+	ai *researcher
 	// shutdown is the root signal context, held purely to know when Ctrl-C has been
 	// pressed. Delivery still runs on the caller's context and keeps its drain window;
 	// this only takes the picture away.
@@ -95,16 +97,18 @@ func (n *Notifier) setErr(err error) {
 // exhausted delivery — retryable or not — is recorded as the last error, because a
 // wedged resolver or a sustained 429 starves alerts exactly as completely as a bad token.
 func (n *Notifier) Publish(ctx context.Context, a *Alert) error {
+	// Both are done once, before the delivery clock starts, and reused across retries:
+	// the map is an attachment to this alert and the research is a line of it, not
+	// things to fetch again on each attempt.
+	img := n.snapshot(ctx, a)
+	a.Research = n.research(ctx, a)
+
 	msg := n.render(a)
 	blob, err := json.Marshal(msg)
 	if err != nil {
 		n.setErr(err)
 		return err
 	}
-
-	// Rendered once, before the delivery clock starts, and reused across retries: the
-	// map is an attachment to this alert, not a thing to redraw each attempt.
-	img := n.snapshot(ctx, a)
 
 	// The budget must bound the whole operation, not just the sleeps between attempts:
 	// three 15s HTTP attempts would otherwise block every later alert for 45s+,
@@ -182,6 +186,33 @@ func (n *Notifier) snapshot(ctx context.Context, a *Alert) []byte {
 	defer cancel()
 	defer context.AfterFunc(shutdown, cancel)()
 	return n.maps.snapshot(rctx, a)
+}
+
+// research asks the provider about this aircraft, or returns "" when there is not going
+// to be an answer. Every failure is silent by design, exactly as the map's is: a line
+// that cannot be written costs the notification that line, never the notification.
+func (n *Notifier) research(ctx context.Context, a *Alert) string {
+	if n.ai == nil || a.ResearchPrompt == "" {
+		return ""
+	}
+	shutdown := n.shutdown
+	if shutdown == nil {
+		shutdown = context.Background()
+	}
+	// Already stopping: the drain window exists to get queued alerts out, not to finish
+	// asking a model who owns the aircraft.
+	if shutdown.Err() != nil {
+		return ""
+	}
+	rctx, cancel := context.WithTimeout(ctx, n.cfg.AI.Timeout.Std())
+	defer cancel()
+	defer context.AfterFunc(shutdown, cancel)()
+	answer, err := n.ai.ask(rctx, a.ResearchPrompt, a.facts())
+	if err != nil {
+		slog.Warn("research failed, sending the alert without it", "icao", a.Hex, "err", err)
+		return ""
+	}
+	return answer
 }
 
 // send makes one delivery attempt: an attachment PUT when there is an image, and
@@ -316,32 +347,16 @@ func (n *Notifier) render(a *Alert) ntfyMessage {
 	}
 
 	var b strings.Builder
-	line := func(k, v string) {
-		if v != "" {
-			fmt.Fprintf(&b, "%s: %s\n", k, v)
-		}
-	}
+	line := func(k, v string) { writeLine(&b, k, v) }
 	if a.Emergency {
 		line("Emergency", a.Squawk+" ("+a.SquawkMeans+")")
 	}
-	reg := a.AC.Reg
-	if p != nil && p.Reg != "" {
-		reg = p.Reg
-	}
-	line("Registration", reg)
+	line("Registration", a.reg())
 	line("Callsign", strings.TrimSpace(a.AC.Flight))
-	// The same fallback the registration above takes. A listed aircraft is not a typed
-	// one — plane-alert-pia.csv rows carry an ICAO and little else — and asking only the
-	// row would describe a listed aircraft with less than an unlisted one, dropping the
-	// type code the feed did broadcast.
-	acType := a.AC.Type
-	if p != nil && p.Type != "" {
-		acType = p.Type
-	}
 	if p != nil {
 		line("Operator", p.Operator)
 	}
-	line("Type", acType)
+	line("Type", a.acType())
 	if p != nil {
 		line("Category", p.Category)
 		line("Tags", strings.Join(p.Tags, ", "))
@@ -361,6 +376,7 @@ func (n *Notifier) render(a *Alert) ntfyMessage {
 	if a.Circling {
 		line("Circling", "yes")
 	}
+	line("Research", a.Research)
 	if flags := describeDBFlags(a.AC.DBFlags); flags != "" {
 		line("Feeder flags", flags)
 	}
@@ -404,6 +420,14 @@ func (n *Notifier) clickURL(a *Alert) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+// writeLine is the "Key: value" line every notification body and every facts block is
+// built from. Shared so the two cannot drift into spelling a field differently.
+func writeLine(b *strings.Builder, k, v string) {
+	if v != "" {
+		fmt.Fprintf(b, "%s: %s\n", k, v)
+	}
 }
 
 func describeDBFlags(f int) string {

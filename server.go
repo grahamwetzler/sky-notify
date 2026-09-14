@@ -11,6 +11,9 @@ import (
 )
 
 type server struct {
+	// cfg is the startup config, nil in tests. Only read for facts the page needs to
+	// know about the deployment — never served, since it holds credentials.
+	cfg      *Config
 	live     *Live
 	db       *DB
 	state    *State
@@ -144,6 +147,10 @@ func (s *server) feedTypes() []FacetValue {
 	sort.Slice(out, func(i, j int) bool { return out[i].Value < out[j].Value })
 	return out
 }
+
+// aiConfigured is what the page needs in order to say, next to the research toggle,
+// that this server has nothing to answer it with.
+func (s *server) aiConfigured() bool { return s.cfg != nil && s.cfg.aiEnabled() }
 
 func (s *server) setPollErr(err error) {
 	s.mu.Lock()

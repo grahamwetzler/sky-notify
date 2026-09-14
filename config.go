@@ -92,6 +92,18 @@ type Config struct {
 		TilesURL string `yaml:"tiles_url"`
 	} `yaml:"map"`
 
+	// AI is the provider that answers a rule with research: true. Deliberately here and
+	// not in alerts.yaml: GET /api/alerts serves that file to the browser verbatim, and
+	// a key in it would be a key on a page.
+	AI struct {
+		// URL is a base, like ntfy.url: "/chat/completions" is appended. Every
+		// OpenAI-compatible provider is reachable that way.
+		URL     string   `yaml:"url"`
+		Key     string   `yaml:"key"`
+		Model   string   `yaml:"model"`
+		Timeout Duration `yaml:"timeout"`
+	} `yaml:"ai"`
+
 	CacheDir   string `yaml:"cache_dir"`
 	Tar1090URL string `yaml:"tar1090_url"`
 	Listen     string `yaml:"listen"`
@@ -140,6 +152,10 @@ func defaultConfig() *Config {
 	// deployment: OpenFreeMap is a free public service with no key and no account, so a
 	// default here misconfigures nothing. Point it at a self-hosted planet to change that.
 	c.Map.TilesURL = "https://tiles.openfreemap.org/planet"
+	// Not a statement about anyone's deployment: only how long we will wait for one.
+	// URL, key and model stay empty — unset means research is off, and guessing a
+	// provider is the same mistake as guessing an ntfy server.
+	c.AI.Timeout = Duration(20 * time.Second)
 	return c
 }
 
@@ -182,6 +198,11 @@ func envBindings() []envBinding {
 
 		{"SKY_MAP_ENABLED", func(c *Config, v string) error { return setBoolPtr(&c.Map.Enabled, v) }},
 		{"SKY_MAP_TILES_URL", func(c *Config, v string) error { c.Map.TilesURL = v; return nil }},
+
+		{"SKY_AI_URL", func(c *Config, v string) error { c.AI.URL = v; return nil }},
+		{"SKY_AI_KEY", func(c *Config, v string) error { c.AI.Key = v; return nil }},
+		{"SKY_AI_MODEL", func(c *Config, v string) error { c.AI.Model = v; return nil }},
+		{"SKY_AI_TIMEOUT", func(c *Config, v string) error { return setDur(&c.AI.Timeout, v) }},
 
 		{"SKY_CACHE_DIR", func(c *Config, v string) error { c.CacheDir = v; return nil }},
 		{"SKY_TAR1090_URL", func(c *Config, v string) error { c.Tar1090URL = v; return nil }},
@@ -326,7 +347,7 @@ func loadAlertsFile(env map[string]string) (*Alerts, error) {
 // to the other struct: a key missing here still fails, but with KnownFields' "field rules
 // not found in type main.Config" instead of a message naming the file it belongs in.
 var configMisplaced = []string{"rules", "cooldown", "lat", "lon", "log_level", "source.poll_interval", "ntfy.priority", "db.refresh_interval"}
-var alertsMisplaced = []string{"source.url", "source.max_age", "ntfy.url", "ntfy.topic", "ntfy.token", "ntfy.user", "ntfy.password", "tar1090_url", "db.files", "db.base_url", "cache_dir", "listen"}
+var alertsMisplaced = []string{"source.url", "source.max_age", "ntfy.url", "ntfy.topic", "ntfy.token", "ntfy.user", "ntfy.password", "tar1090_url", "db.files", "db.base_url", "cache_dir", "listen", "ai.url", "ai.key", "ai.model", "ai.timeout"}
 
 // A key or variable deleted by the rules-only rewrite gets an explanation of where its
 // job went. Without these, KnownFields says "field filters not found in type main.Alerts"

@@ -69,13 +69,16 @@ aircraft in plane-alert-db. Every condition is an optional filter of the same ki
 | altitude and distance | `min_altitude_ft`, `max_altitude_ft`, `max_distance_nm` |
 | flight path | `circling`, `passes_within_nm`, `passes_within` |
 
-One key is not a condition: `notify` says *when* the alert goes out, never which
-aircraft the rule claims.
+Three keys are not conditions. `notify` says *when* the alert goes out, and `research`
+and `research_prompt` say what it carries — none of them changes which aircraft the rule
+claims.
 
 | | |
 |---|---|
 | `notify: on_sight` | the default: alert on the first check that matches |
 | `notify: closest_pass` | hold the alert while the aircraft is inbound and send it once it has passed, reporting the nearest point it reached |
+| `research: true` | ask an AI provider who the aircraft belongs to and put the answer in the notification — see [AI research](#ai-research) |
+| `research_prompt` | what to ask instead of the default; the facts about the aircraft are appended either way |
 
 Values within one field are ORed, conditions are ANDed, and the first matching rule wins.
 A rule that states **no** condition is the wildcard — it matches every aircraft, so it
@@ -130,6 +133,59 @@ that will not take the attachment all cost the notification its picture and noth
 the alert still goes out, as text, on the same path it always used. Set
 `SKY_MAP_ENABLED=false` to turn it off.
 
+## AI research
+
+A rule can say `research: true`, and the notification then carries one more line: who the
+aircraft belongs to, who flies it, and what it is most likely doing.
+
+```
+Registration: N661HD
+Type: EC45
+Circling: yes
+Research: Owned by Hillwood Development, operated by the Garland PD air unit; most
+  likely a police patrol orbit.
+```
+
+Configure a provider in `config.yaml` — the credentials are deliberately not in
+`alerts.yaml`, which the web UI is served in full:
+
+```yaml
+ai:
+  url: https://openrouter.ai/api/v1
+  key: sk-or-v1-...
+  model: perplexity/sonar
+  timeout: 20s
+```
+
+`url` is a base, as `ntfy.url` is: `/chat/completions` is appended. Anything speaking the
+OpenAI shape works — OpenRouter, vLLM, Ollama, LiteLLM, Together, Groq, OpenAI — and
+`model` is passed through untouched, so searching the web is the model's job: pick one
+that does it (`perplexity/sonar`, or an `:online` suffix on OpenRouter) when the answer
+needs more than the model remembers. A keyless local provider can leave `key` unset.
+
+The prompt is an instruction, not a template. A rule that sets `research_prompt` replaces
+the default; either way, what the alert knows about the aircraft — registration, ICAO,
+type, callsign, altitude, position, distance, whether it is circling — is appended below
+it. There is no `{{ }}` syntax to learn and nothing to keep in sync.
+
+```yaml
+rules:
+  - name: Police helicopters
+    cmpg: [Pol]
+    max_distance_nm: 25
+    research: true
+    research_prompt: >-
+      Research this helicopter and reply with only the owner, the operator, and its
+      most likely use, in one concise sentence.
+```
+
+Research follows the same rule the map does: an unreachable provider, a 401, a rate
+limit, a timeout or a malformed reply costs the notification that one line and nothing
+else. Two things worth knowing before you turn it on: the answer is whatever the model
+said and nothing here verifies it, and the facts carry coordinates rather than a place
+name — there is no geocoder here, so a model that names the town is guessing from the
+latitude and longitude.
+
 ## Configuration
 
 Configure with environment variables and two optional YAML files — **environment wins
@@ -154,6 +210,10 @@ config path. Missing files are fine. See both example files for the exact split.
 | `SKY_TAR1090_URL` | — | makes notifications click through to your map |
 | `SKY_MAP_ENABLED` | `true` | attach a map snapshot to each notification |
 | `SKY_MAP_TILES_URL` | `https://tiles.openfreemap.org/planet` | TileJSON endpoint; point at your own OpenFreeMap |
+| `SKY_AI_URL` | — | base URL of an OpenAI-compatible provider; `/chat/completions` is appended |
+| `SKY_AI_MODEL` | — | set with `SKY_AI_URL` to enable `research: true` rules |
+| `SKY_AI_KEY` | — | omitted from the request when unset, for a keyless local provider |
+| `SKY_AI_TIMEOUT` | `20s` | how long one research call may take |
 | `SKY_LAT` / `SKY_LON` | — | your receiver; needed by rules with `max_distance_nm` or `passes_within_nm` |
 | `SKY_LOG_LEVEL` | `info` | |
 | `SKY_LISTEN` | `:8080` | serves `/healthz` |

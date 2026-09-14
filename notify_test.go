@@ -392,3 +392,77 @@ func TestMutingDuringADrainStopsTheNextAlert(t *testing.T) {
 		t.Error("a rule muted during the drain must stop the alert still waiting in it")
 	}
 }
+
+// ---------- research in the notification ----------
+
+// researchNotifier points a notifier at a fake provider and a fake ntfy.
+func researchNotifier(t *testing.T, ai *aiServer) (*Notifier, *ntfyServer) {
+	t.Helper()
+	cfg := testConfig(t)
+	rs := ai.start(t, cfg)
+	nt := &ntfyServer{}
+	n := nt.start(t, cfg)
+	n.ai = rs
+	return n, nt
+}
+
+func TestPublishCarriesTheResearchLine(t *testing.T) {
+	answer := "Owned by Hillwood, operated by the Garland PD air unit; a police patrol orbit."
+	n, nt := researchNotifier(t, &aiServer{answer: answer})
+	a := testAlert()
+	a.ResearchPrompt = defaultResearchPrompt
+	if err := n.Publish(context.Background(), a); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if !strings.Contains(nt.bodies[0].Message, "Research: "+answer) {
+		t.Errorf("message missing the research line:\n%s", nt.bodies[0].Message)
+	}
+}
+
+// The rule the map already follows: a line that cannot be written costs the notification
+// that line, never the notification.
+func TestPublishSurvivesAFailedResearchCall(t *testing.T) {
+	n, nt := researchNotifier(t, &aiServer{status: http.StatusUnauthorized, body: `{"error":"bad key"}`})
+	a := testAlert()
+	a.ResearchPrompt = defaultResearchPrompt
+	if err := n.Publish(context.Background(), a); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if len(nt.bodies) == 0 {
+		t.Fatal("nothing was published")
+	}
+	if strings.Contains(nt.bodies[0].Message, "Research:") {
+		t.Errorf("a failed call still wrote a line:\n%s", nt.bodies[0].Message)
+	}
+}
+
+// A rule that did not ask for research must not cost a request.
+func TestPublishWithoutAResearchRuleAsksNothing(t *testing.T) {
+	ai := &aiServer{answer: "should never be asked"}
+	n, _ := researchNotifier(t, ai)
+	if err := n.Publish(context.Background(), testAlert()); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if len(ai.reqs) != 0 {
+		t.Errorf("provider was asked %d times, want 0", len(ai.reqs))
+	}
+}
+
+// A model that answered with newlines would otherwise inject headers on the attachment
+// path, where the whole body travels in X-Message.
+func TestResearchAnswerIsHeaderSafe(t *testing.T) {
+	n, nt := researchNotifier(t, &aiServer{answer: "Owned by X.\nOperated by Y."})
+	n.maps = nil
+	a := testAlert()
+	a.ResearchPrompt = defaultResearchPrompt
+	if err := n.Publish(context.Background(), a); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	msg := nt.bodies[0].Message
+	if !strings.Contains(msg, "Research: Owned by X. Operated by Y.") {
+		t.Errorf("answer was not flattened to one line:\n%s", msg)
+	}
+	if got := headerSafe(strings.ReplaceAll(msg, "\n", `\n`)); strings.ContainsAny(got, "\r\n") {
+		t.Errorf("header form still carries a line break: %q", got)
+	}
+}

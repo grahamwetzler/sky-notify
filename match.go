@@ -45,6 +45,10 @@ type Alert struct {
 	HasDistance bool
 	Priority    int
 	Circling    bool
+	// ResearchPrompt is what the matching rule wants asked about this aircraft, "" when
+	// it wants nothing; Research is the answer, filled by the notifier before it renders.
+	ResearchPrompt string
+	Research       string
 	// AtClosest is set by a rule that notifies at the closest pass. Before delivery it
 	// is what tells the poll loop to hold the alert; after it, what puts the distance of
 	// the pass in the notification. Both are the same fact: this alert describes a pass,
@@ -68,6 +72,24 @@ type Alert struct {
 }
 
 func cooldownKey(hex, trigger string) string { return hex + "|" + trigger }
+
+// reg and acType are the registration and ICAO type to describe this aircraft with: the
+// database row when it carries one, the feed otherwise. A listed aircraft is not a typed
+// one — plane-alert-pia.csv rows carry an ICAO and little else — so asking only the row
+// would describe a listed aircraft with less than an unlisted one.
+func (a *Alert) reg() string {
+	if a.Plane != nil && a.Plane.Reg != "" {
+		return a.Plane.Reg
+	}
+	return a.AC.Reg
+}
+
+func (a *Alert) acType() string {
+	if a.Plane != nil && a.Plane.Type != "" {
+		return a.Plane.Type
+	}
+	return a.AC.Type
+}
 
 // newAlert builds the context a rule is matched against: who the aircraft is, and where
 // it is relative to the receiver. Shared by the alert path and the live rule preview, so
@@ -119,6 +141,7 @@ func Evaluate(ac Aircraft, db *DB, cfg *Alerts, trk *track) *Alert {
 		return nil
 	}
 	a.Trigger, a.RuleName, a.Priority, a.Path = rule.Key(), rule.Name, priority, trk.path()
+	a.ResearchPrompt = rule.researchPrompt()
 	a.AtClosest = rule.Notify == notifyClosestPass
 	// Derived from the squawk itself, never from which rule fired: the queue's eviction
 	// and ordering (main.go) and the notification's framing (notify.go) must treat a 7700
@@ -400,6 +423,23 @@ type Rule struct {
 	Circling       *bool     `yaml:"circling,omitempty" json:"circling,omitempty"`
 	PassesWithinNM *float64  `yaml:"passes_within_nm,omitempty" json:"passes_within_nm,omitempty"`
 	PassesWithin   *Duration `yaml:"passes_within,omitempty" json:"passes_within,omitempty"`
+	// Research asks the configured AI provider who the aircraft belongs to and puts the
+	// answer in the notification. Not a condition: it describes an aircraft the rule has
+	// already claimed. ResearchPrompt replaces defaultResearchPrompt when it is set.
+	Research       *bool  `yaml:"research,omitempty" json:"research,omitempty"`
+	ResearchPrompt string `yaml:"research_prompt,omitempty" json:"research_prompt,omitempty"`
+}
+
+// researchPrompt is what to ask about an aircraft this rule claimed, or "" when the rule
+// did not ask for research.
+func (r *Rule) researchPrompt() string {
+	if r.Research == nil || !*r.Research {
+		return ""
+	}
+	if p := strings.TrimSpace(r.ResearchPrompt); p != "" {
+		return p
+	}
+	return defaultResearchPrompt
 }
 
 // Key is what the cooldown ledger and the logs call this rule. A name is optional: a
@@ -408,14 +448,17 @@ type Rule struct {
 // An unnamed rule is keyed by a fingerprint of its own conditions rather than by its
 // position, so reordering the list leaves its cooldowns alone — and editing what it
 // matches resets them, which is right, since the ledger's entries were recorded for a
-// rule that no longer exists. Name, priority and notify are excluded: none of them
-// changes which aircraft the rule claims, only how and when it is announced.
+// rule that no longer exists. Name, priority, notify and the two research keys are
+// excluded: none of them changes which aircraft the rule claims, only how and when it is
+// announced — and were research in the fingerprint, switching it on would reset that
+// rule's cooldowns and re-alert every aircraft it had already claimed.
 func (r *Rule) Key() string {
 	if r.Name != "" {
 		return r.Name
 	}
 	conds := *r
 	conds.Name, conds.Priority, conds.All, conds.Notify = "", nil, nil, ""
+	conds.Research, conds.ResearchPrompt = nil, ""
 	blob, err := yaml.Marshal(conds)
 	if err != nil {
 		// A struct of scalars and string slices cannot fail to marshal, but a key that
