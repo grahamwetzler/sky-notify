@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -45,27 +44,23 @@ func (a *Altitude) UnmarshalJSON(b []byte) error {
 }
 
 type Aircraft struct {
-	Hex       string   `json:"hex"`
-	Flight    string   `json:"flight"`
-	Reg       string   `json:"r"`
-	Type      string   `json:"t"`
-	AltBaro   Altitude `json:"alt_baro"`
-	GS        float64  `json:"gs"`
-	Track     *float64 `json:"track"` // nil when absent: 0 is due north
-	Lat       *float64 `json:"lat"`
-	Lon       *float64 `json:"lon"`
-	Seen      float64  `json:"seen"`
-	SeenPos   float64  `json:"seen_pos"`
-	Squawk    string   `json:"squawk"`
-	Emergency string   `json:"emergency"`
-	Category  string   `json:"category"`
-	DBFlags   int      `json:"dbFlags"`
-	RSSI      float64  `json:"rssi"`
+	Hex      string   `json:"hex"`
+	Flight   string   `json:"flight"`
+	Reg      string   `json:"r"`
+	Type     string   `json:"t"`
+	AltBaro  Altitude `json:"alt_baro"`
+	GS       float64  `json:"gs"`
+	Track    *float64 `json:"track"` // nil when absent: 0 is due north
+	Lat      *float64 `json:"lat"`
+	Lon      *float64 `json:"lon"`
+	SeenPos  float64  `json:"seen_pos"`
+	Squawk   string   `json:"squawk"`
+	Category string   `json:"category"`
+	DBFlags  int      `json:"dbFlags"`
 }
 
 type feed struct {
 	Now      float64    `json:"now"`
-	Messages int64      `json:"messages"`
 	Aircraft []Aircraft `json:"aircraft"`
 }
 
@@ -157,34 +152,3 @@ func normalizeHex(s string) string {
 }
 
 func isNonICAO(hex string) bool { return strings.HasPrefix(hex, "~") }
-
-const earthRadiusNM = 3440.065
-
-func haversineNM(lat1, lon1, lat2, lon2 float64) float64 {
-	rad := math.Pi / 180
-	dLat := (lat2 - lat1) * rad
-	dLon := (lon2 - lon1) * rad
-	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
-		math.Cos(lat1*rad)*math.Cos(lat2*rad)*math.Sin(dLon/2)*math.Sin(dLon/2)
-	return 2 * earthRadiusNM * math.Asin(math.Min(1, math.Sqrt(a)))
-}
-
-// closestApproach predicts how near an aircraft that keeps its ground track and speed
-// comes to (lat0, lon0) within horizon, and how soon. The position is age old, so the
-// window runs from age to age+horizon after it was taken: an aircraft that has gone
-// quiet since reporting inbound may already have passed. Clamping to that window means
-// an aircraft overhead now counts and one that has already passed does not. A flat-earth
-// projection is accurate enough at the few-NM scale this is used for.
-// ponytail: straight-line prediction; a turning aircraft mispredicts, fine over minutes.
-func closestApproach(lat0, lon0, lat, lon, gsKt, trackDeg float64, age, horizon time.Duration) (float64, time.Duration) {
-	rad := math.Pi / 180
-	x := wrap180(lon-lon0) * math.Cos(lat0*rad) * 60
-	y := (lat - lat0) * 60
-	vx, vy := gsKt*math.Sin(trackDeg*rad), gsKt*math.Cos(trackDeg*rad) // NM per hour
-	start := age.Hours()
-	hrs := start
-	if v2 := vx*vx + vy*vy; v2 > 0 {
-		hrs = math.Max(start, math.Min(start+horizon.Hours(), -(x*vx+y*vy)/v2))
-	}
-	return math.Hypot(x+vx*hrs, y+vy*hrs), time.Duration((hrs - start) * float64(time.Hour))
-}

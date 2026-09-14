@@ -113,8 +113,3 @@ func (tk *track) circling() bool {
 	}
 	return true
 }
-
-// wrap180 maps an angle difference onto [-180, 180).
-func wrap180(deg float64) float64 {
-	return math.Mod(math.Mod(deg+180, 360)+360, 360) - 180
-}
