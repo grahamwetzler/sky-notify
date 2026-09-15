@@ -196,6 +196,34 @@ func TestFactsSayOnTheGround(t *testing.T) {
 	}
 }
 
+// The settings pane shows the facts block rather than describing it, which is only true
+// while the two agree. A field added to facts() and not to the page is a promise the page
+// stopped keeping — this is the drift that check exists to catch.
+func TestSampleFactsShowsEveryLine(t *testing.T) {
+	a := testAlert()
+	lat, lon := 32.9126, -96.6389
+	rate, track := -1088.0, 78.0
+	a.AC.Lat, a.AC.Lon = &lat, &lon
+	a.HasDistance, a.DistanceNM, a.Circling = true, 3.2, true
+	a.Route = "KCHS (Charleston) → EDDK (Cologne)"
+	a.AC.Desc, a.AC.OwnOp, a.AC.Year = "BOEING C-17A", "UNITED STATES AIR FORCE", "1998"
+	a.AC.BaroRate, a.AC.Track, a.AC.GS = &rate, &track, 412
+	a.AC.Squawk, a.AC.DBFlags = "4571", 1
+
+	b, err := uiFS.ReadFile("ui.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(b)
+	for _, line := range strings.Split(a.facts(), "\n") {
+		// The page carries the label and its shape, not this alert's values: the check is
+		// that every line facts() can write has a place on screen.
+		if label, _, _ := strings.Cut(line, ":"); !strings.Contains(page, "'"+label+": ") {
+			t.Errorf("SAMPLE_FACTS in ui.html has no %q line; the settings pane no longer shows what is sent", label)
+		}
+	}
+}
+
 // ---------- the route lookup ----------
 
 func TestLookupRoute(t *testing.T) {

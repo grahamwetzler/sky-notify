@@ -1707,16 +1707,28 @@ function notificationBand(r) {
   return sec;
 }
 
-/* One alert's worth of facts(), verbatim in shape. */
+/* One alert's worth of facts(), verbatim in shape and in order: every line facts() can
+   write, so what is on screen is the whole of what the model is sent and not a sample of
+   it. A real alert is shorter — a field the aircraft did not report is simply absent.
+   Kept in step with facts() by TestSampleFactsShowsEveryLine. */
 const SAMPLE_FACTS = [
   'Registration: N12345',
   'ICAO: adeb2f',
   'Type: C-17',
   'Callsign: RCH123',
+  'Route: KCHS (Charleston) \u2192 EDDK (Cologne)',
+  'Description: BOEING C-17A',
+  'Owner/operator: UNITED STATES AIR FORCE',
+  'Year: 1998',
   'Altitude: 31000 ft',
+  'Vertical rate: -1088 ft/min',
+  'Ground speed: 412 kt',
+  'Heading: 78\u00b0',
+  'Squawk: 4571',
   'Position: 32.9126, -96.6389',
   'Distance from receiver: 3.2 NM',
   'Circling: yes',
+  'Feeder flags: military',
 ].join('\n');
 
 /* Research is the third thing that happens when a rule matches, and like the other two it
