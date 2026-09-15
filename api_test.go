@@ -771,6 +771,23 @@ func TestAIKeyDoesNotFollowTheEndpoint(t *testing.T) {
 		}
 	})
 
+	// A variable set to the empty string holds no key either — it silences this run and
+	// leaves the file's credential for the next one, so the move is still refused.
+	t.Run("an empty env key does not buy a move", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "alerts.yaml")
+		os.WriteFile(path, []byte(stored), 0o644)
+		t.Setenv("SKY_AI_URL", "")
+		t.Setenv("SKY_AI_MODEL", "")
+		t.Setenv("SKY_AI_KEY", "")
+		h := alertsHandler(t, path)
+		if w := put(t, h, `"url":"https://attacker.invalid/v1"`); w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+		}
+		if blob, _ := os.ReadFile(path); string(blob) != stored {
+			t.Fatalf("a refused save must leave the file alone:\n%s", blob)
+		}
+	})
+
 	// A variable that blanks the endpoint turns research off for the run without saying
 	// anything about the file's key. An unrelated save must leave both alone, and the
 	// file's endpoint is still the one the key is pinned to while the override is up.

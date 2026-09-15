@@ -67,10 +67,11 @@ func checkAIKeyStaysPut(onDisk, saved *Alerts, env map[string]string) error {
 	// An environment key is judged before the payload's own, because a supplied key
 	// does not become the one that is sent: the overlay replaces it with the variable's
 	// value, so any key at all in the payload — "" included — would otherwise buy a move.
-	if key, ok := env[aiKeyEnv]; ok {
-		if key == "" {
-			return nil
-		}
+	//
+	// A variable set to the empty string holds no key, only silence for this run: the
+	// file's credential is still there for the next one, so the move is judged against
+	// it below rather than waved through.
+	if env[aiKeyEnv] != "" {
 		return fmt.Errorf("ai.url: %s holds the API key, so its endpoint is not editable here — set %s too, or move both into alerts.yaml", aiKeyEnv, aiURLEnv)
 	}
 	if saved.AI.Key != nil {
