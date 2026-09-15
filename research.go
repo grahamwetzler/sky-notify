@@ -40,11 +40,15 @@ func aiOrigin(raw string) string {
 	return u.Scheme + "://" + u.Host
 }
 
-// aiURL is the endpoint a document will actually be run against. An endpoint the
-// environment sets is not the page's to edit: applyAlertEnv overwrites whatever was
-// sent, so the payload's own URL never reaches a request.
-func aiURL(a *Alerts, env map[string]string) string {
-	if v, ok := env[aiURLEnv]; ok {
+// aiKeyEndpoint is the endpoint a document's stored credential belongs to: the
+// environment's when it names one, since applyAlertEnv overwrites whatever the page sent
+// and the payload's own URL never reaches a request.
+//
+// A variable set to the empty string names no endpoint. It switches research off for the
+// run, which says nothing about which host the file's key was issued for — so the file's
+// own URL stands, and both the guard below and the save keep judging it.
+func aiKeyEndpoint(a *Alerts, env map[string]string) string {
+	if v := env[aiURLEnv]; v != "" {
 		return v
 	}
 	return a.AI.URL
@@ -56,7 +60,7 @@ func aiURL(a *Alerts, env map[string]string) string {
 //
 // Turning the provider off is not a move: an empty endpoint sends nothing anywhere.
 func checkAIKeyStaysPut(onDisk, saved *Alerts, env map[string]string) error {
-	was, now := aiURL(onDisk, env), aiURL(saved, env)
+	was, now := aiKeyEndpoint(onDisk, env), aiKeyEndpoint(saved, env)
 	if now == "" || aiOrigin(now) == aiOrigin(was) {
 		return nil
 	}

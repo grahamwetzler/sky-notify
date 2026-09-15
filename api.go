@@ -183,8 +183,10 @@ func (s *server) mux(q *queue) http.Handler {
 		// endpoint has no origin left for the guard above to judge the next save's move
 		// against, so keeping it would make off-then-on a way to point it anywhere —
 		// and would refuse the honest re-enable with an error naming no origin at all.
+		// Off for the run is not off: a variable that blanks the endpoint leaves the
+		// file's own, and the key it was issued for, alone.
 		switch {
-		case aiURL(alerts, env) == "":
+		case aiKeyEndpoint(alerts, env) == "":
 			alerts.AI.Key = nil
 		case alerts.AI.Key == nil:
 			alerts.AI.Key = onDisk.AI.Key

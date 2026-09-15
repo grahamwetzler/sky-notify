@@ -771,6 +771,35 @@ func TestAIKeyDoesNotFollowTheEndpoint(t *testing.T) {
 		}
 	})
 
+	// A variable that blanks the endpoint turns research off for the run without saying
+	// anything about the file's key. An unrelated save must leave both alone, and the
+	// file's endpoint is still the one the key is pinned to while the override is up.
+	t.Run("an empty env endpoint is not the file turning off", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "alerts.yaml")
+		os.WriteFile(path, []byte(stored), 0o644)
+		t.Setenv("SKY_AI_URL", "")
+		t.Setenv("SKY_AI_MODEL", "")
+		h := alertsHandler(t, path)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(
+			`{"ai":{"url":"https://openrouter.ai/api/v1","model":"perplexity/sonar","timeout":"20s"},"source":{"poll_interval":"30s"},"rules":[]}`)))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		}
+		// Loaded without the overrides — research comes back with the key it had.
+		saved, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if saved.aiKey() != "sk-or-v1-secret" {
+			t.Errorf("key = %q, want the stored one kept through an unrelated save", saved.aiKey())
+		}
+		// And the guard is not blinded by the override either.
+		if w := put(t, h, `"url":"https://attacker.invalid/v1"`); w.Code != http.StatusBadRequest {
+			t.Fatalf("move status = %d, want 400: %s", w.Code, w.Body.String())
+		}
+	})
+
 	// An endpoint the environment pins is still an endpoint: a save whose own ai.url is
 	// blank has not turned anything off, so it must not drop the file's key.
 	t.Run("an env endpoint keeps the key through a blank url", func(t *testing.T) {
