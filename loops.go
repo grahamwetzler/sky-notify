@@ -211,35 +211,34 @@ func (p *poller) sweepHolds(cfg *Alerts, now time.Time) {
 	}
 }
 
-// stillHeld re-runs the match that parked this alert against the rules as they are now,
-// on the sighting it was built from — which the alert carries, so the hold stays frozen:
-// a hold that is retrying is not retired because the aircraft has since climbed out of
-// the rule that caught it.
+// claimedBy re-runs the match that built this alert against the rules as they are now, on
+// the sighting it was built from — which the alert carries, so a waiting alert stays
+// frozen: it is not dropped because the aircraft has since climbed out of the rule that
+// caught it. nil when the alert has nothing left to announce it.
 //
 // Asking which rule claims the aircraft rather than whether its own rule still alerts is
-// what catches an exception inserted ahead of that rule: first match wins, so the
-// aircraft now stops at the new rule, and a muted one answers nil. A rule that has
-// stopped waiting for the pass is not holding it either — the poll that matched it has
-// already queued the ordinary alert.
-func stillHeld(cfg *Alerts, h held) bool {
-	// matchInput, never the parked alert itself: a passes_within_nm rule writes its
-	// prediction into whatever alert it is handed, and this one is already in the
-	// notifier's hands.
-	snap := h.alert.matchInput()
+// what catches an exception written ahead of that rule: first match wins, so the aircraft
+// now stops at the new rule, and a muted one answers nil. Both places an alert waits ask
+// it — a hold on the poll side, the queue on the notify side — because an alert that has
+// already moved from one to the other is exactly the one a mute must still catch.
+func claimedBy(cfg *Alerts, a *Alert) *Rule {
+	// matchInput, never the alert itself: a passes_within_nm rule writes its prediction
+	// into whatever alert it is handed, and this one may already be in the notifier's
+	// hands.
+	snap := a.matchInput()
 	r := firstMatch(cfg.Rules, snap.AC, snap.Plane, snap)
-	return r != nil && r.priorityIn(cfg) != 0 && r.Key() == h.alert.Trigger && r.Notify == notifyClosestPass
+	if r == nil || r.priorityIn(cfg) == 0 || r.Key() != a.Trigger {
+		return nil
+	}
+	return r
 }
 
-// alertingKeys is the cooldown key of every rule that would still send something. A
-// muted rule has no key here: priority 0 means the aircraft stops at it.
-func alertingKeys(cfg *Alerts) map[string]bool {
-	keys := make(map[string]bool, len(cfg.Rules))
-	for i := range cfg.Rules {
-		if r := &cfg.Rules[i]; r.priorityIn(cfg) != 0 {
-			keys[r.Key()] = true
-		}
-	}
-	return keys
+// stillHeld is claimedBy plus the reason this alert is parked rather than sent. A rule
+// that has stopped waiting for the pass is not holding it — the poll that matched it has
+// already queued the ordinary alert.
+func stillHeld(cfg *Alerts, h held) bool {
+	r := claimedBy(cfg, h.alert)
+	return r != nil && r.Notify == notifyClosestPass
 }
 
 // retry is how long a failing key waits and how long it will wait next time. The two
@@ -271,16 +270,17 @@ func notifyLoop(ctx context.Context, live *Live, n *Notifier, state *State, q *q
 			// against the config as it is now, not as it was when the drain began.
 			cfg := live.Get()
 			cooldown := cfg.Cooldown.Std()
-			alerting := alertingKeys(cfg)
 			key := cooldownKey(a.Hex, a.Trigger)
 
 			// The last gate before something is sent, and the only one the queue is
 			// behind: alerts.yaml is re-read every five seconds, so a rule can be
-			// deleted or muted between the poll that queued this and now. A mute that
-			// still let a queued alert out would be a mute the operator cannot trust.
-			// No cooldown is recorded, so the alert returns if the rule does.
-			if !alerting[a.Trigger] {
-				slog.Debug("dropping a queued alert whose rule no longer alerts", "icao", a.Hex, "trigger", a.Trigger)
+			// deleted, muted or shadowed between the poll that queued this and now. A
+			// mute that still let a queued alert out would be a mute the operator cannot
+			// trust — including one written as an exception ahead of the rule that
+			// queued it, which leaves that rule alerting and this aircraft no longer
+			// reaching it. No cooldown is recorded, so the alert returns if the rule does.
+			if claimedBy(cfg, a) == nil {
+				slog.Debug("dropping a queued alert no rule claims any more", "icao", a.Hex, "trigger", a.Trigger)
 				q.done(key)
 				continue
 			}

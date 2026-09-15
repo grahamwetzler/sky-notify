@@ -483,6 +483,82 @@ func TestResearchIsDecidedAfterTheMapRender(t *testing.T) {
 	}
 }
 
+// The route lookup widened the window the map render opened: the aircraft reaches the
+// lookup service, and then up to routeBudget later it reaches the provider. The reading
+// that decides is the one taken after the wait, not before it.
+func TestResearchIsDecidedAfterTheRouteLookup(t *testing.T) {
+	ai := &aiServer{answer: "should never be asked"}
+	n, nt, alerts := researchNotifier(t, ai)
+	on := true
+	alerts.Rules = []Rule{{Name: "listed", Research: &on}}
+
+	// A route service that answers only once the test says so, which holds the lookup
+	// open for the length of the edit.
+	asking, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	route := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(asking) })
+		<-release
+		w.Write([]byte(`[{"_airports":[],"airport_codes":"unknown"}]`))
+	}))
+	defer route.Close()
+	n.cfg.RouteAPIURL = route.URL
+
+	a := testAlert()
+	lat, lon := 32.59, -99.32
+	a.AC.Lat, a.AC.Lon = &lat, &lon
+	done := make(chan error, 1)
+	go func() { done <- n.Publish(context.Background(), a) }()
+
+	<-asking
+	off := *alerts
+	off.Rules = []Rule{{Name: "listed"}}
+	n.live.p.Store(&off)
+	close(release)
+
+	if err := <-done; err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if len(ai.reqs) != 0 {
+		t.Errorf("provider was asked %d times after research was switched off mid-lookup", len(ai.reqs))
+	}
+	if len(nt.bodies) != 1 || strings.Contains(nt.bodies[0].Message, researchMark) {
+		t.Errorf("the alert should have gone out without the line:\n%v", nt.bodies)
+	}
+}
+
+// The route is optional context. A lookup service that has stopped answering must cost
+// the model that line and nothing else — not the research call, which has its own
+// timeout and is entitled to all of it.
+func TestASlowRouteLookupDoesNotSpendTheAITimeout(t *testing.T) {
+	ai := &aiServer{answer: "A JetBlue scheduled passenger flight."}
+	n, nt, alerts := researchNotifier(t, ai)
+	alerts.AI.Timeout = Duration(100 * time.Millisecond)
+
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(500 * time.Millisecond): // well past the provider's whole budget
+		case <-r.Context().Done():
+			return
+		}
+		w.Write([]byte(`[{"_airports":[],"airport_codes":"unknown"}]`))
+	}))
+	defer slow.Close()
+	n.cfg.RouteAPIURL = slow.URL
+	n.aiClient = slow.Client()
+
+	a := testAlert()
+	lat, lon := 32.59, -99.32
+	a.AC.Lat, a.AC.Lon = &lat, &lon
+	researchRule(alerts, a.Trigger)
+	if err := n.Publish(context.Background(), a); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if !strings.HasPrefix(nt.bodies[0].Message, researchMark+ai.answer+"\n") {
+		t.Errorf("a slow route lookup took the research line with it:\n%s", nt.bodies[0].Message)
+	}
+}
+
 // A rule deleted outright is the same answer as one that stopped asking.
 func TestResearchPromptForAMissingRule(t *testing.T) {
 	alerts := defaultAlerts()

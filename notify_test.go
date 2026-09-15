@@ -393,6 +393,38 @@ func TestMutingDuringADrainStopsTheNextAlert(t *testing.T) {
 	}
 }
 
+// A mute is not always written as a mute. The ordinary way to stop alerting on one
+// aircraft is an exception ahead of the broad rule that caught it, which leaves that rule
+// alerting and simply stops this aircraft reaching it — so a gate that asks "does my rule
+// still alert" lets the queued copy out, and the operator watches the notification they
+// just excepted arrive.
+func TestAnExceptionWrittenAheadOfTheRuleStopsAQueuedAlert(t *testing.T) {
+	nt := &ntfyServer{}
+	n := nt.start(t, testConfig(t))
+	alerts := defaultAlerts()
+	alerts.Rules = []Rule{{Name: "watch"}}
+
+	a := testAlert()
+	a.Trigger, a.AC.Reg = "watch", "N12345"
+	a.Plane = nil // the feed's own registration, so the exception below reads it
+
+	// Queued under the broad rule, then excepted before the drain reaches it.
+	next := defaultAlerts()
+	next.Rules = []Rule{
+		{Name: "except", Priority: intp(0), Reg: []string{"N12345"}},
+		{Name: "watch"},
+	}
+	state := drainOne(t, n, next, a)
+
+	if len(nt.bodies) != 0 {
+		t.Errorf("an aircraft excepted before the drain reached it was still announced:\n%v", nt.bodies)
+	}
+	// No cooldown either: the alert must come back if the exception does not.
+	if !state.Eligible(cooldownKey(a.Hex, "watch"), next.Cooldown.Std()) {
+		t.Error("a dropped alert must not record a cooldown")
+	}
+}
+
 // ---------- research in the notification ----------
 
 // researchNotifier points a notifier at a fake provider and a fake ntfy, and hands back

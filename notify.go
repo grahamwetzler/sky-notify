@@ -199,10 +199,29 @@ func (n *Notifier) research(ctx context.Context, a *Alert) string {
 	if n.live == nil {
 		return ""
 	}
-	// One snapshot answers both halves of the question — what to ask, and who to ask —
-	// and it is taken here rather than anywhere earlier because Publish has already spent
-	// up to the map budget rendering a picture. A rule switched off in that window must
-	// not still send the aircraft to a third party.
+	shutdown := n.shutdown
+	if shutdown == nil {
+		shutdown = context.Background()
+	}
+	// Already stopping: the drain window exists to get queued alerts out, not to finish
+	// asking a model who owns the aircraft.
+	if shutdown.Err() != nil {
+		return ""
+	}
+	// Asked twice, before and after the route lookup, because the answer to both halves —
+	// what to ask, and who to ask — can change while we wait. The first reading is what
+	// keeps an alert no rule is researching away from the lookup service; the second is
+	// the one that decides, because it is the one taken immediately before the aircraft
+	// is sent to a third party.
+	if researchPromptFor(n.live.Get(), a.Trigger) == "" {
+		return ""
+	}
+	// On ctx and its own budget, never the provider's: an unreachable lookup service must
+	// cost the model a line of context, not the answer itself. Publish has already spent
+	// up to the map budget by now, so what is left is the notify budget, which this shares
+	// with the call below rather than borrowing from it.
+	a.Route = n.route(ctx, a)
+
 	cfg := n.live.Get()
 	prompt := researchPromptFor(cfg, a.Trigger)
 	if prompt == "" {
@@ -213,19 +232,9 @@ func (n *Notifier) research(ctx context.Context, a *Alert) string {
 		slog.Warn("a rule asked for research but no AI provider is configured", "icao", a.Hex)
 		return ""
 	}
-	shutdown := n.shutdown
-	if shutdown == nil {
-		shutdown = context.Background()
-	}
-	// Already stopping: the drain window exists to get queued alerts out, not to finish
-	// asking a model who owns the aircraft.
-	if shutdown.Err() != nil {
-		return ""
-	}
 	rctx, cancel := context.WithTimeout(ctx, cfg.AI.Timeout.Std())
 	defer cancel()
 	defer context.AfterFunc(shutdown, cancel)()
-	a.Route = n.route(rctx, a)
 	answer, err := rs.ask(rctx, prompt, a.facts())
 	if err != nil {
 		slog.Warn("research failed, sending the alert without it", "icao", a.Hex, "err", err)
@@ -245,6 +254,9 @@ func (n *Notifier) route(ctx context.Context, a *Alert) string {
 	}
 	rctx, cancel := context.WithTimeout(ctx, routeBudget)
 	defer cancel()
+	if shutdown := n.shutdown; shutdown != nil {
+		defer context.AfterFunc(shutdown, cancel)()
+	}
 	r, err := lookupRoute(rctx, n.aiClient, n.cfg.RouteAPIURL, callsign, *a.AC.Lat, *a.AC.Lon)
 	if err != nil {
 		slog.Warn("route lookup failed, researching without it", "icao", a.Hex, "err", err)
