@@ -559,6 +559,40 @@ func TestASlowRouteLookupDoesNotSpendTheAITimeout(t *testing.T) {
 	}
 }
 
+// The route is gathered for the provider and for nothing else. A rule left saying
+// research: true after the provider was cleared must not still send the callsign and
+// position to the lookup service — nor spend the lookup budget on the way to sending
+// nothing.
+func TestNoProviderMeansNoRouteLookupEither(t *testing.T) {
+	nt := &ntfyServer{}
+	n := nt.start(t, testConfig(t))
+	alerts := defaultAlerts() // no ai.url, no ai.model: research is off
+	on := true
+	alerts.Rules = []Rule{{Name: "listed", Research: &on}}
+	n.live = NewLive(alerts)
+
+	asked := 0
+	route := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked++
+		w.Write([]byte(`[{"_airports":[],"airport_codes":"unknown"}]`))
+	}))
+	defer route.Close()
+	n.cfg.RouteAPIURL = route.URL
+
+	a := testAlert()
+	lat, lon := 32.59, -99.32
+	a.AC.Lat, a.AC.Lon = &lat, &lon
+	if err := n.Publish(context.Background(), a); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if asked != 0 {
+		t.Errorf("the route service was asked %d times with no provider to send the answer to", asked)
+	}
+	if len(nt.bodies) != 1 || strings.Contains(nt.bodies[0].Message, researchMark) {
+		t.Errorf("the alert should still have gone out, without the line:\n%v", nt.bodies)
+	}
+}
+
 // A rule deleted outright is the same answer as one that stopped asking.
 func TestResearchPromptForAMissingRule(t *testing.T) {
 	alerts := defaultAlerts()

@@ -208,12 +208,13 @@ func (n *Notifier) research(ctx context.Context, a *Alert) string {
 	if shutdown.Err() != nil {
 		return ""
 	}
-	// Asked twice, before and after the route lookup, because the answer to both halves —
-	// what to ask, and who to ask — can change while we wait. The first reading is what
-	// keeps an alert no rule is researching away from the lookup service; the second is
-	// the one that decides, because it is the one taken immediately before the aircraft
+	// Asked twice, before and after the route lookup, because the answer can change while
+	// we wait. The first reading is what keeps an alert that is not going to be researched
+	// away from the lookup service — the route is gathered for the provider and for
+	// nothing else, so no provider is as good a reason not to ask as no rule. The second
+	// is the one that decides, because it is the one taken immediately before the aircraft
 	// is sent to a third party.
-	if researchPromptFor(n.live.Get(), a.Trigger) == "" {
+	if !willResearch(n.live.Get(), a) {
 		return ""
 	}
 	// On ctx and its own budget, never the provider's: an unreachable lookup service must
@@ -223,15 +224,11 @@ func (n *Notifier) research(ctx context.Context, a *Alert) string {
 	a.Route = n.route(ctx, a)
 
 	cfg := n.live.Get()
+	if !willResearch(cfg, a) {
+		return ""
+	}
 	prompt := researchPromptFor(cfg, a.Trigger)
-	if prompt == "" {
-		return ""
-	}
 	rs := newResearcher(cfg, n.aiClient)
-	if rs == nil {
-		slog.Warn("a rule asked for research but no AI provider is configured", "icao", a.Hex)
-		return ""
-	}
 	rctx, cancel := context.WithTimeout(ctx, cfg.AI.Timeout.Std())
 	defer cancel()
 	defer context.AfterFunc(shutdown, cancel)()
@@ -241,6 +238,20 @@ func (n *Notifier) research(ctx context.Context, a *Alert) string {
 		return ""
 	}
 	return answer
+}
+
+// willResearch reports whether this alert is going to be put to a provider under these
+// rules: a rule that asks, and a provider to ask. Both are hot-reloaded, so it is asked
+// again after anything that waits.
+func willResearch(cfg *Alerts, a *Alert) bool {
+	if researchPromptFor(cfg, a.Trigger) == "" {
+		return false
+	}
+	if !cfg.aiEnabled() {
+		slog.Warn("a rule asked for research but no AI provider is configured", "icao", a.Hex)
+		return false
+	}
+	return true
 }
 
 // route asks the lookup service where this callsign flies between, for the facts block and
