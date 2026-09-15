@@ -186,7 +186,7 @@ func (p *poller) sweepHolds(cfg *Alerts, now time.Time) {
 		// operator has just excepted is exactly what a mute is written to prevent. The
 		// alert carries the sighting it was built from, so a hold that is retrying is not
 		// retired because the aircraft has since flown out of the rule that caught it.
-		case claimedBy(cfg, h.alert) == nil || !sameReceiver(cfg, h.alert):
+		case claimedBy(cfg, h.alert) == nil:
 			delete(p.holds, key)
 		// Delivered, said by the alert itself. Not "no longer eligible": a cooldown
 		// shorter than the poll interval is legal, and the ledger has pruned its own
@@ -258,6 +258,13 @@ func claimedBy(cfg *Alerts, a *Alert) *Rule {
 	// to wait for; a hold whose rule now sends on sight has already been overtaken by the
 	// poll that queued the ordinary one.
 	if (r.Notify == notifyClosestPass) != a.AtClosest {
+		return nil
+	}
+	// And measured from the receiver that is there now. A hold retired for having moved
+	// may already have put its alert in the queue, which outlives the hold — so the
+	// distance has to be judged here as well, or the pass the sweep just refused to
+	// announce is announced from the queue instead.
+	if !sameReceiver(cfg, a) {
 		return nil
 	}
 	return r

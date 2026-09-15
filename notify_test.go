@@ -76,7 +76,19 @@ func testAlert() *Alert {
 
 		DistanceNM:  12.34,
 		HasDistance: true,
+		// A distance is measured from somewhere, and claimedBy asks where: an alert
+		// carrying one was built under a configured receiver, so the documents it is
+		// weighed against carry the same one. testAlerts is that document.
+		recvLat: testLat, recvLon: testLon,
 	}
+}
+
+// testAlerts is the document a testAlert was built under: defaults, plus the receiver it
+// measured itself against.
+func testAlerts() *Alerts {
+	a := defaultAlerts()
+	a.Lat, a.Lon = &testLat, &testLon
+	return a
 }
 
 // A listed aircraft is not a typed one: plane-alert-pia.csv rows carry an ICAO and
@@ -401,7 +413,7 @@ func TestMutingDuringADrainStopsTheNextAlert(t *testing.T) {
 func TestAnExceptionWrittenAheadOfTheRuleStopsAQueuedAlert(t *testing.T) {
 	nt := &ntfyServer{}
 	n := nt.start(t, testConfig(t))
-	alerts := defaultAlerts()
+	alerts := testAlerts()
 	alerts.Rules = []Rule{{Name: "watch"}}
 
 	a := testAlert()
@@ -409,7 +421,7 @@ func TestAnExceptionWrittenAheadOfTheRuleStopsAQueuedAlert(t *testing.T) {
 	a.Plane = nil // the feed's own registration, so the exception below reads it
 
 	// Queued under the broad rule, then excepted before the drain reaches it.
-	next := defaultAlerts()
+	next := testAlerts()
 	next.Rules = []Rule{
 		{Name: "except", Priority: intp(0), Reg: []string{"N12345"}},
 		{Name: "watch"},
@@ -433,13 +445,13 @@ func TestAnExceptionWrittenAheadOfTheRuleStopsAQueuedAlert(t *testing.T) {
 func TestARuleSwitchedToClosestPassStopsTheQueuedFirstSighting(t *testing.T) {
 	nt := &ntfyServer{}
 	n := nt.start(t, testConfig(t))
-	alerts := defaultAlerts()
+	alerts := testAlerts()
 	alerts.Rules = []Rule{{Name: "watch"}} // on_sight, which is what queued the alert
 
 	a := testAlert()
 	a.Trigger, a.AtClosest = "watch", false
 
-	next := defaultAlerts()
+	next := testAlerts()
 	// No new conditions: the only thing that changed is when the rule sends, which is
 	// the whole of what this checks.
 	next.Rules = []Rule{{Name: "watch", Notify: notifyClosestPass}}
@@ -453,6 +465,31 @@ func TestARuleSwitchedToClosestPassStopsTheQueuedFirstSighting(t *testing.T) {
 	}
 }
 
+// A hold that has fired has already put its alert in the queue, and the queue outlives
+// the hold: retiring the hold when the receiver moves leaves that copy behind. The pass
+// the sweep just refused to announce would then be announced from the queue instead,
+// measured from a receiver the operator has left.
+func TestAQueuedPassIsDroppedWhenTheReceiverMoves(t *testing.T) {
+	nt := &ntfyServer{}
+	n := nt.start(t, testConfig(t))
+
+	a := testAlert()
+	a.Trigger, a.AtClosest = "pass", true
+
+	next := testAlerts()
+	next.Rules = []Rule{{Name: "pass", Notify: notifyClosestPass}}
+	moved := testLat + 1 // 60 NM north of where the alert measured itself from
+	next.Lat = &moved
+	state := drainOne(t, n, next, a)
+
+	if len(nt.bodies) != 0 {
+		t.Errorf("a pass measured from the old receiver was still announced:\n%v", nt.bodies)
+	}
+	if !state.Eligible(cooldownKey(a.Hex, "pass"), next.Cooldown.Std()) {
+		t.Error("a dropped alert must not record a cooldown")
+	}
+}
+
 // ---------- research in the notification ----------
 
 // researchNotifier points a notifier at a fake provider and a fake ntfy, and hands back
@@ -460,7 +497,7 @@ func TestARuleSwitchedToClosestPassStopsTheQueuedFirstSighting(t *testing.T) {
 // publish time, and what a test edits to change the provider under it.
 func researchNotifier(t *testing.T, ai *aiServer) (*Notifier, *ntfyServer, *Alerts) {
 	t.Helper()
-	alerts := defaultAlerts()
+	alerts := testAlerts()
 	ai.start(t, alerts)
 	nt := &ntfyServer{}
 	n := nt.start(t, testConfig(t))

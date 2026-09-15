@@ -611,7 +611,7 @@ func TestASlowRouteLookupDoesNotSpendTheAITimeout(t *testing.T) {
 func TestNoProviderMeansNoRouteLookupEither(t *testing.T) {
 	nt := &ntfyServer{}
 	n := nt.start(t, testConfig(t))
-	alerts := defaultAlerts() // no ai.url, no ai.model: research is off
+	alerts := testAlerts() // no ai.url, no ai.model: research is off
 	on := true
 	alerts.Rules = []Rule{{Name: "listed", Research: &on}}
 	n.live = NewLive(alerts)
