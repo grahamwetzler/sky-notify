@@ -1084,6 +1084,33 @@ func TestClosestPassKeepsWorkingWhileTheFeedIsDown(t *testing.T) {
 	}
 }
 
+// A rule that stops waiting for the pass stops holding: the poll that matches the
+// aircraft now queues the ordinary alert, and a hold left alive beside it would carry the
+// same cooldown key — a second notification of a pass, from a snapshot taken minutes ago,
+// the moment the aircraft leaves the feed and the cooldown lapses.
+func TestClosestPassDropsAHoldWhoseRuleStoppedHolding(t *testing.T) {
+	r := newHoldRig(t, closestPassRule())
+	r.poll(flying(-2, 0))
+	r.none("while inbound")
+	if r.holds() != 1 {
+		t.Fatal("an inbound aircraft should be parked")
+	}
+
+	r.alerts.Rules[0].Notify = "" // immediately, from now on
+	r.poll(flying(-1, 0))
+	if a := r.one(); a.AtClosest {
+		t.Error("the parked alert was offered after the rule stopped waiting for the pass")
+	}
+	if r.holds() != 0 {
+		t.Errorf("the hold must be retired with the setting, %d left", r.holds())
+	}
+	// And it stays retired once the aircraft is gone, which is when the stale pass would
+	// otherwise be offered.
+	r.age(time.Minute)
+	r.poll()
+	r.none("after the aircraft left")
+}
+
 // alerts.yaml is re-read every five seconds, and a hold outlives several of those. A rule
 // deleted or muted while one of its alerts is parked must not still announce it — muting
 // is how an exception is written, and it cannot mean "after one more".
@@ -1094,6 +1121,11 @@ func TestClosestPassDropsAHoldWhoseRuleIsGone(t *testing.T) {
 	}{
 		{"deleted", func(a *Alerts) { a.Rules = nil }},
 		{"muted", func(a *Alerts) { a.Rules[0].Priority = intp(0) }},
+		// An exception is written ahead of the rule it excepts, not on top of it: the
+		// parked rule is untouched and still alerts for everything else.
+		{"excepted by a muted rule ahead of it", func(a *Alerts) {
+			a.Rules = append([]Rule{{Name: "exception", ICAO: []string{"abc123"}, Priority: intp(0)}}, a.Rules...)
+		}},
 	} {
 		r := newHoldRig(t, closestPassRule())
 		r.poll(flying(-2, 0))

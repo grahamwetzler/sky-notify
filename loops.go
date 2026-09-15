@@ -68,7 +68,11 @@ const holdGiveUp = time.Hour
 // outlives the offer, because an offer is not a delivery — the alert's own ack is what
 // says it was delivered.
 type held struct {
-	alert  *Alert
+	alert *Alert
+	// ac is the sighting alert was built from, kept so the hold can be re-judged against
+	// the rules as they are now. Frozen with the alert: a hold that is retrying must not
+	// be retired because the aircraft has since climbed out of the rule that caught it.
+	ac     Aircraft
 	judged time.Time
 	fired  time.Time
 }
@@ -141,7 +145,7 @@ func (p *poller) park(key string, ac Aircraft, a *Alert, now time.Time) {
 	h, ok := p.holds[key]
 	switch {
 	case !ok:
-		h = held{alert: a, judged: now}
+		h = held{alert: a, ac: ac, judged: now}
 	case !h.fired.IsZero():
 		// Frozen. A retry must resend what was decided, not a moving target — and the
 		// delivery ack rides on the alert pointer, so swapping in a nearer snapshot
@@ -149,7 +153,7 @@ func (p *poller) park(key string, ac Aircraft, a *Alert, now time.Time) {
 		// twice. Nothing is lost: the alert has gone out, and an aircraft still closing
 		// cannot un-send it.
 	case a.DistanceNM < h.alert.DistanceNM:
-		h.alert = a
+		h.alert, h.ac = a, ac
 	}
 	// Judgeable at all: a moving aircraft broadcasting no ground track cannot be told
 	// to have passed, which is the case the grace window in sweepHolds exists for. A
@@ -171,15 +175,15 @@ func (p *poller) park(key string, ac Aircraft, a *Alert, now time.Time) {
 // given rather than the one the alert was built under, because alerts.yaml is re-read
 // every five seconds and a hold outlives several of those.
 func (p *poller) sweepHolds(cfg *Alerts, now time.Time) {
-	alerting := alertingKeys(cfg)
 	grace := 3 * cfg.Source.PollInterval.Std()
 	for key, h := range p.holds {
 		switch {
-		// The rule is gone, or has been muted. Evaluate stops matching either of those
-		// the moment the file is reloaded, which leaves the alert parked with nothing
-		// to announce it for — and an alert for a rule the operator has just deleted is
-		// exactly what a mute is written to prevent.
-		case !alerting[h.alert.Trigger]:
+		// Nothing is holding this any more: the rule is gone, muted, shadowed by an
+		// exception written ahead of it, or no longer waits for the pass. Evaluate stops
+		// matching the first three the moment the file is reloaded, which would leave
+		// the alert parked with nothing to announce it for — and an alert for a rule the
+		// operator has just excepted is exactly what a mute is written to prevent.
+		case !stillHeld(cfg, h):
 			delete(p.holds, key)
 		// Delivered, said by the alert itself. Not "no longer eligible": a cooldown
 		// shorter than the poll interval is legal, and the ledger has pruned its own
@@ -209,6 +213,17 @@ func (p *poller) sweepHolds(cfg *Alerts, now time.Time) {
 			p.q.add(h.alert)
 		}
 	}
+}
+
+// stillHeld re-runs the match that parked this alert against the rules as they are now,
+// on the sighting it was built from. Asking which rule claims the aircraft rather than
+// whether its own rule still alerts is what catches an exception inserted ahead of that
+// rule: first match wins, so the aircraft now stops at the new rule, and a muted one
+// answers nil. A rule that has stopped waiting for the pass is not holding it either —
+// the poll that matched it has already queued the ordinary alert.
+func stillHeld(cfg *Alerts, h held) bool {
+	r := firstMatch(cfg.Rules, h.ac, h.alert.Plane, h.alert)
+	return r != nil && r.priorityIn(cfg) != 0 && r.Key() == h.alert.Trigger && r.Notify == notifyClosestPass
 }
 
 // alertingKeys is the cooldown key of every rule that would still send something. A
