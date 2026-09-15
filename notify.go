@@ -358,6 +358,11 @@ func (n *Notifier) render(a *Alert) ntfyMessage {
 
 	var b strings.Builder
 	line := func(k, v string) { writeLine(&b, k, v) }
+	// First, and without a key: the research line is the one sentence someone reads on a
+	// phone before the shade collapses, and "Research:" spends the front of it on a label.
+	if a.Research != "" {
+		b.WriteString("\u2728 " + a.Research + "\n")
+	}
 	if a.Emergency {
 		line("Emergency", a.Squawk+" ("+a.SquawkMeans+")")
 	}
@@ -386,7 +391,6 @@ func (n *Notifier) render(a *Alert) ntfyMessage {
 	if a.Circling {
 		line("Circling", "yes")
 	}
-	line("Research", a.Research)
 	if flags := describeDBFlags(a.AC.DBFlags); flags != "" {
 		line("Feeder flags", flags)
 	}

@@ -135,15 +135,15 @@ the alert still goes out, as text, on the same path it always used. Set
 
 ## AI research
 
-A rule can say `research: true`, and the notification then carries one more line: who the
-aircraft belongs to, who flies it, and what it is most likely doing.
+A rule can say `research: true`, and the notification then opens with one more line: who
+the aircraft belongs to, who flies it, and what it is most likely doing.
 
 ```
+✨ Owned by Hillwood Development, operated by the Garland PD air unit; most likely a
+  police patrol orbit.
 Registration: N661HD
 Type: EC45
 Circling: yes
-Research: Owned by Hillwood Development, operated by the Garland PD air unit; most
-  likely a police patrol orbit.
 ```
 
 Configure a provider under **Settings ▸ AI research** in the web UI, or in `alerts.yaml`

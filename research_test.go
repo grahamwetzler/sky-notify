@@ -242,7 +242,7 @@ func TestResearchEndToEnd(t *testing.T) {
 		t.Fatalf("Publish: %v", err)
 	}
 	body := nt.bodies[0].Message
-	if !strings.Contains(body, "Research: "+ai.answer) {
+	if !strings.HasPrefix(body, "\u2728 "+ai.answer+"\n") {
 		t.Fatalf("notification body:\n%s", body)
 	}
 }
@@ -315,7 +315,7 @@ func TestResearchTurnedOnWhileAnAlertWaits(t *testing.T) {
 	if content, _ := m["content"].(string); !strings.HasPrefix(content, "Who flies this?") {
 		t.Errorf("asked with the stale prompt: %q", content)
 	}
-	if !strings.Contains(nt.bodies[0].Message, "Research: "+ai.answer) {
+	if !strings.HasPrefix(nt.bodies[0].Message, "\u2728 "+ai.answer+"\n") {
 		t.Errorf("notification body:\n%s", nt.bodies[0].Message)
 	}
 }

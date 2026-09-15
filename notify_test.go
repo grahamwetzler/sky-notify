@@ -416,7 +416,7 @@ func TestPublishCarriesTheResearchLine(t *testing.T) {
 	if err := n.Publish(context.Background(), a); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
-	if !strings.Contains(nt.bodies[0].Message, "Research: "+answer) {
+	if !strings.HasPrefix(nt.bodies[0].Message, "\u2728 "+answer+"\n") {
 		t.Errorf("message missing the research line:\n%s", nt.bodies[0].Message)
 	}
 }
@@ -461,7 +461,7 @@ func TestResearchAnswerIsHeaderSafe(t *testing.T) {
 		t.Fatalf("Publish: %v", err)
 	}
 	msg := nt.bodies[0].Message
-	if !strings.Contains(msg, "Research: Owned by X. Operated by Y.") {
+	if !strings.HasPrefix(msg, "\u2728 Owned by X. Operated by Y.\n") {
 		t.Errorf("answer was not flattened to one line:\n%s", msg)
 	}
 	if got := headerSafe(strings.ReplaceAll(msg, "\n", `\n`)); strings.ContainsAny(got, "\r\n") {

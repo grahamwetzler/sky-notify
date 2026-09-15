@@ -68,6 +68,9 @@ svg{display:block;fill:none;stroke:currentColor;stroke-width:1.6;
   color:var(--fg2);line-height:1.4}
 .group-h .lbl{font-size:12.5px;color:var(--fg)}
 .help{font-size:12.5px;line-height:1.5;color:var(--fg2);max-width:72ch}
+.sample{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
+  line-height:1.55;color:var(--fg2);background:var(--panel);border:1px solid var(--line);
+  border-radius:6px;padding:8px 10px;margin:0;overflow-x:auto}
 .help.warn{color:var(--warn)}
 .help.bad{color:var(--bad)}
 
@@ -1704,6 +1707,18 @@ function notificationBand(r) {
   return sec;
 }
 
+/* One alert's worth of facts(), verbatim in shape. */
+const SAMPLE_FACTS = [
+  'Registration: N12345',
+  'ICAO: adeb2f',
+  'Type: C-17',
+  'Callsign: RCH123',
+  'Altitude: 31000 ft',
+  'Position: 32.9126, -96.6389',
+  'Distance from receiver: 3.2 NM',
+  'Circling: yes',
+].join('\n');
+
 /* Research is the third thing that happens when a rule matches, and like the other two it
    changes nothing about what matches. Its own row rather than a cell in the grid above: a
    210px column is not where anyone writes a sentence. */
@@ -1716,7 +1731,7 @@ function researchField(r) {
   b.type = 'button';
   b.id = 'rule-research';
   b.setAttribute('aria-pressed', String(on));
-  b.append(el('span', 'v', 'Ask an AI who owns it'));
+  b.append(el('span', 'v', 'AI Research'));
   b.onclick = () => {
     /* Turning it off drops the prompt with it: a prompt on a rule that asks nothing is
        a line in the file that does nothing, and the placeholder brings the default back. */
@@ -1755,9 +1770,12 @@ function researchField(r) {
   wrap.append(ta);
   wrap.append(el('span', 'help',
     'Asked about every aircraft this rule claims, with what the alert already knows about '
-    + 'it appended — registration, type, position, distance. The answer becomes one line '
-    + 'of the notification; a call that fails costs that line and nothing else. '
-    + 'Leave it empty to ask the default above.'));
+    + 'it appended. The answer becomes one line of the notification; a call that fails '
+    + 'costs that line and nothing else. Leave it empty to ask the default above.'));
+  /* The appended half of the question, shown rather than described: the prompt above is
+     written against these lines, and a field an alert has nothing for is simply absent. */
+  wrap.append(el('span', 'help', 'Sent with it, as the aircraft allows:'));
+  wrap.append(el('pre', 'sample', SAMPLE_FACTS));
   return wrap;
 }
 
