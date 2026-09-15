@@ -278,14 +278,6 @@ func notifyLoop(ctx context.Context, live *Live, n *Notifier, state *State, q *q
 				continue
 			}
 
-			// Resolved here rather than at match time, for the same reason the mute
-			// gate above is: a closest-pass alert waits minutes for its aircraft to
-			// pass, and alerts.yaml is re-read every five seconds. A rule whose
-			// research was switched off in that window must not still send the
-			// aircraft to the provider — that is a third party, and a bill. Last,
-			// because every gate above can still drop this alert unsent.
-			a.ResearchPrompt = researchPromptFor(cfg, a.Trigger)
-
 			err := n.Publish(ctx, a)
 			if err != nil {
 				// Cooldown is not advanced, so the next poll re-enqueues naturally.

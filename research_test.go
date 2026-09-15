@@ -232,17 +232,16 @@ func TestResearchEndToEnd(t *testing.T) {
 	if a == nil {
 		t.Fatal("rule did not match")
 	}
-	// The prompt is resolved from the rules as they are at delivery, which is what
-	// notifyLoop does for each alert just before it publishes.
-	a.ResearchPrompt = researchPromptFor(alerts, a.Trigger)
-	if a.ResearchPrompt != defaultResearchPrompt {
-		t.Fatalf("prompt = %q", a.ResearchPrompt)
+	// The prompt is resolved from the rules as they are at delivery, not as they were at
+	// the match, and this rule asks the default.
+	if got := researchPromptFor(alerts, a.Trigger); got != defaultResearchPrompt {
+		t.Fatalf("prompt = %q", got)
 	}
 	if err := n.Publish(context.Background(), a); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	body := nt.bodies[0].Message
-	if !strings.HasPrefix(body, "\u2728 "+ai.answer+"\n") {
+	if !strings.HasPrefix(body, researchMark+ai.answer+"\n") {
 		t.Fatalf("notification body:\n%s", body)
 	}
 }
@@ -280,14 +279,14 @@ func TestResearchTurnedOffWhileAnAlertWaits(t *testing.T) {
 	// does. The provider stays configured throughout, so the only thing that can stop
 	// the call is the rule itself.
 	a := testAlert()
-	a.Trigger, a.ResearchPrompt = "watch", defaultResearchPrompt
+	a.Trigger = "watch"
 	alerts.Rules = []Rule{{Name: "watch"}}
 
 	state := drainOne(t, n, alerts, a)
 	if len(ai.reqs) != 0 {
 		t.Errorf("provider was asked %d times after research was switched off", len(ai.reqs))
 	}
-	if len(nt.bodies) != 1 || strings.Contains(nt.bodies[0].Message, "Research:") {
+	if len(nt.bodies) != 1 || strings.Contains(nt.bodies[0].Message, researchMark) {
 		t.Errorf("notification should have gone out without the line:\n%v", nt.bodies)
 	}
 	if state.Eligible(cooldownKey(a.Hex, a.Trigger), alerts.Cooldown.Std()) {
@@ -315,7 +314,7 @@ func TestResearchTurnedOnWhileAnAlertWaits(t *testing.T) {
 	if content, _ := m["content"].(string); !strings.HasPrefix(content, "Who flies this?") {
 		t.Errorf("asked with the stale prompt: %q", content)
 	}
-	if !strings.HasPrefix(nt.bodies[0].Message, "\u2728 "+ai.answer+"\n") {
+	if !strings.HasPrefix(nt.bodies[0].Message, researchMark+ai.answer+"\n") {
 		t.Errorf("notification body:\n%s", nt.bodies[0].Message)
 	}
 }

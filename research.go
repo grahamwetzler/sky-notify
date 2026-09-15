@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -54,16 +55,42 @@ func aiKeyEndpoint(a *Alerts, env map[string]string) string {
 	return a.AI.URL
 }
 
+// aiKeyReach is every endpoint a document's credential can be sent to. Two, because an
+// override is not forever: the run posts to aiKeyEndpoint, and the file's own URL is
+// where the key goes the moment SKY_AI_URL is taken away again. They are the same
+// endpoint unless that variable is set.
+func aiKeyReach(a *Alerts, env map[string]string) []string {
+	return []string{aiKeyEndpoint(a, env), a.AI.URL}
+}
+
 // checkAIKeyStaysPut refuses a save that would send a credential it did not supply to an
 // endpoint it did. The page never holds the key, so "did not supply" is its normal state;
 // moving the endpoint is therefore the one edit that has to come with one.
 //
+// Every endpoint the save leaves reachable is judged, not just the one in use, or a page
+// could write an attacker's host into ai.url while an override masked it and wait for the
+// override to come off. An endpoint the credential already reaches is not a move, which is
+// what lets the env endpoint be written into the file it is overriding.
+//
 // Turning the provider off is not a move: an empty endpoint sends nothing anywhere.
 func checkAIKeyStaysPut(onDisk, saved *Alerts, env map[string]string) error {
-	was, now := aiKeyEndpoint(onDisk, env), aiKeyEndpoint(saved, env)
-	if now == "" || aiOrigin(now) == aiOrigin(was) {
-		return nil
+	was := aiKeyReach(onDisk, env)
+	for _, now := range aiKeyReach(saved, env) {
+		if now == "" || slices.ContainsFunc(was, func(w string) bool {
+			return w != "" && aiOrigin(w) == aiOrigin(now)
+		}) {
+			continue
+		}
+		if err := refuseAIKeyMove(onDisk, saved, env, now); err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+// refuseAIKeyMove says why a credential cannot follow the endpoint to now, or nil when
+// there is no credential at stake and the move costs nothing.
+func refuseAIKeyMove(onDisk, saved *Alerts, env map[string]string, now string) error {
 	// An environment key is judged before the payload's own, because a supplied key
 	// does not become the one that is sent: the overlay replaces it with the variable's
 	// value, so any key at all in the payload — "" included — would otherwise buy a move.
@@ -72,7 +99,7 @@ func checkAIKeyStaysPut(onDisk, saved *Alerts, env map[string]string) error {
 	// file's credential is still there for the next one, so the move is judged against
 	// it below rather than waved through.
 	if env[aiKeyEnv] != "" {
-		return fmt.Errorf("ai.url: %s holds the API key, so its endpoint is not editable here — set %s too, or move both into alerts.yaml", aiKeyEnv, aiURLEnv)
+		return fmt.Errorf("ai.url: %s holds the API key, so the endpoint it is sent to is not editable here — set %s to the endpoint you want, or move both into alerts.yaml", aiKeyEnv, aiURLEnv)
 	}
 	if saved.AI.Key != nil {
 		return nil // the save brought a key for wherever it is pointing
@@ -80,8 +107,13 @@ func checkAIKeyStaysPut(onDisk, saved *Alerts, env map[string]string) error {
 	if onDisk.aiKey() == "" {
 		return nil // nothing stored to carry anywhere
 	}
-	return fmt.Errorf("ai.url: the stored API key was issued for %s and is never sent to this page, so it cannot follow the endpoint to %s — enter the key for the new endpoint, or clear it", aiOrigin(was), aiOrigin(now))
+	return fmt.Errorf("ai.url: the stored API key was issued for %s and is never sent to this page, so it cannot follow the endpoint to %s — enter the key for the new endpoint, or clear it", aiOrigin(aiKeyEndpoint(onDisk, env)), aiOrigin(now))
 }
+
+// researchMark opens the research line, in place of the "Key: value" every other line of
+// a notification body is: the model's sentence is the one line worth reading first, and a
+// label would spend the front of it saying so.
+const researchMark = "\u2728 "
 
 // researchLimit caps what we will paste into a notification. ntfy renders the body in a
 // phone's notification shade; a model that ignores "concise" must not fill it.

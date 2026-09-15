@@ -886,23 +886,38 @@ func TestAIKeyDoesNotFollowTheEndpoint(t *testing.T) {
 		}
 	})
 
-	// With the endpoint set by the environment too, the payload's URL is overwritten
-	// before it is ever used, so there is nothing to refuse.
-	t.Run("an env endpoint cannot be moved at all", func(t *testing.T) {
+	// An override is not forever. The payload's URL is overwritten for as long as the
+	// variable is up, so a move looks harmless while it is — and becomes the disclosure
+	// the moment it comes off, with the stored key pointed at whatever the page wrote.
+	t.Run("an env endpoint does not license a move in the file", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "alerts.yaml")
 		os.WriteFile(path, []byte(stored), 0o644)
 		t.Setenv("SKY_AI_KEY", "sk-or-v1-from-env")
 		t.Setenv("SKY_AI_URL", "https://openrouter.ai/api/v1")
 		h := alertsHandler(t, path)
-		if w := put(t, h, `"url":"https://attacker.invalid/v1"`); w.Code != http.StatusOK {
-			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		if w := put(t, h, `"url":"https://attacker.invalid/v1"`); w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
 		}
-		saved, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path, "SKY_AI_KEY=sk-or-v1-from-env", "SKY_AI_URL=https://openrouter.ai/api/v1"})
+		// Read back with the overrides gone, which is the run that would have posted the
+		// key to whatever the refused save wanted written.
+		saved, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if saved.AI.URL != "https://openrouter.ai/api/v1" {
-			t.Errorf("the environment endpoint must win, got %q", saved.AI.URL)
+		if saved.AI.URL != "https://openrouter.ai/api/v1" || saved.aiKey() != "sk-or-v1-secret" {
+			t.Errorf("the file moved under the override: url = %q, key = %q", saved.AI.URL, saved.aiKey())
+		}
+	})
+
+	// The other side of it: writing the endpoint the environment already pins into the
+	// file is not a move, because the key is being sent there either way.
+	t.Run("the env endpoint may be written into the file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "alerts.yaml")
+		os.WriteFile(path, []byte("ai:\n  key: sk-or-v1-secret\n  model: perplexity/sonar\n"), 0o644)
+		t.Setenv("SKY_AI_URL", "https://openrouter.ai/api/v1")
+		h := alertsHandler(t, path)
+		if w := put(t, h, `"url":"https://openrouter.ai/api/v1"`); w.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
 		}
 	})
 }

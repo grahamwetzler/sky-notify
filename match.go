@@ -45,12 +45,10 @@ type Alert struct {
 	HasDistance bool
 	Priority    int
 	Circling    bool
-	// ResearchPrompt is what to ask about this aircraft, "" to ask nothing, and Research
-	// is the answer. Both are filled on the notify path, not here: the prompt is resolved
-	// from the rules as they are at delivery (notifyLoop), never as they were at the
-	// match, and the answer from asking.
-	ResearchPrompt string
-	Research       string
+	// Research is the answer the provider gave, filled on the notify path and not here:
+	// what to ask is read from the rules as they are at delivery, never as they were at
+	// the match, so a rule that stopped asking in between is not asked for.
+	Research string
 	// AtClosest is set by a rule that notifies at the closest pass. Before delivery it
 	// is what tells the poll loop to hold the alert; after it, what puts the distance of
 	// the pass in the notification. Both are the same fact: this alert describes a pass,

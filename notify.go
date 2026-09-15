@@ -196,10 +196,18 @@ func (n *Notifier) snapshot(ctx context.Context, a *Alert) []byte {
 // to be an answer. Every failure is silent by design, exactly as the map's is: a line
 // that cannot be written costs the notification that line, never the notification.
 func (n *Notifier) research(ctx context.Context, a *Alert) string {
-	if a.ResearchPrompt == "" || n.live == nil {
+	if n.live == nil {
 		return ""
 	}
+	// One snapshot answers both halves of the question — what to ask, and who to ask —
+	// and it is taken here rather than anywhere earlier because Publish has already spent
+	// up to the map budget rendering a picture. A rule switched off in that window must
+	// not still send the aircraft to a third party.
 	cfg := n.live.Get()
+	prompt := researchPromptFor(cfg, a.Trigger)
+	if prompt == "" {
+		return ""
+	}
 	rs := newResearcher(cfg, n.aiClient)
 	if rs == nil {
 		slog.Warn("a rule asked for research but no AI provider is configured", "icao", a.Hex)
@@ -217,7 +225,7 @@ func (n *Notifier) research(ctx context.Context, a *Alert) string {
 	rctx, cancel := context.WithTimeout(ctx, cfg.AI.Timeout.Std())
 	defer cancel()
 	defer context.AfterFunc(shutdown, cancel)()
-	answer, err := rs.ask(rctx, a.ResearchPrompt, a.facts())
+	answer, err := rs.ask(rctx, prompt, a.facts())
 	if err != nil {
 		slog.Warn("research failed, sending the alert without it", "icao", a.Hex, "err", err)
 		return ""
@@ -361,7 +369,7 @@ func (n *Notifier) render(a *Alert) ntfyMessage {
 	// First, and without a key: the research line is the one sentence someone reads on a
 	// phone before the shade collapses, and "Research:" spends the front of it on a label.
 	if a.Research != "" {
-		b.WriteString("\u2728 " + a.Research + "\n")
+		b.WriteString(researchMark + a.Research + "\n")
 	}
 	if a.Emergency {
 		line("Emergency", a.Squawk+" ("+a.SquawkMeans+")")
