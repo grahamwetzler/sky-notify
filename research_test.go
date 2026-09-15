@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -316,6 +317,53 @@ func TestResearchTurnedOnWhileAnAlertWaits(t *testing.T) {
 	}
 	if !strings.HasPrefix(nt.bodies[0].Message, researchMark+ai.answer+"\n") {
 		t.Errorf("notification body:\n%s", nt.bodies[0].Message)
+	}
+}
+
+// The window the rule can close in is wider than notifyLoop: Publish renders a map first,
+// and that render has a budget of its own. What to ask is therefore read after it, from
+// the same document that names the provider — a rule switched off mid-render costs the
+// notification its research line and nothing more.
+func TestResearchIsDecidedAfterTheMapRender(t *testing.T) {
+	ai := &aiServer{answer: "should never be asked"}
+	n, nt, alerts := researchNotifier(t, ai)
+	on := true
+	alerts.Rules = []Rule{{Name: "listed", Research: &on}}
+
+	// A tile server that answers only once the test says so, which is how the render is
+	// held open for the length of the edit.
+	rendering, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	tiles := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(rendering) })
+		<-release
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(tiles.Close)
+	maps, err := newMapRenderer(newTileStore(tiles.Client(), tiles.URL, t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.maps = maps
+
+	a := testAlert() // Trigger "listed", and a receiver distance, so there is a map to draw
+	done := make(chan error, 1)
+	go func() { done <- n.Publish(context.Background(), a) }()
+
+	<-rendering
+	off := *alerts
+	off.Rules = []Rule{{Name: "listed"}}
+	n.live.p.Store(&off)
+	close(release)
+
+	if err := <-done; err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if len(ai.reqs) != 0 {
+		t.Errorf("provider was asked %d times after research was switched off mid-render", len(ai.reqs))
+	}
+	if len(nt.bodies) != 1 || strings.Contains(nt.bodies[0].Message, researchMark) {
+		t.Errorf("the alert should have gone out without the line:\n%v", nt.bodies)
 	}
 }
 
