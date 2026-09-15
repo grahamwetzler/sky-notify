@@ -244,6 +244,13 @@ func (n *Notifier) research(ctx context.Context, a *Alert) string {
 // rules: a rule that asks, and a provider to ask. Both are hot-reloaded, so it is asked
 // again after anything that waits.
 func willResearch(cfg *Alerts, a *Alert) bool {
+	// Publish is past the queue's last gate and will deliver whatever it has prepared —
+	// an alert already in flight is not recalled — but a rule muted or excepted while the
+	// map was drawing has still said not to alert on this aircraft, and that is reason
+	// enough not to hand it to a third party and be billed for the answer.
+	if claimedBy(cfg, a) == nil {
+		return false
+	}
 	if researchPromptFor(cfg, a.Trigger) == "" {
 		return false
 	}

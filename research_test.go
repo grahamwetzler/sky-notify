@@ -638,6 +638,50 @@ func TestNoProviderMeansNoRouteLookupEither(t *testing.T) {
 	}
 }
 
+// Publish is past the queue's last gate and will deliver what it has prepared — an alert
+// already in flight is not recalled. But a rule muted while the picture was drawing has
+// said not to alert on this aircraft, and paying a third party to research it anyway is
+// the one part of the work that can still be called off.
+func TestAMuteMidRenderStopsTheProviderCall(t *testing.T) {
+	ai := &aiServer{answer: "should never be asked"}
+	n, nt, alerts := researchNotifier(t, ai)
+	on := true
+	alerts.Rules = []Rule{{Name: "listed", Research: &on}}
+
+	asking, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	route := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(asking) })
+		<-release
+		w.Write([]byte(`[{"_airports":[],"airport_codes":"unknown"}]`))
+	}))
+	defer route.Close()
+	n.cfg.RouteAPIURL = route.URL
+
+	a := testAlert()
+	lat, lon := 32.59, -99.32
+	a.AC.Lat, a.AC.Lon = &lat, &lon
+	done := make(chan error, 1)
+	go func() { done <- n.Publish(context.Background(), a) }()
+
+	<-asking
+	muted := *alerts
+	muted.Rules = []Rule{{Name: "listed", Research: &on, Priority: intp(0)}}
+	n.live.p.Store(&muted)
+	close(release)
+
+	if err := <-done; err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if len(ai.reqs) != 0 {
+		t.Errorf("provider was asked %d times about an aircraft whose rule was muted", len(ai.reqs))
+	}
+	// Still delivered: the queue's gate is the last one, and this alert is past it.
+	if len(nt.bodies) != 1 || strings.Contains(nt.bodies[0].Message, researchMark) {
+		t.Errorf("the in-flight alert should still have gone out, without the line:\n%v", nt.bodies)
+	}
+}
+
 // A rule deleted outright is the same answer as one that stopped asking.
 func TestResearchPromptForAMissingRule(t *testing.T) {
 	alerts := defaultAlerts()

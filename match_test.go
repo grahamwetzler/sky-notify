@@ -1141,6 +1141,35 @@ func TestClosestPassDropsAHoldWhoseRuleStoppedHolding(t *testing.T) {
 // alerts.yaml is re-read every five seconds, and a hold outlives several of those. A rule
 // deleted or muted while one of its alerts is parked must not still announce it — muting
 // is how an exception is written, and it cannot mean "after one more".
+// A hold carries a distance, and a distance is only meaningful from somewhere. The
+// receiver is hot-reloaded with the rest of alerts.yaml, so it can move while an aircraft
+// is still inbound — and then the nearest snapshot was measured from the old position and
+// the sighting beside it from the new. Announcing "closest pass 0.4 NM" from a receiver
+// the operator has left is worse than announcing nothing: the next poll parks a fresh
+// hold, measured throughout from where the receiver actually is.
+func TestClosestPassDropsAHoldWhenTheReceiverMoves(t *testing.T) {
+	r := newHoldRig(t, closestPassRule())
+	r.poll(flying(-2, 0)) // inbound, parked, measured from the old receiver
+	if r.holds() != 1 {
+		t.Fatal("an inbound aircraft should be parked")
+	}
+	r.age(time.Minute) // past the grace window: without the check it would fire
+
+	moved := testLat + 1 // a degree north, which is 60 NM of difference
+	r.alerts.Lat = &moved
+
+	r.poll(flying(-1, 0))
+	r.none("after the receiver moved")
+	if r.holds() != 1 {
+		t.Fatalf("the stale hold should be replaced by a fresh one, %d held", r.holds())
+	}
+	// And the fresh one measures from where the receiver is now, so it can go on to
+	// announce a pass of its own.
+	if h := r.p.holds[cooldownKey("abc123", "pass")]; h.alert.recvLat != moved {
+		t.Errorf("the replacement hold measures from %v, want %v", h.alert.recvLat, moved)
+	}
+}
+
 func TestClosestPassDropsAHoldWhoseRuleIsGone(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

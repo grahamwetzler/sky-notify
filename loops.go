@@ -148,6 +148,11 @@ func (p *poller) park(key string, ac Aircraft, a *Alert, now time.Time) {
 		// after firing would hand the sweep an unacknowledged alert and send the pass
 		// twice. Nothing is lost: the alert has gone out, and an aircraft still closing
 		// cannot un-send it.
+	case a.recvLat != h.alert.recvLat || a.recvLon != h.alert.recvLon:
+		// The receiver has moved since this was parked. The two distances were measured
+		// from different places and comparing them would keep whichever number happened
+		// to be smaller, so there is nothing here to keep: start again from this sighting.
+		h = held{alert: a, judged: now}
 	case a.DistanceNM < h.alert.DistanceNM:
 		h.alert = a
 	}
@@ -181,7 +186,7 @@ func (p *poller) sweepHolds(cfg *Alerts, now time.Time) {
 		// operator has just excepted is exactly what a mute is written to prevent. The
 		// alert carries the sighting it was built from, so a hold that is retrying is not
 		// retired because the aircraft has since flown out of the rule that caught it.
-		case claimedBy(cfg, h.alert) == nil:
+		case claimedBy(cfg, h.alert) == nil || !sameReceiver(cfg, h.alert):
 			delete(p.holds, key)
 		// Delivered, said by the alert itself. Not "no longer eligible": a cooldown
 		// shorter than the poll interval is legal, and the ledger has pruned its own
@@ -211,6 +216,19 @@ func (p *poller) sweepHolds(cfg *Alerts, now time.Time) {
 			p.q.add(h.alert)
 		}
 	}
+}
+
+// sameReceiver reports whether this alert's distances still mean what they say. A hold
+// waits minutes for its aircraft while alerts.yaml is re-read every five seconds, so the
+// receiver can move under it — and then park compares a distance measured from where the
+// receiver was against one measured from where it is, and announces a pass from a place
+// the operator has left. Retiring the hold costs nothing: the next poll parks a fresh one
+// against the receiver as it is now.
+func sameReceiver(cfg *Alerts, a *Alert) bool {
+	if !a.HasDistance {
+		return true // nothing was measured, so nothing can be measured from the wrong place
+	}
+	return cfg.Lat != nil && cfg.Lon != nil && *cfg.Lat == a.recvLat && *cfg.Lon == a.recvLon
 }
 
 // claimedBy re-runs the match that built this alert against the rules as they are now, on
