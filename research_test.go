@@ -224,6 +224,51 @@ func TestSampleFactsShowsEveryLine(t *testing.T) {
 	}
 }
 
+// The provider endpoint is a base with the path appended, not a string with the endpoint
+// glued on: Azure carries its API version in a query, and concatenation would bury the
+// endpoint inside it.
+func TestChatCompletionsURL(t *testing.T) {
+	for _, tc := range []struct{ base, want string }{
+		{"https://openrouter.ai/api/v1", "https://openrouter.ai/api/v1/chat/completions"},
+		{"https://openrouter.ai/api/v1/", "https://openrouter.ai/api/v1/chat/completions"},
+		{"http://ollama.lan:11434/v1", "http://ollama.lan:11434/v1/chat/completions"},
+		{
+			"https://acme.openai.azure.com/openai/deployments/gpt?api-version=2024-02-01",
+			"https://acme.openai.azure.com/openai/deployments/gpt/chat/completions?api-version=2024-02-01",
+		},
+	} {
+		if got := chatCompletionsURL(tc.base); got != tc.want {
+			t.Errorf("chatCompletionsURL(%q) = %q, want %q", tc.base, got, tc.want)
+		}
+	}
+}
+
+// And the same fact seen from the provider's side, which is where it matters.
+func TestResearchKeepsTheEndpointQuery(t *testing.T) {
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+		json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{"message": map[string]any{"content": "ok"}}},
+		})
+	}))
+	defer srv.Close()
+
+	cfg := defaultAlerts()
+	key := "sk-test"
+	cfg.AI.URL, cfg.AI.Key, cfg.AI.Model = srv.URL+"/openai/deployments/gpt?api-version=2024-02-01", &key, "gpt"
+	rs := newResearcher(cfg, srv.Client())
+	if _, err := rs.ask(context.Background(), "p", "f"); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/openai/deployments/gpt/chat/completions" {
+		t.Errorf("provider was asked for %q", gotPath)
+	}
+	if gotQuery != "api-version=2024-02-01" {
+		t.Errorf("the endpoint query did not survive: %q", gotQuery)
+	}
+}
+
 // ---------- the route lookup ----------
 
 func TestLookupRoute(t *testing.T) {

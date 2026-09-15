@@ -425,6 +425,34 @@ func TestAnExceptionWrittenAheadOfTheRuleStopsAQueuedAlert(t *testing.T) {
 	}
 }
 
+// When a rule sends is not part of its cooldown key, so the two alerts it can produce
+// share one: whichever is let out silences the other. A rule switched to closest_pass
+// while a first-sighting alert waits in the queue must not still send that alert — it
+// would announce the aircraft on sight and then take the cooldown that the pass alert,
+// parked and waiting minutes for the aircraft to go by, needs to reach anyone.
+func TestARuleSwitchedToClosestPassStopsTheQueuedFirstSighting(t *testing.T) {
+	nt := &ntfyServer{}
+	n := nt.start(t, testConfig(t))
+	alerts := defaultAlerts()
+	alerts.Rules = []Rule{{Name: "watch"}} // on_sight, which is what queued the alert
+
+	a := testAlert()
+	a.Trigger, a.AtClosest = "watch", false
+
+	next := defaultAlerts()
+	// No new conditions: the only thing that changed is when the rule sends, which is
+	// the whole of what this checks.
+	next.Rules = []Rule{{Name: "watch", Notify: notifyClosestPass}}
+	state := drainOne(t, n, next, a)
+
+	if len(nt.bodies) != 0 {
+		t.Errorf("a first-sighting alert went out under a rule that now waits for the pass:\n%v", nt.bodies)
+	}
+	if !state.Eligible(cooldownKey(a.Hex, "watch"), next.Cooldown.Std()) {
+		t.Error("the cooldown the parked pass alert needs was consumed by the dropped one")
+	}
+}
+
 // ---------- research in the notification ----------
 
 // researchNotifier points a notifier at a fake provider and a fake ntfy, and hands back

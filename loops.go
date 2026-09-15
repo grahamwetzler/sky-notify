@@ -178,8 +178,10 @@ func (p *poller) sweepHolds(cfg *Alerts, now time.Time) {
 		// exception written ahead of it, or no longer waits for the pass. Evaluate stops
 		// matching the first three the moment the file is reloaded, which would leave
 		// the alert parked with nothing to announce it for — and an alert for a rule the
-		// operator has just excepted is exactly what a mute is written to prevent.
-		case !stillHeld(cfg, h):
+		// operator has just excepted is exactly what a mute is written to prevent. The
+		// alert carries the sighting it was built from, so a hold that is retrying is not
+		// retired because the aircraft has since flown out of the rule that caught it.
+		case claimedBy(cfg, h.alert) == nil:
 			delete(p.holds, key)
 		// Delivered, said by the alert itself. Not "no longer eligible": a cooldown
 		// shorter than the poll interval is legal, and the ledger has pruned its own
@@ -230,15 +232,17 @@ func claimedBy(cfg *Alerts, a *Alert) *Rule {
 	if r == nil || r.priorityIn(cfg) == 0 || r.Key() != a.Trigger {
 		return nil
 	}
+	// When it sends is not part of the key, so a rule that has changed its mind about
+	// that is not the rule this alert was built under, even though it answers to the same
+	// name. Both directions matter and for the same reason: the two alerts share a
+	// cooldown, so whichever is let out silences the other. A first-sighting alert waiting
+	// in the queue would publish immediately and swallow the pass the operator just asked
+	// to wait for; a hold whose rule now sends on sight has already been overtaken by the
+	// poll that queued the ordinary one.
+	if (r.Notify == notifyClosestPass) != a.AtClosest {
+		return nil
+	}
 	return r
-}
-
-// stillHeld is claimedBy plus the reason this alert is parked rather than sent. A rule
-// that has stopped waiting for the pass is not holding it — the poll that matched it has
-// already queued the ordinary alert.
-func stillHeld(cfg *Alerts, h held) bool {
-	r := claimedBy(cfg, h.alert)
-	return r != nil && r.Notify == notifyClosestPass
 }
 
 // retry is how long a failing key waits and how long it will wait next time. The two

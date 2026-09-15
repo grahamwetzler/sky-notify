@@ -139,10 +139,24 @@ func newResearcher(cfg *Alerts, client *http.Client) *researcher {
 	}
 	return &researcher{
 		client: client,
-		url:    strings.TrimSuffix(cfg.AI.URL, "/") + "/chat/completions",
+		url:    chatCompletionsURL(cfg.AI.URL),
 		key:    cfg.aiKey(),
 		model:  cfg.AI.Model,
 	}
+}
+
+// chatCompletionsURL appends the endpoint to the base's path, the way the ntfy topic is
+// appended to its base rather than concatenated onto it. A base may carry a query —
+// Azure's OpenAI endpoints hold their API version in one — and concatenation would push
+// "/chat/completions" inside that query, leaving the path pointing at nothing.
+func chatCompletionsURL(base string) string {
+	u, err := url.Parse(base)
+	if err != nil {
+		// validate.go has already refused anything unparseable; this is only so a
+		// malformed value cannot panic the notifier on its way to failing the call.
+		return strings.TrimSuffix(base, "/") + "/chat/completions"
+	}
+	return u.JoinPath("chat/completions").String()
 }
 
 // ask posts one chat completion and returns the answer as a single condensed line.
