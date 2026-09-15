@@ -34,6 +34,11 @@ cache_dir: ""
 # Optional: makes each notification click through to your own map.
 tar1090_url: ""
 
+# Where to look up the route behind a callsign, which aircraft.json does not carry. Asked
+# only when a rule says research: true, and only about aircraft that broadcast a callsign.
+# This is the service tar1090 itself defaults to. Set to "" to ask nobody.
+route_api_url: "https://adsb.im/api/0/routeset"
+
 # Every notification carries a PNG map of where the aircraft is. Unlike the endpoints
 # above this one has a default: OpenFreeMap is a free public service with no key and no
 # account, so nothing here is a guess about your deployment. Tiles are cached under

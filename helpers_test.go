@@ -15,6 +15,9 @@ func testConfig(t *testing.T) *Config {
 	c.DB.BaseURL = "https://db.invalid/plane-alert-db"
 	c.DB.Files = []string{"plane-alert-db.csv"}
 	c.CacheDir = t.TempDir()
+	// Unreachable by default, like every other endpoint here: a test that wants a route
+	// stands up its own server and points this at it.
+	c.RouteAPIURL = "http://route.invalid/api/0/routeset"
 	return c
 }
 

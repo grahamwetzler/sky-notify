@@ -177,9 +177,42 @@ that does it (`perplexity/sonar`, or an `:online` suffix on OpenRouter) when the
 needs more than the model remembers. A keyless local provider can leave `key` unset.
 
 The prompt is an instruction, not a template. A rule that sets `research_prompt` replaces
-the default; either way, what the alert knows about the aircraft — registration, ICAO,
-type, callsign, altitude, position, distance, whether it is circling — is appended below
-it. There is no `{{ }}` syntax to learn and nothing to keep in sync.
+the default; either way, everything known about the aircraft is appended below it:
+
+```
+Registration: N891DN
+ICAO: ac4963
+Type: B739
+Callsign: DAL886
+Route: KTUS (Tucson) → KATL (Atlanta)
+Description: BOEING 737-900
+Owner/operator: DELTA AIR LINES INC
+Year: 2018
+Altitude: 35000 ft
+Vertical rate: +0 ft/min
+Ground speed: 450 kt
+Heading: 88°
+Squawk: 0746
+Position: 32.4574, -99.7451
+Distance from receiver: 12.3 NM
+```
+
+All of it but the route comes straight out of `aircraft.json` — the description, owner and
+year are what the feeder's own database knows about the address. There is no `{{ }}` syntax
+to learn and nothing to keep in sync.
+
+The route is the one fact the aircraft does not broadcast: a callsign is all that is on the
+air, so tar1090 asks a lookup service which airports that callsign flies between, and so do
+we. `route_api_url` is the same service tar1090 defaults to, asked only when a rule wants
+research and only about a callsign with a position:
+
+```yaml
+route_api_url: https://adsb.im/api/0/routeset   # "" to ask nobody
+```
+
+Most callsigns have no schedule to find — military, GA, anything not on a timetable — and
+the line is simply left out. A lookup that fails costs the model that one line, nothing
+more.
 
 ```yaml
 rules:
@@ -221,6 +254,7 @@ config path. Missing files are fine. See both example files for the exact split.
 | `SKY_COOLDOWN` | `24h` | how long to stay quiet about an aircraft after alerting |
 | `SKY_DB_REFRESH_INTERVAL` | `24h` | |
 | `SKY_TAR1090_URL` | — | makes notifications click through to your map |
+| `SKY_ROUTE_API_URL` | `https://adsb.im/api/0/routeset` | flight-route lookup for the research facts; `""` to ask nobody |
 | `SKY_MAP_ENABLED` | `true` | attach a map snapshot to each notification |
 | `SKY_MAP_TILES_URL` | `https://tiles.openfreemap.org/planet` | TileJSON endpoint; point at your own OpenFreeMap |
 | `SKY_AI_URL` | — | base URL of an OpenAI-compatible provider; `/chat/completions` is appended |

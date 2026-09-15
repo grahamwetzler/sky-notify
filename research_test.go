@@ -160,11 +160,21 @@ func TestFactsCarryWhatIdentifiesTheAircraft(t *testing.T) {
 	lat, lon := 32.9126, -96.6389
 	a.AC.Lat, a.AC.Lon = &lat, &lon
 	a.HasDistance, a.DistanceNM, a.Circling = true, 3.2, true
+	// Everything else aircraft.json carries about the airframe, plus the looked-up route.
+	rate, track := -1088.0, 298.29
+	a.Route = "KMCO (Orlando) → KLAS (Las Vegas)"
+	a.AC.Desc, a.AC.OwnOp, a.AC.Year = "BOEING C-17A", "US AIR FORCE", "1998"
+	a.AC.BaroRate, a.AC.Track, a.AC.GS = &rate, &track, 459.9
+	a.AC.Squawk, a.AC.DBFlags = "4571", 1
 	facts := a.facts()
 	for _, want := range []string{
 		"Registration: N12345", "ICAO: adeb2f", "Type: C-17", "Callsign: RCH123",
 		"Altitude: 31000 ft", "Position: 32.9126, -96.6389", "Distance from receiver: 3.2 NM",
 		"Circling: yes",
+		"Route: KMCO (Orlando) → KLAS (Las Vegas)",
+		"Description: BOEING C-17A", "Owner/operator: US AIR FORCE", "Year: 1998",
+		"Vertical rate: -1088 ft/min", "Ground speed: 460 kt", "Heading: 298°",
+		"Squawk: 4571", "Feeder flags: military",
 	} {
 		if !strings.Contains(facts, want) {
 			t.Errorf("facts missing %q:\n%s", want, facts)
@@ -173,6 +183,84 @@ func TestFactsCarryWhatIdentifiesTheAircraft(t *testing.T) {
 	// Nothing about the rule that caught it: the model is asked about an aircraft.
 	if strings.Contains(facts, a.Trigger) {
 		t.Errorf("facts name the rule:\n%s", facts)
+	}
+}
+
+// An aircraft on the ground reports alt_baro as the string "ground", which decodes to
+// 0 ft: the model must not be told a taxiing airframe is at sea level.
+func TestFactsSayOnTheGround(t *testing.T) {
+	a := testAlert()
+	a.AC.AltBaro = Altitude{Present: true, Ground: true}
+	if got := a.facts(); !strings.Contains(got, "Altitude: on the ground") {
+		t.Errorf("facts should say the aircraft is on the ground:\n%s", got)
+	}
+}
+
+// ---------- the route lookup ----------
+
+func TestLookupRoute(t *testing.T) {
+	const found = `[{"_airports":[{"icao":"KMCO","iata":"MCO","location":"Orlando"},
+		{"icao":"KLAS","iata":"LAS","location":"Las Vegas"}],"airport_codes":"KMCO-KLAS"}]`
+	// What the service answers for every callsign it has no schedule for, which is most
+	// of a military feed: an empty list, not an error.
+	const unknown = `[{"_airports":[],"airport_codes":"unknown"}]`
+
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{"found", found, "KMCO (Orlando) → KLAS (Las Vegas)"},
+		{"unknown", unknown, ""},
+		{"no answer at all", `[]`, ""},
+		// No airport list, but codes: still a route, and still worth telling the model.
+		{"codes only", `[{"airport_codes":"EGLL-KJFK"}]`, "EGLL → KJFK"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				json.NewDecoder(r.Body).Decode(&got)
+				w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			route, err := lookupRoute(context.Background(), srv.Client(), srv.URL, "JBU2821", 32.59, -99.32)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if route != tc.want {
+				t.Errorf("lookupRoute = %q, want %q", route, tc.want)
+			}
+			// The position goes with the callsign: without it the service cannot pick
+			// between the flights that share one.
+			planes, _ := got["planes"].([]any)
+			if len(planes) != 1 {
+				t.Fatalf("request sent %d planes, want 1: %v", len(planes), got)
+			}
+			p, _ := planes[0].(map[string]any)
+			if p["callsign"] != "JBU2821" || p["lat"] != 32.59 || p["lng"] != -99.32 {
+				t.Errorf("request asked about %v", p)
+			}
+		})
+	}
+}
+
+func TestLookupRouteRefusesABadAnswer(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"error status", http.StatusInternalServerError, `[]`},
+		{"not json", http.StatusOK, `<html>nope</html>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			if _, err := lookupRoute(context.Background(), srv.Client(), srv.URL, "JBU2821", 1, 2); err == nil {
+				t.Error("lookupRoute accepted an answer it should have refused")
+			}
+		})
 	}
 }
 

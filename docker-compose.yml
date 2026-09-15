@@ -27,6 +27,9 @@ services:
       # SKY_NTFY_PRIORITY: "3"
       # Makes each notification click through to your own map.
       SKY_TAR1090_URL: https://adsb.example.com/
+      # Route lookup for the facts sent with a research: true rule. Defaults to the
+      # service tar1090 uses; set to "" to ask nobody.
+      # SKY_ROUTE_API_URL: https://adsb.im/api/0/routeset
       # SKY_COOLDOWN: 24h
       # SKY_LOG_LEVEL: info
 

@@ -44,17 +44,25 @@ func (a *Altitude) UnmarshalJSON(b []byte) error {
 }
 
 type Aircraft struct {
-	Hex      string   `json:"hex"`
-	Flight   string   `json:"flight"`
-	Reg      string   `json:"r"`
-	Type     string   `json:"t"`
-	AltBaro  Altitude `json:"alt_baro"`
-	GS       float64  `json:"gs"`
-	Track    *float64 `json:"track"` // nil when absent: 0 is due north
-	Lat      *float64 `json:"lat"`
-	Lon      *float64 `json:"lon"`
-	SeenPos  float64  `json:"seen_pos"`
-	Squawk   string   `json:"squawk"`
+	Hex     string   `json:"hex"`
+	Flight  string   `json:"flight"`
+	Reg     string   `json:"r"`
+	Type    string   `json:"t"`
+	AltBaro Altitude `json:"alt_baro"`
+	GS      float64  `json:"gs"`
+	Track   *float64 `json:"track"` // nil when absent: 0 is due north
+	Lat     *float64 `json:"lat"`
+	Lon     *float64 `json:"lon"`
+	SeenPos float64  `json:"seen_pos"`
+	Squawk  string   `json:"squawk"`
+	// Desc, OwnOp and Year come from readsb's own aircraft database, which the feeder
+	// already looked the address up in. They are the three fields tar1090 shows that
+	// say who an airframe is rather than where it is, and they cost nothing to read.
+	Desc     string   `json:"desc"`
+	OwnOp    string   `json:"ownOp"`
+	Year     string   `json:"year"`
+	BaroRate *float64 `json:"baro_rate"` // ft/min, nil when absent: 0 is level flight
+	GeomRate *float64 `json:"geom_rate"` // the same, from GNSS; some airframes send only one
 	Category string   `json:"category"`
 	DBFlags  int      `json:"dbFlags"`
 }

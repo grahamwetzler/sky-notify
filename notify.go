@@ -225,12 +225,32 @@ func (n *Notifier) research(ctx context.Context, a *Alert) string {
 	rctx, cancel := context.WithTimeout(ctx, cfg.AI.Timeout.Std())
 	defer cancel()
 	defer context.AfterFunc(shutdown, cancel)()
+	a.Route = n.route(rctx, a)
 	answer, err := rs.ask(rctx, prompt, a.facts())
 	if err != nil {
 		slog.Warn("research failed, sending the alert without it", "icao", a.Hex, "err", err)
 		return ""
 	}
 	return answer
+}
+
+// route asks the lookup service where this callsign flies between, for the facts block and
+// nothing else. Called from research and only from research: the service is a third party,
+// and an alert nobody is asking a model about has no reason to reach one. A failure costs
+// the model one line of context, never the notification.
+func (n *Notifier) route(ctx context.Context, a *Alert) string {
+	callsign := strings.TrimSpace(a.AC.Flight)
+	if n.cfg.RouteAPIURL == "" || callsign == "" || a.AC.Lat == nil || a.AC.Lon == nil {
+		return ""
+	}
+	rctx, cancel := context.WithTimeout(ctx, routeBudget)
+	defer cancel()
+	r, err := lookupRoute(rctx, n.aiClient, n.cfg.RouteAPIURL, callsign, *a.AC.Lat, *a.AC.Lon)
+	if err != nil {
+		slog.Warn("route lookup failed, researching without it", "icao", a.Hex, "err", err)
+		return ""
+	}
+	return r
 }
 
 // send makes one delivery attempt: an attachment PUT when there is an image, and

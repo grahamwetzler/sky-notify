@@ -428,6 +428,41 @@ func TestPublishCarriesTheResearchLine(t *testing.T) {
 	}
 }
 
+// The route is context for the model, not a line of the notification: it must reach the
+// provider and stop there.
+func TestResearchAsksTheRouteAPIFirst(t *testing.T) {
+	ai := &aiServer{answer: "A JetBlue scheduled passenger flight."}
+	n, nt, alerts := researchNotifier(t, ai)
+	var asked map[string]any
+	route := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&asked)
+		w.Write([]byte(`[{"_airports":[{"icao":"KMCO","location":"Orlando"},{"icao":"KLAS","location":"Las Vegas"}]}]`))
+	}))
+	defer route.Close()
+	n.cfg.RouteAPIURL = route.URL
+	n.aiClient = route.Client()
+
+	a := testAlert()
+	lat, lon := 32.59, -99.32
+	a.AC.Lat, a.AC.Lon = &lat, &lon
+	researchRule(alerts, a.Trigger)
+	if err := n.Publish(context.Background(), a); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if planes, _ := asked["planes"].([]any); len(planes) != 1 {
+		t.Fatalf("the route API was not asked about one aircraft: %v", asked)
+	}
+	msgs, _ := ai.reqs[0]["messages"].([]any)
+	first, _ := msgs[0].(map[string]any)
+	content, _ := first["content"].(string)
+	if !strings.Contains(content, "Route: KMCO (Orlando) → KLAS (Las Vegas)") {
+		t.Errorf("the model was not told the route:\n%s", content)
+	}
+	if strings.Contains(nt.bodies[0].Message, "KMCO") {
+		t.Errorf("the route belongs in the facts, not the notification:\n%s", nt.bodies[0].Message)
+	}
+}
+
 // The rule the map already follows: a line that cannot be written costs the notification
 // that line, never the notification.
 func TestPublishSurvivesAFailedResearchCall(t *testing.T) {

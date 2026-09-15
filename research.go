@@ -215,9 +215,31 @@ func (a *Alert) facts() string {
 	writeLine(&b, "ICAO", a.Hex)
 	writeLine(&b, "Type", a.acType())
 	writeLine(&b, "Callsign", strings.TrimSpace(a.AC.Flight))
-	if a.AC.AltBaro.Present {
+	writeLine(&b, "Route", a.Route)
+	// What the feeder's own database says about the airframe, which is not always what
+	// the interesting-aircraft list says: both are worth having in front of the model.
+	writeLine(&b, "Description", a.AC.Desc)
+	writeLine(&b, "Owner/operator", a.AC.OwnOp)
+	writeLine(&b, "Year", a.AC.Year)
+	switch {
+	case a.AC.AltBaro.Ground:
+		writeLine(&b, "Altitude", "on the ground")
+	case a.AC.AltBaro.Present:
 		writeLine(&b, "Altitude", fmt.Sprintf("%d ft", a.AC.AltBaro.Feet))
 	}
+	if rate := a.AC.BaroRate; rate != nil || a.AC.GeomRate != nil {
+		if rate == nil {
+			rate = a.AC.GeomRate
+		}
+		writeLine(&b, "Vertical rate", fmt.Sprintf("%+.0f ft/min", *rate))
+	}
+	if a.AC.GS > 0 {
+		writeLine(&b, "Ground speed", fmt.Sprintf("%.0f kt", a.AC.GS))
+	}
+	if a.AC.Track != nil {
+		writeLine(&b, "Heading", fmt.Sprintf("%.0f°", *a.AC.Track))
+	}
+	writeLine(&b, "Squawk", strings.TrimSpace(a.AC.Squawk))
 	if a.AC.Lat != nil && a.AC.Lon != nil {
 		// ponytail: coordinates, not a place name — there is no geocoder here. Models
 		// generally name the nearest town themselves; that is their guess, not ours.
@@ -229,6 +251,7 @@ func (a *Alert) facts() string {
 	if a.Circling {
 		writeLine(&b, "Circling", "yes")
 	}
+	writeLine(&b, "Feeder flags", describeDBFlags(a.AC.DBFlags))
 	return strings.TrimRight(b.String(), "\n")
 }
 
