@@ -151,6 +151,18 @@ func Evaluate(ac Aircraft, db *DB, cfg *Alerts, trk *track) *Alert {
 	return a
 }
 
+// matchInput is this alert as the rules read it: the facts a condition can ask about, and
+// none of the state anything else owns. Rule matching is not read-only — passesOverhead
+// records the pass it predicts in the alert it is handed — so re-matching an alert that
+// has been published is done on one of these, never on the alert itself.
+func (a *Alert) matchInput() *Alert {
+	return &Alert{
+		Hex: a.Hex, Plane: a.Plane, AC: a.AC,
+		DistanceNM: a.DistanceNM, HasDistance: a.HasDistance, Circling: a.Circling,
+		recvLat: a.recvLat, recvLon: a.recvLon,
+	}
+}
+
 // firstMatch returns the first rule matching the aircraft, or nil. First match wins, so
 // a narrow exception placed ahead of a broad rule shadows it.
 func firstMatch(rules []Rule, ac Aircraft, p *Plane, a *Alert) *Rule {

@@ -1084,6 +1084,33 @@ func TestClosestPassKeepsWorkingWhileTheFeedIsDown(t *testing.T) {
 	}
 }
 
+// Matching is not read-only: a passes_within_nm rule records the pass it predicts in the
+// alert it is handed. The sweep re-matches holds every poll, and one that has already
+// been offered is in the notifier's hands — being rendered, or waiting on a retry — so
+// the recheck must not be able to reach it.
+func TestRecheckingAHoldLeavesTheOfferedAlertAlone(t *testing.T) {
+	r := newHoldRig(t, closestPassRule()) // no passes_within_nm: nothing predicts a pass
+	r.poll(flying(-2, 0))
+	r.none("while inbound")
+	r.poll(flying(1, 0)) // past the receiver and receding: the hold fires
+	a := r.one()
+	if a.HasPass {
+		t.Fatal("a rule that states no pass condition must not predict one")
+	}
+
+	// The rule gains one while the alert it already offered is still parked, waiting for
+	// the ack. The hold is still held — same rule, same key — so it is re-matched.
+	within := 50.0
+	r.alerts.Rules[0].PassesWithinNM = &within
+	r.poll(flying(2, 0))
+	if a.HasPass {
+		t.Error("the recheck wrote its prediction into an alert that had already gone out")
+	}
+	if r.holds() != 1 {
+		t.Errorf("the hold should still be waiting for its ack, %d left", r.holds())
+	}
+}
+
 // A rule that stops waiting for the pass stops holding: the poll that matches the
 // aircraft now queues the ordinary alert, and a hold left alive beside it would carry the
 // same cooldown key — a second notification of a pass, from a snapshot taken minutes ago,

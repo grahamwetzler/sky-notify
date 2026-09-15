@@ -68,11 +68,7 @@ const holdGiveUp = time.Hour
 // outlives the offer, because an offer is not a delivery — the alert's own ack is what
 // says it was delivered.
 type held struct {
-	alert *Alert
-	// ac is the sighting alert was built from, kept so the hold can be re-judged against
-	// the rules as they are now. Frozen with the alert: a hold that is retrying must not
-	// be retired because the aircraft has since climbed out of the rule that caught it.
-	ac     Aircraft
+	alert  *Alert
 	judged time.Time
 	fired  time.Time
 }
@@ -145,7 +141,7 @@ func (p *poller) park(key string, ac Aircraft, a *Alert, now time.Time) {
 	h, ok := p.holds[key]
 	switch {
 	case !ok:
-		h = held{alert: a, ac: ac, judged: now}
+		h = held{alert: a, judged: now}
 	case !h.fired.IsZero():
 		// Frozen. A retry must resend what was decided, not a moving target — and the
 		// delivery ack rides on the alert pointer, so swapping in a nearer snapshot
@@ -153,7 +149,7 @@ func (p *poller) park(key string, ac Aircraft, a *Alert, now time.Time) {
 		// twice. Nothing is lost: the alert has gone out, and an aircraft still closing
 		// cannot un-send it.
 	case a.DistanceNM < h.alert.DistanceNM:
-		h.alert, h.ac = a, ac
+		h.alert = a
 	}
 	// Judgeable at all: a moving aircraft broadcasting no ground track cannot be told
 	// to have passed, which is the case the grace window in sweepHolds exists for. A
@@ -216,13 +212,21 @@ func (p *poller) sweepHolds(cfg *Alerts, now time.Time) {
 }
 
 // stillHeld re-runs the match that parked this alert against the rules as they are now,
-// on the sighting it was built from. Asking which rule claims the aircraft rather than
-// whether its own rule still alerts is what catches an exception inserted ahead of that
-// rule: first match wins, so the aircraft now stops at the new rule, and a muted one
-// answers nil. A rule that has stopped waiting for the pass is not holding it either —
-// the poll that matched it has already queued the ordinary alert.
+// on the sighting it was built from — which the alert carries, so the hold stays frozen:
+// a hold that is retrying is not retired because the aircraft has since climbed out of
+// the rule that caught it.
+//
+// Asking which rule claims the aircraft rather than whether its own rule still alerts is
+// what catches an exception inserted ahead of that rule: first match wins, so the
+// aircraft now stops at the new rule, and a muted one answers nil. A rule that has
+// stopped waiting for the pass is not holding it either — the poll that matched it has
+// already queued the ordinary alert.
 func stillHeld(cfg *Alerts, h held) bool {
-	r := firstMatch(cfg.Rules, h.ac, h.alert.Plane, h.alert)
+	// matchInput, never the parked alert itself: a passes_within_nm rule writes its
+	// prediction into whatever alert it is handed, and this one is already in the
+	// notifier's hands.
+	snap := h.alert.matchInput()
+	r := firstMatch(cfg.Rules, snap.AC, snap.Plane, snap)
 	return r != nil && r.priorityIn(cfg) != 0 && r.Key() == h.alert.Trigger && r.Notify == notifyClosestPass
 }
 
