@@ -760,6 +760,37 @@ func TestAIKeyDoesNotFollowTheEndpoint(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
 		}
+		// The key goes with the endpoint: kept, it would have no origin for the next
+		// save's move to be judged against.
+		if saved, _ := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path}); saved.aiKey() != "" {
+			t.Errorf("turning research off should take the key with it, got %q", saved.aiKey())
+		}
+		// And the endpoint can be turned back on without re-entering one.
+		if w := put(t, h, `"url":"https://openrouter.ai/api/v1"`); w.Code != http.StatusOK {
+			t.Fatalf("re-enable status = %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	// An endpoint the environment pins is still an endpoint: a save whose own ai.url is
+	// blank has not turned anything off, so it must not drop the file's key.
+	t.Run("an env endpoint keeps the key through a blank url", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "alerts.yaml")
+		os.WriteFile(path, []byte("ai:\n  key: sk-or-v1-secret\n  model: perplexity/sonar\n"), 0o644)
+		t.Setenv("SKY_AI_URL", "https://openrouter.ai/api/v1")
+		h := alertsHandler(t, path)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts",
+			strings.NewReader(`{"ai":{"url":"","model":"perplexity/sonar","timeout":"20s"},"rules":[]}`)))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		}
+		saved, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path, "SKY_AI_URL=https://openrouter.ai/api/v1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if saved.aiKey() != "sk-or-v1-secret" {
+			t.Errorf("key = %q, want the stored one kept", saved.aiKey())
+		}
 	})
 
 	t.Run("with no key stored there is nothing to carry", func(t *testing.T) {
@@ -784,6 +815,28 @@ func TestAIKeyDoesNotFollowTheEndpoint(t *testing.T) {
 		}
 		if !strings.Contains(w.Body.String(), "SKY_AI_URL") {
 			t.Errorf("the error should say how to move it: %s", w.Body.String())
+		}
+	})
+
+	// A key in the payload does not buy the move either, because it is not the key that
+	// gets sent: the overlay replaces it with the variable's value.
+	t.Run("an env key pins its endpoint against a supplied key", func(t *testing.T) {
+		for _, supplied := range []string{`,"key":""`, `,"key":"sk-dummy"`} {
+			path := filepath.Join(t.TempDir(), "alerts.yaml")
+			os.WriteFile(path, []byte("ai:\n  url: https://openrouter.ai/api/v1\n  model: perplexity/sonar\n"), 0o644)
+			t.Setenv("SKY_AI_KEY", "sk-or-v1-from-env")
+			h := alertsHandler(t, path)
+			w := put(t, h, `"url":"https://attacker.invalid/v1"`+supplied)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d for %s, want 400: %s", w.Code, supplied, w.Body.String())
+			}
+			saved, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path, "SKY_AI_KEY=sk-or-v1-from-env"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if saved.AI.URL != "https://openrouter.ai/api/v1" {
+				t.Fatalf("the environment key must not follow the endpoint to %q", saved.AI.URL)
+			}
 		}
 	})
 

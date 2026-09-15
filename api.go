@@ -178,7 +178,14 @@ func (s *server) mux(q *queue) http.Handler {
 		// sent it, so it has nothing to send back, and a save that only changed the poll
 		// interval must not wipe the credential. An empty string is the page saying
 		// clear it, which is a different thing and is honoured.
+		//
+		// Turning research off takes the key with it. A credential kept behind an empty
+		// endpoint has no origin left for the guard above to judge the next save's move
+		// against, so keeping it would make off-then-on a way to point it anywhere —
+		// and would refuse the honest re-enable with an error naming no origin at all.
 		switch {
+		case aiURL(alerts, env) == "":
+			alerts.AI.Key = nil
 		case alerts.AI.Key == nil:
 			alerts.AI.Key = onDisk.AI.Key
 		case *alerts.AI.Key == "":

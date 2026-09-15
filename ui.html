@@ -1876,7 +1876,7 @@ function renderSettings(pane) {
 
   band('AI research', 'Answers rules that ask who an aircraft belongs to. Any OpenAI-compatible provider works — OpenRouter, Ollama, vLLM, OpenAI — and "/chat/completions" is added to the endpoint.', [
     {key: 'ai.url', label: 'Endpoint', placeholder: 'https://openrouter.ai/api/v1',
-     help: 'Leave this and the model blank to turn research off.'},
+     help: 'Leave this and the model blank to turn research off. The stored key is removed with it.'},
     {key: 'ai.model', label: 'Model', placeholder: 'perplexity/sonar',
      help: 'Passed through as written. Searching the web is the model\'s job: pick one that does it.'},
     {key: 'ai.key', label: 'API key', secret: true},

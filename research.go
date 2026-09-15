@@ -40,29 +40,37 @@ func aiOrigin(raw string) string {
 	return u.Scheme + "://" + u.Host
 }
 
+// aiURL is the endpoint a document will actually be run against. An endpoint the
+// environment sets is not the page's to edit: applyAlertEnv overwrites whatever was
+// sent, so the payload's own URL never reaches a request.
+func aiURL(a *Alerts, env map[string]string) string {
+	if v, ok := env[aiURLEnv]; ok {
+		return v
+	}
+	return a.AI.URL
+}
+
 // checkAIKeyStaysPut refuses a save that would send a credential it did not supply to an
 // endpoint it did. The page never holds the key, so "did not supply" is its normal state;
 // moving the endpoint is therefore the one edit that has to come with one.
 //
 // Turning the provider off is not a move: an empty endpoint sends nothing anywhere.
 func checkAIKeyStaysPut(onDisk, saved *Alerts, env map[string]string) error {
-	if saved.AI.Key != nil {
-		return nil // the save brought a key for wherever it is pointing
-	}
-	was, now := onDisk.AI.URL, saved.AI.URL
-	// An endpoint the environment sets is not the page's to move in the first place:
-	// applyAlertEnv overwrites whatever was sent, so nothing can be redirected.
-	if v, ok := env[aiURLEnv]; ok {
-		was, now = v, v
-	}
+	was, now := aiURL(onDisk, env), aiURL(saved, env)
 	if now == "" || aiOrigin(now) == aiOrigin(was) {
 		return nil
 	}
+	// An environment key is judged before the payload's own, because a supplied key
+	// does not become the one that is sent: the overlay replaces it with the variable's
+	// value, so any key at all in the payload — "" included — would otherwise buy a move.
 	if key, ok := env[aiKeyEnv]; ok {
 		if key == "" {
 			return nil
 		}
 		return fmt.Errorf("ai.url: %s holds the API key, so its endpoint is not editable here — set %s too, or move both into alerts.yaml", aiKeyEnv, aiURLEnv)
+	}
+	if saved.AI.Key != nil {
+		return nil // the save brought a key for wherever it is pointing
 	}
 	if onDisk.aiKey() == "" {
 		return nil // nothing stored to carry anywhere
