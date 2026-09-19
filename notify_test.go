@@ -326,7 +326,9 @@ func TestAMutedRuleStopsAnAlertAlreadyQueued(t *testing.T) {
 	s := &ntfyServer{}
 	n := s.start(t, testConfig(t))
 	alerts := defaultAlerts()
-	alerts.Rules = []Rule{{Name: "live"}, {Name: "muted", Priority: intp(0)}}
+	// Distinct ICAO conditions, or "live" — being first and otherwise a wildcard — would
+	// claim bbbbbb too, and claimedBy would drop it as unclaimed regardless of the mute.
+	alerts.Rules = []Rule{{Name: "live", ICAO: []string{"aaaaaa"}}, {Name: "muted", ICAO: []string{"bbbbbb"}, Priority: intp(0)}}
 	state := NewState(t.TempDir())
 	q := newQueue(maxPending)
 	q.add(&Alert{Hex: "aaaaaa", Trigger: "live", Priority: 3})
@@ -374,7 +376,9 @@ func TestMutingDuringADrainStopsTheNextAlert(t *testing.T) {
 		t.Fatal(err)
 	}
 	alerts := defaultAlerts()
-	alerts.Rules = []Rule{{Name: "first"}, {Name: "second"}}
+	// Distinct ICAO conditions, or "first" — being first and otherwise a wildcard — would
+	// claim bbbbbb too, and claimedBy would drop it as unclaimed regardless of the reload.
+	alerts.Rules = []Rule{{Name: "first", ICAO: []string{"aaaaaa"}}, {Name: "second", ICAO: []string{"bbbbbb"}}}
 	live := NewLive(alerts)
 	state := NewState(t.TempDir())
 	q := newQueue(maxPending)
@@ -389,7 +393,7 @@ func TestMutingDuringADrainStopsTheNextAlert(t *testing.T) {
 	<-arrived
 	// A reload, exactly as reloadConfig performs it, while the drain is mid-publish.
 	next := defaultAlerts()
-	next.Rules = []Rule{{Name: "first"}, {Name: "second", Priority: intp(0)}}
+	next.Rules = []Rule{{Name: "first", ICAO: []string{"aaaaaa"}}, {Name: "second", ICAO: []string{"bbbbbb"}, Priority: intp(0)}}
 	live.p.Store(next)
 	close(release)
 
