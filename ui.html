@@ -1955,7 +1955,26 @@ function settingField(f) {
     if (f.key === AI_KEY && lock.value === '') {
       note.append('Silenced by ' + lock.env + ', set to empty — a key entered here would ' +
         'be saved but discarded on the next reload. Remove ' + lock.env + ' to use one.');
-    } else if (lock.value === undefined) {
+      wrap.append(note);
+      /* Typing is refused, but clearing is not: a stored key can still strand the
+         endpoint (checkAIKeyStaysPut judges the file regardless of this override), and
+         the only way off that is to enter a key for the new host — impossible here — or
+         clear the one on file. That must stay reachable even though the box is not. */
+      if (aiKeySet) {
+        const clear = el('button', 'mini', 'Clear stored key');
+        clear.type = 'button';
+        clear.onclick = () => {
+          put(doc, AI_KEY, '');
+          keyEdited = true;
+          aiKeySet = false;
+          markDirty();
+          renderPane();
+        };
+        wrap.append(clear);
+      }
+      return wrap;
+    }
+    if (lock.value === undefined) {
       note.append('Set by ' + lock.env + ', which wins over this file.');
     } else {
       note.append('Set to ', el('span', 'env', String(lock.value)), ' by ' + lock.env + ', which wins over this file.');

@@ -754,6 +754,50 @@ func TestSavedAIKeyIsSilencedByEmptyEnvOverride(t *testing.T) {
 	}
 }
 
+// With SKY_AI_KEY="" and a key already on disk, checkAIKeyStaysPut still judges the file's
+// key against a moved endpoint — the empty override excuses the move from needing an env
+// key, not from needing any key at all. The page's key box is locked in this state (see
+// TestEnvAIKeyEmptyStaysLockedWithoutPinning), so an explicit empty key is the only way
+// left to satisfy that check; the page's "Clear stored key" action sends exactly that.
+func TestEnvOverrideDoesNotStrandAnExistingKey(t *testing.T) {
+	const stored = "ai:\n  url: https://openrouter.ai/api/v1\n  key: sk-or-v1-secret\n  model: perplexity/sonar\n"
+	path := filepath.Join(t.TempDir(), "alerts.yaml")
+	os.WriteFile(path, []byte(stored), 0o644)
+	t.Setenv("SKY_AI_KEY", "")
+	h := alertsHandler(t, path)
+
+	move := func(ai string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		body := `{"ai":{"url":"https://api.together.xyz/v1",` + ai + `,"model":"perplexity/sonar","timeout":"20s"},"rules":[]}`
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(body)))
+		return w
+	}
+
+	t.Run("no key in the payload still refuses the move", func(t *testing.T) {
+		w := move(`"model":"perplexity/sonar"`)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("an explicit empty key clears it and unblocks the move", func(t *testing.T) {
+		w := move(`"key":""`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		}
+		saved, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if saved.AI.URL != "https://api.together.xyz/v1" {
+			t.Errorf("url = %q", saved.AI.URL)
+		}
+		if saved.aiKey() != "" {
+			t.Errorf("key = %q, want cleared", saved.aiKey())
+		}
+	})
+}
+
 // The page never holds the key, so a save that supplies none and moves the endpoint is
 // asking for the stored credential to be posted to a host the payload chose. That is the
 // same disclosure as serving the key outright, by a longer route.
