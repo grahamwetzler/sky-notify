@@ -1948,17 +1948,27 @@ function settingField(f) {
     input.disabled = true;
     input.value = '';
     wrap.append(input);
-    const note = el('span', 'help lock', 'Set ');
-    /* A locked secret has no value to show: the server deliberately does not send it. */
-    if (lock.value === undefined) note.append('by ' + lock.env + ', which wins over this file.');
-    else note.append('to ', el('span', 'env', String(lock.value)), ' by ' + lock.env + ', which wins over this file.');
+    const note = el('span', 'help lock');
+    /* A locked secret has no value to show: the server deliberately does not send it. An
+       empty key is not a secret, but a value here would still be pointless: the env wins
+       on every reload, so what gets saved is never what runs. */
+    if (f.key === AI_KEY && lock.value === '') {
+      note.append('Silenced by ' + lock.env + ', set to empty — a key entered here would ' +
+        'be saved but discarded on the next reload. Remove ' + lock.env + ' to use one.');
+    } else if (lock.value === undefined) {
+      note.append('Set by ' + lock.env + ', which wins over this file.');
+    } else {
+      note.append('Set to ', el('span', 'env', String(lock.value)), ' by ' + lock.env + ', which wins over this file.');
+    }
     wrap.append(note);
     return wrap;
   }
   /* An environment key pins its endpoint: the key cannot be replaced from here, so a new
      one cannot be supplied for a new host, and the server refuses the move. A disabled
-     box says that once; an editable one would say it on every save. */
-  if (f.key === 'ai.url' && locks[AI_KEY]) {
+     box says that once; an editable one would say it on every save.
+     An empty override holds no credential — the server has no value to omit, so its
+     lock still carries one (''), which is how this is told apart from a real key. */
+  if (f.key === 'ai.url' && locks[AI_KEY] && locks[AI_KEY].value === undefined) {
     input.disabled = true;
     wrap.append(input, el('span', 'help lock',
       'Pinned by ' + locks[AI_KEY].env + ', which holds the API key. Set SKY_AI_URL to move it.'));

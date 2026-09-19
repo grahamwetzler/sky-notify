@@ -685,10 +685,11 @@ func TestEnvAIKeyIsLockedWithoutItsValue(t *testing.T) {
 	}
 }
 
-// An env key set to the empty string holds no credential — refuseAIKeyMove already treats
-// it that way — so it must not be reported as locked either, or a keyless deployment could
-// never change its provider through the UI even though the server would accept the save.
-func TestEnvAIKeyEmptyIsNotLocked(t *testing.T) {
+// An env key set to the empty string holds no credential, so refuseAIKeyMove lets the
+// endpoint move — but applyAlertEnv still reapplies the empty override on every reload, so
+// a key saved through the page would never take effect. The row must stay locked, with its
+// (non-secret) empty value visible, so the page can say so instead of pinning ai.url.
+func TestEnvAIKeyEmptyStaysLockedWithoutPinning(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "alerts.yaml")
 	t.Setenv("SKY_AI_KEY", "")
 	h := alertsHandler(t, path)
@@ -703,10 +704,53 @@ func TestEnvAIKeyEmptyIsNotLocked(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
+	var found bool
 	for _, l := range body.Locked {
 		if l["key"] == aiKeyPath {
-			t.Errorf("an empty SKY_AI_KEY should not lock ai.key, got %v", l)
+			found = true
+			if v, ok := l["value"]; !ok || v != "" {
+				t.Errorf("an empty override's value must be visible as empty, got %q (present=%v)", v, ok)
+			}
+			if l["env"] != "SKY_AI_KEY" {
+				t.Errorf("env = %q", l["env"])
+			}
 		}
+	}
+	if !found {
+		t.Error("an empty SKY_AI_KEY still overrides the file on reload, so it must still be reported as locked")
+	}
+}
+
+// A credential saved while SKY_AI_KEY is empty is written to the file — the save is not
+// refused, since an empty variable holds no credential to protect — but applyAlertEnv
+// reapplies the empty override on every load, so the saved key must never reach a request:
+// the file is not what the service actually runs while the override is in effect.
+func TestSavedAIKeyIsSilencedByEmptyEnvOverride(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.yaml")
+	t.Setenv("SKY_AI_KEY", "")
+	h := alertsHandler(t, path)
+
+	body := `{"ai":{"url":"https://api.together.xyz/v1","key":"sk-together-new","model":"perplexity/sonar","timeout":"20s"},"rules":[]}`
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(body)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT status %d: %s", w.Code, w.Body.String())
+	}
+
+	onDisk, err := loadAlertsFile(map[string]string{"SKY_ALERTS_CONFIG": path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onDisk.aiKey() != "sk-together-new" {
+		t.Fatalf("the file should keep the key it was given, got %q", onDisk.aiKey())
+	}
+
+	live, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path, "SKY_AI_KEY="})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live.aiKey() != "" {
+		t.Errorf("the empty env override must win at runtime, got key %q", live.aiKey())
 	}
 }
 

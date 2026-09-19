@@ -57,16 +57,18 @@ func (s *server) mux(q *queue) http.Handler {
 			if !ok {
 				continue
 			}
-			// An empty SKY_AI_KEY holds no credential — refuseAIKeyMove already treats it
-			// that way — so it must not pin ai.url in the page either, or a keyless
-			// deployment could never change its provider through the UI.
-			if b.key == aiKeyPath && v == "" {
-				continue
-			}
 			l := map[string]string{"key": b.key, "env": b.name, "value": v}
 			// Except a credential. The page only has to know the key is not its to
 			// edit; the value is the one thing in this response that must not be.
-			if b.key == aiKeyPath {
+			//
+			// An empty value is not a credential, so it is safe to show — and the page
+			// needs to see it: applyAlertEnv reapplies SKY_AI_KEY on every reload, so a
+			// key typed here would be saved and then silently discarded, not used. The
+			// row stays locked so that trap stays visible, but an empty value must not
+			// pin ai.url the way a real key does — refuseAIKeyMove already lets the
+			// endpoint move when the variable holds no credential, so a keyless
+			// deployment can still change its provider from here.
+			if b.key == aiKeyPath && v != "" {
 				delete(l, "value")
 			}
 			locked = append(locked, l)
