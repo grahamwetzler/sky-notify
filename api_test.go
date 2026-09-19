@@ -685,6 +685,31 @@ func TestEnvAIKeyIsLockedWithoutItsValue(t *testing.T) {
 	}
 }
 
+// An env key set to the empty string holds no credential — refuseAIKeyMove already treats
+// it that way — so it must not be reported as locked either, or a keyless deployment could
+// never change its provider through the UI even though the server would accept the save.
+func TestEnvAIKeyEmptyIsNotLocked(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alerts.yaml")
+	t.Setenv("SKY_AI_KEY", "")
+	h := alertsHandler(t, path)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/alerts", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Locked []map[string]string `json:"locked"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range body.Locked {
+		if l["key"] == aiKeyPath {
+			t.Errorf("an empty SKY_AI_KEY should not lock ai.key, got %v", l)
+		}
+	}
+}
+
 // The page never holds the key, so a save that supplies none and moves the endpoint is
 // asking for the stored credential to be posted to a host the payload chose. That is the
 // same disclosure as serving the key outright, by a longer route.

@@ -53,15 +53,23 @@ func (s *server) mux(q *queue) http.Handler {
 		// invalid against a file that never mentions them.
 		var locked []map[string]string
 		for _, b := range alertEnvBindings() {
-			if v, ok := env[b.name]; ok {
-				l := map[string]string{"key": b.key, "env": b.name, "value": v}
-				// Except a credential. The page only has to know the key is not its to
-				// edit; the value is the one thing in this response that must not be.
-				if b.key == aiKeyPath {
-					delete(l, "value")
-				}
-				locked = append(locked, l)
+			v, ok := env[b.name]
+			if !ok {
+				continue
 			}
+			// An empty SKY_AI_KEY holds no credential — refuseAIKeyMove already treats it
+			// that way — so it must not pin ai.url in the page either, or a keyless
+			// deployment could never change its provider through the UI.
+			if b.key == aiKeyPath && v == "" {
+				continue
+			}
+			l := map[string]string{"key": b.key, "env": b.name, "value": v}
+			// Except a credential. The page only has to know the key is not its to
+			// edit; the value is the one thing in this response that must not be.
+			if b.key == aiKeyPath {
+				delete(l, "value")
+			}
+			locked = append(locked, l)
 		}
 		// The cooldown key of every rule, in order. A rule may have no name, and the
 		// page has to be able to say what the ledger and the logs will call it — which
