@@ -129,6 +129,38 @@ func TestResearchFailures(t *testing.T) {
 	}
 }
 
+// A redirect must not carry the bearer token to a host other than the one that was
+// configured. Go's default client would still forward Authorization here, since the
+// redirect only changes port, and shouldCopyHeaderOnRedirect compares hostnames, not full
+// origins — so the request must simply not be followed.
+func TestResearchDoesNotFollowRedirects(t *testing.T) {
+	var attackerReqs int
+	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attackerReqs++
+		json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{"message": map[string]any{"content": "leaked"}}},
+		})
+	}))
+	defer attacker.Close()
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, attacker.URL+"/chat/completions", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	cfg := defaultAlerts()
+	key := "sk-test"
+	cfg.AI.URL, cfg.AI.Key, cfg.AI.Model = origin.URL, &key, "perplexity/sonar"
+	rs := newResearcher(cfg, origin.Client())
+
+	if got, err := rs.ask(context.Background(), "p", "f"); err == nil {
+		t.Fatalf("ask followed the redirect and returned %q, want an error", got)
+	}
+	if attackerReqs != 0 {
+		t.Errorf("the redirect target received %d request(s); the key must never reach it", attackerReqs)
+	}
+}
+
 func TestResearchHonoursTheDeadline(t *testing.T) {
 	ai := &aiServer{answer: "too late", delay: time.Second}
 	rs := ai.start(t, defaultAlerts())

@@ -138,11 +138,26 @@ func newResearcher(cfg *Alerts, client *http.Client) *researcher {
 		return nil
 	}
 	return &researcher{
-		client: client,
+		client: noRedirectClient(client),
 		url:    chatCompletionsURL(cfg.AI.URL),
 		key:    cfg.aiKey(),
 		model:  cfg.AI.Model,
 	}
+}
+
+// noRedirectClient is client with redirects turned off, for the one call that carries the
+// provider's bearer token. Go's default policy would follow a redirect and forward
+// Authorization along with it as long as the hostname matches — even across a port or a
+// scheme, which is exactly the distinction aiOrigin exists to enforce — so a provider that
+// redirects (compromised, misconfigured, or malicious) could have the key handed to a
+// different endpoint than the one that was configured. The Transport is shared, so
+// connection pooling with the rest of the client's traffic is unaffected.
+func noRedirectClient(client *http.Client) *http.Client {
+	c := *client
+	c.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &c
 }
 
 // chatCompletionsURL appends the endpoint to the base's path, the way the ntfy topic is
