@@ -6,35 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 // Duration is a time.Duration that unmarshals from a Go duration string ("15s", "24h")
 // rather than from an integer count of nanoseconds.
 type Duration time.Duration
-
-func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
-	var s string
-	if err := n.Decode(&s); err != nil {
-		return fmt.Errorf(`must be a duration string like "15s" or "24h"`)
-	}
-	v, err := time.ParseDuration(s)
-	if err != nil {
-		return err
-	}
-	*d = Duration(v)
-	return nil
-}
-
-func (d Duration) MarshalYAML() (any, error) { return durationString(d), nil }
 
 func (d Duration) MarshalJSON() ([]byte, error) { return json.Marshal(durationString(d)) }
 
@@ -66,38 +47,38 @@ func durationString(d Duration) string {
 
 type Config struct {
 	Source struct {
-		URL    string   `yaml:"url"`
-		MaxAge Duration `yaml:"max_age"`
-	} `yaml:"source"`
+		URL    string   `yaml:"url" json:"url"`
+		MaxAge Duration `yaml:"max_age" json:"max_age"`
+	} `yaml:"source" json:"source"`
 
 	Ntfy struct {
-		URL      string `yaml:"url"`
-		Topic    string `yaml:"topic"`
-		Token    string `yaml:"token"`
-		User     string `yaml:"user"`
-		Password string `yaml:"password"`
-	} `yaml:"ntfy"`
+		URL      string `yaml:"url" json:"url"`
+		Topic    string `yaml:"topic" json:"topic"`
+		Token    string `yaml:"token" json:"token"`
+		User     string `yaml:"user" json:"user"`
+		Password string `yaml:"password" json:"password"`
+	} `yaml:"ntfy" json:"ntfy"`
 
 	DB struct {
-		Files   []string `yaml:"files"`
-		BaseURL string   `yaml:"base_url"`
-	} `yaml:"db"`
+		Files   []string `yaml:"files" json:"files"`
+		BaseURL string   `yaml:"base_url" json:"base_url"`
+	} `yaml:"db" json:"db"`
 
 	// Map is the snapshot attached to each notification. Startup-only, like the rest of
 	// Config: the renderer's tile client is built once.
 	Map struct {
 		// Enabled is a pointer so "map.enabled: false" in the file can be told apart
 		// from the key being absent, which is what makes the default true.
-		Enabled  *bool  `yaml:"enabled,omitempty"`
-		TilesURL string `yaml:"tiles_url"`
-	} `yaml:"map"`
+		Enabled  *bool  `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+		TilesURL string `yaml:"tiles_url" json:"tiles_url"`
+	} `yaml:"map" json:"map"`
 
-	CacheDir   string `yaml:"cache_dir"`
-	Tar1090URL string `yaml:"tar1090_url"`
-	Listen     string `yaml:"listen"`
+	CacheDir   string `yaml:"cache_dir" json:"cache_dir"`
+	Tar1090URL string `yaml:"tar1090_url" json:"tar1090_url"`
+	Listen     string `yaml:"listen" json:"listen"`
 	// RouteAPIURL is the flight-route lookup asked about a callsign before a rule's
 	// research question goes to the model, and only then. Empty asks nobody.
-	RouteAPIURL string `yaml:"route_api_url"`
+	RouteAPIURL string `yaml:"route_api_url" json:"route_api_url"`
 }
 
 type Alerts struct {
@@ -181,10 +162,10 @@ func defaultAlerts() *Alerts {
 	return a
 }
 
-// envConfigVar names the YAML config path. It is bound separately from the table
-// below (it is read before the file is parsed) but must still count as a known name.
-const envConfigVar = "SKY_CONFIG"
-const envAlertsConfigVar = "SKY_ALERTS_CONFIG"
+// envDBPathVar names the settings database. It is bound separately from the table below
+// (it is read before the store is opened) but must still count as a known name.
+const envDBPathVar = "SKY_CONFIG_DB"
+const defaultDBPath = "/config/config.db"
 
 type envBinding struct {
 	name  string
@@ -286,13 +267,12 @@ func splitList(v string) []string {
 	return out
 }
 
-// LoadConfig applies defaults, then the YAML file (if present), then the environment.
-// environ is passed in rather than read from os so tests can drive it.
-func LoadConfig(environ []string) (*Config, error) {
+// LoadConfig applies defaults, then the stored document (if present), then the
+// environment. environ is passed in rather than read from os so tests can drive it.
+func LoadConfig(environ []string, store *SettingsStore) (*Config, error) {
 	env := environMap(environ)
 	cfg := defaultConfig()
-	path := configPath(env)
-	if err := loadYAML(path, cfg, configMisplaced, alertsPath(env), "hot-reloaded", nil); err != nil {
+	if err := loadJSON("config", cfg, configMisplaced, "alerts", "hot-reloaded", nil, store); err != nil {
 		return nil, err
 	}
 	if err := checkEnv(env); err != nil {
@@ -312,9 +292,9 @@ func LoadConfig(environ []string) (*Config, error) {
 	return cfg, nil
 }
 
-func LoadAlerts(environ []string) (*Alerts, error) {
+func LoadAlerts(environ []string, store *SettingsStore) (*Alerts, error) {
 	env := environMap(environ)
-	alerts, err := loadAlertsFile(env)
+	alerts, err := loadAlertsFile(store)
 	if err != nil {
 		return nil, err
 	}
@@ -345,56 +325,63 @@ func applyAlertEnv(a *Alerts, env map[string]string) error {
 	return nil
 }
 
-func loadAlertsFile(env map[string]string) (*Alerts, error) {
+func loadAlertsFile(store *SettingsStore) (*Alerts, error) {
 	alerts := defaultAlerts()
-	if err := loadYAML(alertsPath(env), alerts, alertsMisplaced, configPath(env), "startup-only", alertsRemoved); err != nil {
+	if err := loadJSON("alerts", alerts, alertsMisplaced, "config", "startup-only", alertsRemoved, store); err != nil {
 		return nil, err
 	}
 	return alerts, nil
 }
 
 // These mirror the other struct's keys; keep them in sync or migration errors fall
-// back to KnownFields' unhelpful "field not found" message.
-// Each list mirrors the other file's keys, and must be extended whenever a key is added
-// to the other struct: a key missing here still fails, but with KnownFields' "field rules
-// not found in type main.Config" instead of a message naming the file it belongs in.
+// back to DisallowUnknownFields' unhelpful "field not found" message.
+// Each list mirrors the other section's keys, and must be extended whenever a key is
+// added to the other struct: a key missing here still fails, but with
+// DisallowUnknownFields' "unknown field \"rules\"" instead of a message naming the
+// section it belongs in.
 var configMisplaced = []string{"rules", "cooldown", "lat", "lon", "log_level", "source.poll_interval", "ntfy.priority", "db.refresh_interval", "ai.url", "ai.key", "ai.model", "ai.timeout"}
 var alertsMisplaced = []string{"source.url", "source.max_age", "ntfy.url", "ntfy.topic", "ntfy.token", "ntfy.user", "ntfy.password", "tar1090_url", "db.files", "db.base_url", "cache_dir", "listen"}
 
 // A key or variable deleted by the rules-only rewrite gets an explanation of where its
-// job went. Without these, KnownFields says "field filters not found in type main.Alerts"
-// and nearestName offers a spelling correction for a name that is not misspelled — both
-// of which read as "you typo'd" when the truth is "this setting moved".
+// job went. Without these, DisallowUnknownFields says `unknown field "filters"` and
+// nearestName offers a spelling correction for a name that is not misspelled — both of
+// which read as "you typo'd" when the truth is "this setting moved".
 var alertsRemoved = map[string]string{
-	"filters":                   "filters moved onto each rule: min_altitude_ft, max_altitude_ft and max_distance_nm are now per-rule keys, and lat/lon are top-level in this file",
+	"filters":                   "filters moved onto each rule: min_altitude_ft, max_altitude_ft and max_distance_nm are now per-rule keys, and lat/lon are top-level in alerts",
 	"alert_on_emergency_squawk": `emergency squawks are now ordinary rules: write a rule with squawk: ["7500", "7600", "7700"]`,
 	"squawk_priority":           "squawk priority is now the priority of the rule that matches the squawk",
 }
 
 var removedEnv = map[string]string{
-	"SKY_FILTERS_MIN_ALTITUDE_FT":   "now a per-rule key in alerts.yaml",
-	"SKY_FILTERS_MAX_ALTITUDE_FT":   "now a per-rule key in alerts.yaml",
-	"SKY_FILTERS_MAX_DISTANCE_NM":   "now a per-rule key in alerts.yaml",
+	"SKY_FILTERS_MIN_ALTITUDE_FT":   "now a per-rule key in alerts",
+	"SKY_FILTERS_MAX_ALTITUDE_FT":   "now a per-rule key in alerts",
+	"SKY_FILTERS_MAX_DISTANCE_NM":   "now a per-rule key in alerts",
 	"SKY_ALERT_ON_EMERGENCY_SQUAWK": "write a squawk rule instead",
 	"SKY_FILTERS_LAT":               "use SKY_LAT instead",
 	"SKY_FILTERS_LON":               "use SKY_LON instead",
 }
 
-func loadYAML(path string, dst any, misplaced []string, belongs, label string, removed map[string]string) error {
-	// A missing config file is not an error; a malformed one is.
-	b, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
+// loadJSON reads section's stored document from store into dst, applying the same
+// removed-key and misplaced-key checks loadYAML used to apply to a file. section names
+// the row this reads ("config" or "alerts"); belongs names the other one, for a
+// misplaced-key error.
+func loadJSON(section string, dst any, misplaced []string, belongs, label string, removed map[string]string, store *SettingsStore) error {
+	// A section with no stored row is not an error; a malformed one is.
+	data, _, ok, err := store.Get(section)
+	if err != nil {
+		return fmt.Errorf("%s: %w", section, err)
+	}
+	if !ok {
 		return nil
 	}
-	if err != nil {
-		return fmt.Errorf("config %s: %w", path, err)
-	}
-	// The loose pass names the destination for moved keys; KnownFields alone cannot.
+	b := []byte(data)
+	// The loose pass names the destination for moved keys; DisallowUnknownFields alone
+	// cannot.
 	var raw map[string]any
-	if err := yaml.Unmarshal(b, &raw); err != nil {
-		return fmt.Errorf("config %s: %w", path, err)
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return fmt.Errorf("%s: %w", section, err)
 	}
-	// Sorted, so a file carrying two removed keys always names the same one first.
+	// Sorted, so a document carrying two removed keys always names the same one first.
 	gone := make([]string, 0, len(removed))
 	for key := range removed {
 		if _, ok := raw[key]; ok {
@@ -403,7 +390,7 @@ func loadYAML(path string, dst any, misplaced []string, belongs, label string, r
 	}
 	if len(gone) > 0 {
 		sort.Strings(gone)
-		return fmt.Errorf("config %s: %s: %s", path, gone[0], removed[gone[0]])
+		return fmt.Errorf("%s: %s: %s", section, gone[0], removed[gone[0]])
 	}
 	var found []string
 	for _, key := range misplaced {
@@ -418,18 +405,18 @@ func loadYAML(path string, dst any, misplaced []string, belongs, label string, r
 		}
 	}
 	if len(found) > 0 {
-		return fmt.Errorf("config %s: move %s to %s (%s) and restart", path, strings.Join(found, ", "), belongs, label)
+		return fmt.Errorf("%s: move %s to %s (%s) and restart", section, strings.Join(found, ", "), belongs, label)
 	}
-	dec := yaml.NewDecoder(bytes.NewReader(b))
-	dec.KnownFields(true)
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil && !errors.Is(err, io.EOF) {
-		return fmt.Errorf("config %s: %w", path, err)
+		return fmt.Errorf("%s: %w", section, err)
 	}
 	return nil
 }
 
 func checkEnv(env map[string]string) error {
-	known := map[string]bool{envConfigVar: true, envAlertsConfigVar: true}
+	known := map[string]bool{envDBPathVar: true}
 	for _, b := range envBindings() {
 		known[b.name] = true
 	}
@@ -457,18 +444,13 @@ func checkEnv(env map[string]string) error {
 	return fmt.Errorf("unknown environment variable(s): %s", strings.Join(msgs, ", "))
 }
 
-func configPath(env map[string]string) string {
-	if path := env[envConfigVar]; path != "" {
+// dbPath is where the settings database lives — the one thing that has to be knowable
+// before any config is loaded, since the loaded documents cannot name their own location.
+func dbPath(env map[string]string) string {
+	if path := env[envDBPathVar]; path != "" {
 		return path
 	}
-	return "/config/config.yaml"
-}
-
-func alertsPath(env map[string]string) string {
-	if path := env[envAlertsConfigVar]; path != "" {
-		return path
-	}
-	return filepath.Join(filepath.Dir(configPath(env)), "alerts.yaml")
+	return defaultDBPath
 }
 
 func environMap(environ []string) map[string]string {

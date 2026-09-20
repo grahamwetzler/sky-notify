@@ -428,9 +428,10 @@ type Rule struct {
 	Tags     []string `yaml:"tags,omitempty" json:"tags,omitempty"`
 	Listed   *bool    `yaml:"listed,omitempty" json:"listed,omitempty"`
 	// All is gone: a rule with no conditions already matches every aircraft. It survives
-	// only to say so, since KnownFields would otherwise report it as a typo. json:"-" so
-	// a UI save cannot resurrect it.
-	All            *bool     `yaml:"all,omitempty" json:"-"`
+	// only to say so, since DisallowUnknownFields would otherwise report it as a typo
+	// with no explanation. Decoded like any other field — validate() is what refuses it,
+	// with a message that names what moved, rather than an opaque "unknown field".
+	All            *bool     `yaml:"all,omitempty" json:"all,omitempty"`
 	MinAltitudeFt  *int      `yaml:"min_altitude_ft,omitempty" json:"min_altitude_ft,omitempty"`
 	MaxAltitudeFt  *int      `yaml:"max_altitude_ft,omitempty" json:"max_altitude_ft,omitempty"`
 	MaxDistanceNM  *float64  `yaml:"max_distance_nm,omitempty" json:"max_distance_nm,omitempty"`

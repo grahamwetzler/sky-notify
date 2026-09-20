@@ -2,14 +2,12 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"log/slog"
-	"os"
 	"time"
 )
 
-func reloadConfig(live *Live, environ []string, onReload func(*Alerts)) error {
-	next, err := LoadAlerts(environ)
+func reloadConfig(store *SettingsStore, live *Live, environ []string, onReload func(*Alerts)) error {
+	next, err := LoadAlerts(environ, store)
 	if err != nil {
 		return err
 	}
@@ -20,40 +18,36 @@ func reloadConfig(live *Live, environ []string, onReload func(*Alerts)) error {
 	return nil
 }
 
-// configWatcher notices edits to the alerts file. It compares a digest rather than
-// watching with inotify: the config is a bind mount in Docker, where inotify is
-// unreliable, and editors replace the file by rename. Polling by path survives both.
+// configWatcher notices edits to the alerts document. It compares the row's version
+// counter rather than watching for a change notification on the SQLite connection: a
+// cheap counter poll is the right default at 5s, and there is no bind-mount/inotify
+// quirk here to poll around.
 type configWatcher struct {
-	path    string
-	digest  [32]byte
-	missing bool
+	store   *SettingsStore
+	version int64
 }
 
 // newConfigWatcher takes the baseline eagerly, so a caller that constructs it before
 // starting the watch goroutine cannot miss an edit made in between.
-func newConfigWatcher(environ []string) *configWatcher {
-	w := &configWatcher{path: alertsPath(environMap(environ))}
-	w.digest, w.missing = w.read()
+func newConfigWatcher(store *SettingsStore) *configWatcher {
+	w := &configWatcher{store: store}
+	_, w.version, _, _ = store.Get("alerts")
 	return w
 }
 
-func (w *configWatcher) read() ([32]byte, bool) {
-	b, err := os.ReadFile(w.path)
-	return sha256.Sum256(b), os.IsNotExist(err)
-}
-
-// changed reports whether the file differs from the last state seen, and records it.
-// A file that appears or disappears counts, so an empty read is not mistaken for one.
+// changed reports whether the stored alerts row differs from the version last seen, and
+// records it. A row that is absent is implicitly version 0, so it needs no separate
+// "missing" flag the way a bind-mounted file did.
 func (w *configWatcher) changed() bool {
-	digest, missing := w.read()
-	if digest == w.digest && missing == w.missing {
+	_, version, _, _ := w.store.Get("alerts")
+	if version == w.version {
 		return false
 	}
-	w.digest, w.missing = digest, missing
+	w.version = version
 	return true
 }
 
-// run publishes validated file changes to live until ctx is done.
+// run publishes validated changes to live until ctx is done.
 func (w *configWatcher) run(ctx context.Context, live *Live, environ []string, interval time.Duration, onReload func(*Alerts)) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -67,13 +61,13 @@ func (w *configWatcher) run(ctx context.Context, live *Live, environ []string, i
 		if !w.changed() {
 			continue
 		}
-		// A half-written file parses badly; logging and keeping the running config is
+		// A half-written save parses badly; logging and keeping the running config is
 		// the only acceptable outcome, and the next write fires another attempt.
-		err := reloadConfig(live, environ, onReload)
+		err := reloadConfig(w.store, live, environ, onReload)
 		if err != nil {
 			slog.Error("config reload failed, keeping running config", "err", err)
 			continue
 		}
-		slog.Info("config reloaded", "path", w.path)
+		slog.Info("config reloaded", "version", w.version)
 	}
 }

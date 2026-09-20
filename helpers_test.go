@@ -1,8 +1,21 @@
 package main
 
 import (
+	"path/filepath"
 	"testing"
 )
+
+// newTestStore opens a fresh settings database in a temp directory, closed automatically
+// at the end of the test.
+func newTestStore(t *testing.T) *SettingsStore {
+	t.Helper()
+	store, err := OpenSettings(filepath.Join(t.TempDir(), "config.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	return store
+}
 
 // ---------- helpers ----------
 

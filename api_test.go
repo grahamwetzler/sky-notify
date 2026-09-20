@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -194,44 +192,44 @@ func TestICAOTypeRuleMatchesAnUnlistedAircraft(t *testing.T) {
 // against. A rule needing coordinates the environment supplies is valid at runtime, and
 // rejecting it would make the UI refuse a setting the operator already runs.
 func TestAlertsUISaveValidatesWithEnvironmentApplied(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "alerts.yaml")
+	store := newTestStore(t)
 	t.Setenv("SKY_LAT", "41.9")
 	t.Setenv("SKY_LON", "-87.6")
-	h := alertsHandler(t, path)
+	h := alertsHandler(t, store)
 	w := httptest.NewRecorder()
 	body := `{"rules":[{"name":"near","priority":4,"max_distance_nm":25}]}`
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(body)))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}
-	// The override is validated against, never written: the file keeps the operator's own
+	// The override is validated against, never written: the row keeps the operator's own
 	// values, so removing the variable does not silently leave its coordinates behind.
-	blob, err := os.ReadFile(path)
+	blob, _, _, err := store.Get("alerts")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(blob), "41.9") {
-		t.Fatalf("environment coordinates were baked into the file:\n%s", blob)
+	if strings.Contains(blob, "41.9") {
+		t.Fatalf("environment coordinates were baked into the row:\n%s", blob)
 	}
 	// And it really is what the loader accepts.
-	if _, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path, "SKY_LAT=41.9", "SKY_LON=-87.6"}); err != nil {
-		t.Fatalf("the saved file must load under the same environment: %v", err)
+	if _, err := LoadAlerts([]string{"SKY_LAT=41.9", "SKY_LON=-87.6"}, store); err != nil {
+		t.Fatalf("the saved row must load under the same environment: %v", err)
 	}
 }
 
 // The mirror of the above: an override that makes the payload invalid has to fail at save
-// time, not silently write a file the watcher then refuses on reload.
+// time, not silently write a row the watcher then refuses on reload.
 func TestAlertsUISaveRejectsWhatTheEnvironmentBreaks(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "alerts.yaml")
+	store := newTestStore(t)
 	t.Setenv("SKY_COOLDOWN", "0s")
-	h := alertsHandler(t, path)
+	h := alertsHandler(t, store)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(`{"rules":[{"name":"x"}]}`)))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 for a payload the environment invalidates", w.Code)
 	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatal("a rejected save must not touch the file")
+	if _, _, ok, err := store.Get("alerts"); ok || err != nil {
+		t.Fatalf("a rejected save must not touch the row: ok=%v err=%v", ok, err)
 	}
 }
 
@@ -239,22 +237,22 @@ func TestAlertsUISaveRejectsWhatTheEnvironmentBreaks(t *testing.T) {
 // default into the rule freezes it there, silently changing behaviour the next time the
 // default moves — and immediately, for anyone whose default is not 3.
 func TestRuleWithoutPriorityRoundTripsAsUnset(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "alerts.yaml")
-	h := alertsHandler(t, path)
+	store := newTestStore(t)
+	h := alertsHandler(t, store)
 	w := httptest.NewRecorder()
 	body := `{"ntfy":{"priority":2},"rules":[{"name":"inherits"},{"name":"muted","priority":0}]}`
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(body)))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}
-	blob, err := os.ReadFile(path)
+	blob, _, _, err := store.Get("alerts")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(blob), "priority: 3") {
+	if strings.Contains(blob, `"priority":3`) {
 		t.Fatalf("an unset priority was written as the default:\n%s", blob)
 	}
-	got, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path})
+	got, err := LoadAlerts(nil, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -566,11 +564,11 @@ func TestFontIsServedAndReferenced(t *testing.T) {
 // save that carries none keeps the one on disk. Without the second half, saving any
 // unrelated setting from the page would wipe the credential.
 func TestAIKeyIsWriteOnlyToTheBrowser(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "alerts.yaml")
-	if err := os.WriteFile(path, []byte("ai:\n  url: https://openrouter.ai/api/v1\n  key: sk-or-v1-secret\n  model: perplexity/sonar\n"), 0o644); err != nil {
+	store := newTestStore(t)
+	if _, err := store.Put("alerts", `{"ai":{"url":"https://openrouter.ai/api/v1","key":"sk-or-v1-secret","model":"perplexity/sonar"}}`); err != nil {
 		t.Fatal(err)
 	}
-	h := alertsHandler(t, path)
+	h := alertsHandler(t, store)
 
 	get := func() map[string]any {
 		t.Helper()
@@ -608,7 +606,7 @@ func TestAIKeyIsWriteOnlyToTheBrowser(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("PUT status %d: %s", w.Code, w.Body.String())
 	}
-	saved, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path})
+	saved, err := LoadAlerts(nil, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,7 +627,7 @@ func TestAIKeyIsWriteOnlyToTheBrowser(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("PUT status %d: %s", w.Code, w.Body.String())
 	}
-	if saved, _ := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path}); saved.aiKey() != "sk-or-v1-new" {
+	if saved, _ := LoadAlerts(nil, store); saved.aiKey() != "sk-or-v1-new" {
 		t.Errorf("key = %q, want the one that was sent", saved.aiKey())
 	}
 
@@ -640,7 +638,7 @@ func TestAIKeyIsWriteOnlyToTheBrowser(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("PUT status %d: %s", w.Code, w.Body.String())
 	}
-	if saved, _ := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path}); saved.aiKey() != "" {
+	if saved, _ := LoadAlerts(nil, store); saved.aiKey() != "" {
 		t.Errorf("key = %q, want it cleared", saved.aiKey())
 	}
 	if body := get(); body["ai_key_set"] != false {
@@ -651,9 +649,8 @@ func TestAIKeyIsWriteOnlyToTheBrowser(t *testing.T) {
 // An env-set key is not the page's to edit, and its value is the one locked setting whose
 // value must not travel with the lock.
 func TestEnvAIKeyIsLockedWithoutItsValue(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "alerts.yaml")
 	t.Setenv("SKY_AI_KEY", "sk-or-v1-from-env")
-	h := alertsHandler(t, path)
+	h := alertsHandler(t, newTestStore(t))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/alerts", nil))
 	if w.Code != http.StatusOK {
@@ -690,9 +687,8 @@ func TestEnvAIKeyIsLockedWithoutItsValue(t *testing.T) {
 // a key saved through the page would never take effect. The row must stay locked, with its
 // (non-secret) empty value visible, so the page can say so instead of pinning ai.url.
 func TestEnvAIKeyEmptyStaysLockedWithoutPinning(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "alerts.yaml")
 	t.Setenv("SKY_AI_KEY", "")
-	h := alertsHandler(t, path)
+	h := alertsHandler(t, newTestStore(t))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/alerts", nil))
 	if w.Code != http.StatusOK {
@@ -726,9 +722,9 @@ func TestEnvAIKeyEmptyStaysLockedWithoutPinning(t *testing.T) {
 // reapplies the empty override on every load, so the saved key must never reach a request:
 // the file is not what the service actually runs while the override is in effect.
 func TestSavedAIKeyIsSilencedByEmptyEnvOverride(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "alerts.yaml")
+	store := newTestStore(t)
 	t.Setenv("SKY_AI_KEY", "")
-	h := alertsHandler(t, path)
+	h := alertsHandler(t, store)
 
 	body := `{"ai":{"url":"https://api.together.xyz/v1","key":"sk-together-new","model":"perplexity/sonar","timeout":"20s"},"rules":[]}`
 	w := httptest.NewRecorder()
@@ -737,15 +733,15 @@ func TestSavedAIKeyIsSilencedByEmptyEnvOverride(t *testing.T) {
 		t.Fatalf("PUT status %d: %s", w.Code, w.Body.String())
 	}
 
-	onDisk, err := loadAlertsFile(map[string]string{"SKY_ALERTS_CONFIG": path})
+	onDisk, err := loadAlertsFile(store)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if onDisk.aiKey() != "sk-together-new" {
-		t.Fatalf("the file should keep the key it was given, got %q", onDisk.aiKey())
+		t.Fatalf("the row should keep the key it was given, got %q", onDisk.aiKey())
 	}
 
-	live, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path, "SKY_AI_KEY="})
+	live, err := LoadAlerts([]string{"SKY_AI_KEY="}, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -760,11 +756,13 @@ func TestSavedAIKeyIsSilencedByEmptyEnvOverride(t *testing.T) {
 // TestEnvAIKeyEmptyStaysLockedWithoutPinning), so an explicit empty key is the only way
 // left to satisfy that check; the page's "Clear stored key" action sends exactly that.
 func TestEnvOverrideDoesNotStrandAnExistingKey(t *testing.T) {
-	const stored = "ai:\n  url: https://openrouter.ai/api/v1\n  key: sk-or-v1-secret\n  model: perplexity/sonar\n"
-	path := filepath.Join(t.TempDir(), "alerts.yaml")
-	os.WriteFile(path, []byte(stored), 0o644)
+	const stored = `{"ai":{"url":"https://openrouter.ai/api/v1","key":"sk-or-v1-secret","model":"perplexity/sonar"}}`
+	store := newTestStore(t)
+	if _, err := store.Put("alerts", stored); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("SKY_AI_KEY", "")
-	h := alertsHandler(t, path)
+	h := alertsHandler(t, store)
 
 	move := func(ai string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
@@ -785,7 +783,7 @@ func TestEnvOverrideDoesNotStrandAnExistingKey(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
 		}
-		saved, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path})
+		saved, err := LoadAlerts(nil, store)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -802,7 +800,7 @@ func TestEnvOverrideDoesNotStrandAnExistingKey(t *testing.T) {
 // asking for the stored credential to be posted to a host the payload chose. That is the
 // same disclosure as serving the key outright, by a longer route.
 func TestAIKeyDoesNotFollowTheEndpoint(t *testing.T) {
-	const stored = "ai:\n  url: https://openrouter.ai/api/v1\n  key: sk-or-v1-secret\n  model: perplexity/sonar\n"
+	const stored = `{"ai":{"url":"https://openrouter.ai/api/v1","key":"sk-or-v1-secret","model":"perplexity/sonar"}}`
 	put := func(t *testing.T, h http.Handler, ai string) *httptest.ResponseRecorder {
 		t.Helper()
 		w := httptest.NewRecorder()
@@ -812,61 +810,61 @@ func TestAIKeyDoesNotFollowTheEndpoint(t *testing.T) {
 	}
 
 	t.Run("a move with no key is refused", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "alerts.yaml")
-		os.WriteFile(path, []byte(stored), 0o644)
-		h := alertsHandler(t, path)
+		store := newTestStore(t)
+		store.Put("alerts", stored)
+		h := alertsHandler(t, store)
 		w := put(t, h, `"url":"https://attacker.invalid/v1"`)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
 		}
-		saved, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path})
+		saved, err := LoadAlerts(nil, store)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if saved.AI.URL != "https://openrouter.ai/api/v1" || saved.aiKey() != "sk-or-v1-secret" {
-			t.Fatalf("a refused save must not touch the file: %+v", saved.AI)
+			t.Fatalf("a refused save must not touch the row: %+v", saved.AI)
 		}
 	})
 
 	t.Run("a move with a key of its own is allowed", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "alerts.yaml")
-		os.WriteFile(path, []byte(stored), 0o644)
-		h := alertsHandler(t, path)
+		store := newTestStore(t)
+		store.Put("alerts", stored)
+		h := alertsHandler(t, store)
 		w := put(t, h, `"url":"https://api.together.xyz/v1","key":"sk-together-new"`)
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
 		}
-		if saved, _ := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path}); saved.aiKey() != "sk-together-new" {
+		if saved, _ := LoadAlerts(nil, store); saved.aiKey() != "sk-together-new" {
 			t.Errorf("key = %q, want the one the save supplied", saved.aiKey())
 		}
 	})
 
 	t.Run("staying put keeps the key", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "alerts.yaml")
-		os.WriteFile(path, []byte(stored), 0o644)
-		h := alertsHandler(t, path)
-		// The path may move freely: the key already reaches that host.
+		store := newTestStore(t)
+		store.Put("alerts", stored)
+		h := alertsHandler(t, store)
+		// The endpoint may move freely: the key already reaches that host.
 		if w := put(t, h, `"url":"https://openrouter.ai/api/v2"`); w.Code != http.StatusOK {
 			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
 		}
-		if saved, _ := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path}); saved.aiKey() != "sk-or-v1-secret" {
+		if saved, _ := LoadAlerts(nil, store); saved.aiKey() != "sk-or-v1-secret" {
 			t.Errorf("a same-host save should keep the key, got %q", saved.aiKey())
 		}
 	})
 
 	t.Run("a downgrade to http is a move", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "alerts.yaml")
-		os.WriteFile(path, []byte(stored), 0o644)
-		h := alertsHandler(t, path)
+		store := newTestStore(t)
+		store.Put("alerts", stored)
+		h := alertsHandler(t, store)
 		if w := put(t, h, `"url":"http://openrouter.ai/api/v1"`); w.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400 for an https to http move", w.Code)
 		}
 	})
 
 	t.Run("turning the provider off is not a move", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "alerts.yaml")
-		os.WriteFile(path, []byte(stored), 0o644)
-		h := alertsHandler(t, path)
+		store := newTestStore(t)
+		store.Put("alerts", stored)
+		h := alertsHandler(t, store)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts",
 			strings.NewReader(`{"ai":{"url":"","model":"","timeout":"20s"},"rules":[]}`)))
@@ -875,7 +873,7 @@ func TestAIKeyDoesNotFollowTheEndpoint(t *testing.T) {
 		}
 		// The key goes with the endpoint: kept, it would have no origin for the next
 		// save's move to be judged against.
-		if saved, _ := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path}); saved.aiKey() != "" {
+		if saved, _ := LoadAlerts(nil, store); saved.aiKey() != "" {
 			t.Errorf("turning research off should take the key with it, got %q", saved.aiKey())
 		}
 		// And the endpoint can be turned back on without re-entering one.
@@ -885,31 +883,31 @@ func TestAIKeyDoesNotFollowTheEndpoint(t *testing.T) {
 	})
 
 	// A variable set to the empty string holds no key either — it silences this run and
-	// leaves the file's credential for the next one, so the move is still refused.
+	// leaves the row's credential for the next one, so the move is still refused.
 	t.Run("an empty env key does not buy a move", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "alerts.yaml")
-		os.WriteFile(path, []byte(stored), 0o644)
+		store := newTestStore(t)
+		store.Put("alerts", stored)
 		t.Setenv("SKY_AI_URL", "")
 		t.Setenv("SKY_AI_MODEL", "")
 		t.Setenv("SKY_AI_KEY", "")
-		h := alertsHandler(t, path)
+		h := alertsHandler(t, store)
 		if w := put(t, h, `"url":"https://attacker.invalid/v1"`); w.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
 		}
-		if blob, _ := os.ReadFile(path); string(blob) != stored {
-			t.Fatalf("a refused save must leave the file alone:\n%s", blob)
+		if blob, _, _, _ := store.Get("alerts"); blob != stored {
+			t.Fatalf("a refused save must leave the row alone:\n%s", blob)
 		}
 	})
 
 	// A variable that blanks the endpoint turns research off for the run without saying
-	// anything about the file's key. An unrelated save must leave both alone, and the
-	// file's endpoint is still the one the key is pinned to while the override is up.
-	t.Run("an empty env endpoint is not the file turning off", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "alerts.yaml")
-		os.WriteFile(path, []byte(stored), 0o644)
+	// anything about the row's key. An unrelated save must leave both alone, and the
+	// row's endpoint is still the one the key is pinned to while the override is up.
+	t.Run("an empty env endpoint is not the row turning off", func(t *testing.T) {
+		store := newTestStore(t)
+		store.Put("alerts", stored)
 		t.Setenv("SKY_AI_URL", "")
 		t.Setenv("SKY_AI_MODEL", "")
-		h := alertsHandler(t, path)
+		h := alertsHandler(t, store)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(
 			`{"ai":{"url":"https://openrouter.ai/api/v1","model":"perplexity/sonar","timeout":"20s"},"source":{"poll_interval":"30s"},"rules":[]}`)))
@@ -917,7 +915,7 @@ func TestAIKeyDoesNotFollowTheEndpoint(t *testing.T) {
 			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
 		}
 		// Loaded without the overrides — research comes back with the key it had.
-		saved, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path})
+		saved, err := LoadAlerts(nil, store)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -931,19 +929,19 @@ func TestAIKeyDoesNotFollowTheEndpoint(t *testing.T) {
 	})
 
 	// An endpoint the environment pins is still an endpoint: a save whose own ai.url is
-	// blank has not turned anything off, so it must not drop the file's key.
+	// blank has not turned anything off, so it must not drop the row's key.
 	t.Run("an env endpoint keeps the key through a blank url", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "alerts.yaml")
-		os.WriteFile(path, []byte("ai:\n  key: sk-or-v1-secret\n  model: perplexity/sonar\n"), 0o644)
+		store := newTestStore(t)
+		store.Put("alerts", `{"ai":{"key":"sk-or-v1-secret","model":"perplexity/sonar"}}`)
 		t.Setenv("SKY_AI_URL", "https://openrouter.ai/api/v1")
-		h := alertsHandler(t, path)
+		h := alertsHandler(t, store)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts",
 			strings.NewReader(`{"ai":{"url":"","model":"perplexity/sonar","timeout":"20s"},"rules":[]}`)))
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
 		}
-		saved, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path, "SKY_AI_URL=https://openrouter.ai/api/v1"})
+		saved, err := LoadAlerts([]string{"SKY_AI_URL=https://openrouter.ai/api/v1"}, store)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -953,9 +951,9 @@ func TestAIKeyDoesNotFollowTheEndpoint(t *testing.T) {
 	})
 
 	t.Run("with no key stored there is nothing to carry", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "alerts.yaml")
-		os.WriteFile(path, []byte("ai:\n  url: http://localhost:11434/v1\n  model: llama3\n"), 0o644)
-		h := alertsHandler(t, path)
+		store := newTestStore(t)
+		store.Put("alerts", `{"ai":{"url":"http://localhost:11434/v1","model":"llama3"}}`)
+		h := alertsHandler(t, store)
 		if w := put(t, h, `"url":"https://api.openai.com/v1"`); w.Code != http.StatusOK {
 			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
 		}
@@ -964,10 +962,10 @@ func TestAIKeyDoesNotFollowTheEndpoint(t *testing.T) {
 	// An environment key is not the page's to redirect either, and it cannot be replaced
 	// from the page, so the endpoint is fixed with it.
 	t.Run("an env key pins its endpoint", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "alerts.yaml")
-		os.WriteFile(path, []byte("ai:\n  url: https://openrouter.ai/api/v1\n  model: perplexity/sonar\n"), 0o644)
+		store := newTestStore(t)
+		store.Put("alerts", `{"ai":{"url":"https://openrouter.ai/api/v1","model":"perplexity/sonar"}}`)
 		t.Setenv("SKY_AI_KEY", "sk-or-v1-from-env")
-		h := alertsHandler(t, path)
+		h := alertsHandler(t, store)
 		w := put(t, h, `"url":"https://attacker.invalid/v1"`)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
@@ -981,15 +979,15 @@ func TestAIKeyDoesNotFollowTheEndpoint(t *testing.T) {
 	// gets sent: the overlay replaces it with the variable's value.
 	t.Run("an env key pins its endpoint against a supplied key", func(t *testing.T) {
 		for _, supplied := range []string{`,"key":""`, `,"key":"sk-dummy"`} {
-			path := filepath.Join(t.TempDir(), "alerts.yaml")
-			os.WriteFile(path, []byte("ai:\n  url: https://openrouter.ai/api/v1\n  model: perplexity/sonar\n"), 0o644)
+			store := newTestStore(t)
+			store.Put("alerts", `{"ai":{"url":"https://openrouter.ai/api/v1","model":"perplexity/sonar"}}`)
 			t.Setenv("SKY_AI_KEY", "sk-or-v1-from-env")
-			h := alertsHandler(t, path)
+			h := alertsHandler(t, store)
 			w := put(t, h, `"url":"https://attacker.invalid/v1"`+supplied)
 			if w.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d for %s, want 400: %s", w.Code, supplied, w.Body.String())
 			}
-			saved, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path, "SKY_AI_KEY=sk-or-v1-from-env"})
+			saved, err := LoadAlerts([]string{"SKY_AI_KEY=sk-or-v1-from-env"}, store)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1002,57 +1000,59 @@ func TestAIKeyDoesNotFollowTheEndpoint(t *testing.T) {
 	// An override is not forever. The payload's URL is overwritten for as long as the
 	// variable is up, so a move looks harmless while it is — and becomes the disclosure
 	// the moment it comes off, with the stored key pointed at whatever the page wrote.
-	t.Run("an env endpoint does not license a move in the file", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "alerts.yaml")
-		os.WriteFile(path, []byte(stored), 0o644)
+	t.Run("an env endpoint does not license a move in the row", func(t *testing.T) {
+		store := newTestStore(t)
+		store.Put("alerts", stored)
 		t.Setenv("SKY_AI_KEY", "sk-or-v1-from-env")
 		t.Setenv("SKY_AI_URL", "https://openrouter.ai/api/v1")
-		h := alertsHandler(t, path)
+		h := alertsHandler(t, store)
 		if w := put(t, h, `"url":"https://attacker.invalid/v1"`); w.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
 		}
 		// Read back with the overrides gone, which is the run that would have posted the
 		// key to whatever the refused save wanted written.
-		saved, err := LoadAlerts([]string{"SKY_ALERTS_CONFIG=" + path})
+		saved, err := LoadAlerts(nil, store)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if saved.AI.URL != "https://openrouter.ai/api/v1" || saved.aiKey() != "sk-or-v1-secret" {
-			t.Errorf("the file moved under the override: url = %q, key = %q", saved.AI.URL, saved.aiKey())
+			t.Errorf("the row moved under the override: url = %q, key = %q", saved.AI.URL, saved.aiKey())
 		}
 	})
 
 	// The other side of it: writing the endpoint the environment already pins into the
-	// file is not a move, because the key is being sent there either way.
-	t.Run("the env endpoint may be written into the file", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "alerts.yaml")
-		os.WriteFile(path, []byte("ai:\n  key: sk-or-v1-secret\n  model: perplexity/sonar\n"), 0o644)
+	// row is not a move, because the key is being sent there either way.
+	t.Run("the env endpoint may be written into the row", func(t *testing.T) {
+		store := newTestStore(t)
+		store.Put("alerts", `{"ai":{"key":"sk-or-v1-secret","model":"perplexity/sonar"}}`)
 		t.Setenv("SKY_AI_URL", "https://openrouter.ai/api/v1")
-		h := alertsHandler(t, path)
+		h := alertsHandler(t, store)
 		if w := put(t, h, `"url":"https://openrouter.ai/api/v1"`); w.Code != http.StatusOK {
 			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
 		}
 	})
 }
 
-// A file that cannot be read is a refusal, not a silent fresh start: the save is about to
+// A row that cannot be read is a refusal, not a silent fresh start: the save is about to
 // overwrite it, and defaulting writes away the credential it holds.
-func TestSaveRefusesOverAnUnreadableFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "alerts.yaml")
-	broken := "ai:\n  url: https://openrouter.ai/api/v1\n  key: sk-or-v1-secret\n  model: perplexity/sonar\n  ["
-	os.WriteFile(path, []byte(broken), 0o644)
-	h := alertsHandler(t, path)
+func TestSaveRefusesOverAnUnreadableRow(t *testing.T) {
+	store := newTestStore(t)
+	broken := `{"ai":{"url":"https://openrouter.ai/api/v1","key":"sk-or-v1-secret","model":"perplexity/sonar" [`
+	if _, err := store.Put("alerts", broken); err != nil {
+		t.Fatal(err)
+	}
+	h := alertsHandler(t, store)
 	w := httptest.NewRecorder()
 	body := `{"ai":{"url":"https://openrouter.ai/api/v1","model":"perplexity/sonar","timeout":"20s"},"rules":[]}`
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(body)))
 	if w.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409: %s", w.Code, w.Body.String())
 	}
-	blob, err := os.ReadFile(path)
+	blob, _, _, err := store.Get("alerts")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(blob) != broken {
-		t.Fatalf("a refused save must leave the file alone:\n%s", blob)
+	if blob != broken {
+		t.Fatalf("a refused save must leave the row alone:\n%s", blob)
 	}
 }

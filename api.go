@@ -10,8 +10,6 @@ import (
 	"os"
 	"strconv"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 func (s *server) mux(q *queue) http.Handler {
@@ -41,7 +39,7 @@ func (s *server) mux(q *queue) http.Handler {
 	})
 	mux.HandleFunc("GET /api/alerts", func(w http.ResponseWriter, r *http.Request) {
 		env := environMap(os.Environ())
-		alerts, err := loadAlertsFile(env)
+		alerts, err := loadAlertsFile(s.store)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, err)
 			return
@@ -87,7 +85,7 @@ func (s *server) mux(q *queue) http.Handler {
 		alerts.AI.Key = nil
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"alerts": alerts, "path": alertsPath(env), "locked": locked,
+			"alerts": alerts, "locked": locked,
 			"rule_keys": keys, "vocabulary": s.db.Vocabulary(), "feed_types": s.feedTypes(),
 			"ai_key_set": keySet, "research_prompt_default": defaultResearchPrompt,
 		})
@@ -165,14 +163,14 @@ func (s *server) mux(q *queue) http.Handler {
 		// Only the env bindings' scalar fields are reassigned, and none of them alias the
 		// rules slice, so a shallow copy is enough to keep the payload untouched.
 		env := environMap(os.Environ())
-		// The stored document, needed twice below. A file that cannot be read is a
+		// The stored document, needed twice below. A row that cannot be read is a
 		// refusal rather than a silent fresh start: the save is about to overwrite it,
 		// and defaulting would write away the credential it holds without saying so.
-		// Nothing is lost by refusing — GET answers 500 on the same file, so a page in
+		// Nothing is lost by refusing — GET answers 500 on the same row, so a page in
 		// this state could not have loaded either.
-		onDisk, err := loadAlertsFile(env)
+		onDisk, err := loadAlertsFile(s.store)
 		if err != nil {
-			writeJSONError(w, http.StatusConflict, fmt.Errorf("%s cannot be read, so saving over it would discard what it holds: %w", alertsPath(env), err))
+			writeJSONError(w, http.StatusConflict, fmt.Errorf("alerts cannot be read, so saving over it would discard what it holds: %w", err))
 			return
 		}
 		// A key the page was never shown must not be redirected by it. Carrying the
@@ -212,17 +210,17 @@ func (s *server) mux(q *queue) http.Handler {
 			writeJSONError(w, http.StatusBadRequest, err)
 			return
 		}
-		blob, err := yaml.Marshal(alerts)
+		blob, err := json.Marshal(alerts)
+		var version int64
 		if err == nil {
-			blob = append([]byte("# Written by the sky-notify web UI. Hand edits are read back on the next reload.\n"), blob...)
-			err = writeFileDurable(alertsPath(env), blob)
+			version, err = s.store.Put("alerts", string(blob))
 		}
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, err)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": version})
 	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()

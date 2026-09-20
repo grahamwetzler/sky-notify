@@ -16,6 +16,7 @@ type server struct {
 	state    *State
 	notifier *Notifier
 	history  *History
+	store    *SettingsStore
 
 	mu            sync.Mutex
 	lastFreshPoll time.Time

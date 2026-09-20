@@ -50,21 +50,27 @@ func main() {
 }
 
 func run() error {
-	cfg, err := LoadConfig(os.Environ())
+	store, err := OpenSettings(dbPath(environMap(os.Environ())))
+	if err != nil {
+		return fmt.Errorf("settings database: %w", err)
+	}
+	defer store.Close()
+
+	cfg, err := LoadConfig(os.Environ(), store)
 	if err != nil {
 		// slog is not configured yet; this must still be legible.
 		fmt.Fprintln(os.Stderr, "config error:", err)
 		os.Exit(1)
 	}
-	alerts, err := LoadAlerts(os.Environ())
+	alerts, err := LoadAlerts(os.Environ(), store)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "config error:", err)
 		os.Exit(1)
 	}
 	live := NewLive(alerts)
-	// Constructed here, not inside the goroutine below: its baseline must be the file
+	// Constructed here, not inside the goroutine below: its baseline must be what
 	// LoadAlerts just read, or an edit made while we start up is never noticed.
-	watcher := newConfigWatcher(os.Environ())
+	watcher := newConfigWatcher(store)
 	var logLevel slog.LevelVar
 	logLevel.Set(parseLevel(alerts.LogLevel))
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: &logLevel})))
@@ -123,7 +129,7 @@ func run() error {
 		notifier.history = hist
 	}
 	source := NewSource(cfg, httpClient)
-	h := &server{live: live, db: db, state: state, notifier: notifier, history: hist}
+	h := &server{live: live, db: db, state: state, notifier: notifier, history: hist, store: store}
 
 	// Cold start needs a complete list. Running with a partial or empty one would look
 	// healthy while silently matching nothing.
@@ -200,13 +206,20 @@ func run() error {
 // probeSelf backs the container HEALTHCHECK: the distroless image has no shell, curl or
 // wget, so the binary probes itself. A listen spec like ":8080" is not a client target.
 func probeSelf() error {
-	// Derive the port from the effective config, not just the environment: a YAML-only
-	// custom port would otherwise make every healthcheck fail against a healthy service.
-	listen := defaultConfig().Listen
-	if cfg, err := LoadConfig(os.Environ()); err == nil {
-		listen = cfg.Listen
-	} else if v := os.Getenv("SKY_LISTEN"); v != "" {
-		listen = v
+	// Derive the port from the effective config, not just the environment: a
+	// database-only custom port would otherwise make every healthcheck fail against a
+	// healthy service.
+	listen, loaded := defaultConfig().Listen, false
+	if store, err := OpenSettings(dbPath(environMap(os.Environ()))); err == nil {
+		defer store.Close()
+		if cfg, err := LoadConfig(os.Environ(), store); err == nil {
+			listen, loaded = cfg.Listen, true
+		}
+	}
+	if !loaded {
+		if v := os.Getenv("SKY_LISTEN"); v != "" {
+			listen = v
+		}
 	}
 	_, port, err := net.SplitHostPort(listen)
 	if err != nil {
