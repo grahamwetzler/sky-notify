@@ -1255,8 +1255,16 @@ function select(next) {
   if (innerWidth <= 900) scrollTo({top: 0, behavior: 'smooth'});
 }
 /* Settings has nothing next to it to click back into, so leaving it returns to
-   whichever rule was open before — or the first one, if none was. */
-function closeSettings() { select(typeof prevSel === 'number' ? prevSel : 0); }
+   whichever rule was open before — or the first one, if none was — and, unlike
+   select(), lands on the list view rather than jumping straight into that rule's
+   detail pane (the "back" affordance would otherwise skip the list on mobile). */
+function closeSettings() {
+  sel = typeof prevSel === 'number' ? prevSel : 0;
+  document.body.dataset.view = 'list';
+  if (location.pathname !== '/') history.pushState(null, '', '/');
+  renderList();
+  renderPane();
+}
 
 /* ── The detail pane ──────────────────────────────────────────────────────
    A preview answer can arrive while the pane is being used, and a rebuild is the only
@@ -2370,6 +2378,7 @@ $('#settings').onclick = () => select('settings');
 $('#brand').onclick = () => { if (isSettings()) closeSettings(); else document.body.dataset.view = 'list'; };
 addEventListener('popstate', () => {
   sel = location.pathname === '/settings' ? 'settings' : (typeof prevSel === 'number' ? prevSel : 0);
+  document.body.dataset.view = isSettings() ? 'detail' : 'list';
   renderList();
   renderPane();
 });
@@ -2380,8 +2389,8 @@ addEventListener('keydown', e => {
 });
 addEventListener('beforeunload', e => { if (dirty) e.preventDefault(); });
 
-document.body.dataset.view = 'list';
 if (location.pathname === '/settings') sel = 'settings';
+document.body.dataset.view = isSettings() ? 'detail' : 'list';
 load().catch(err => {
   message(err.message, 'bad');
   const e = el('div', 'empty');
