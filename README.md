@@ -159,7 +159,8 @@ API, the UI or `-config-import` bumps.
   "url": "https://openrouter.ai/api/v1",
   "key": "sk-or-v1-...",
   "model": "perplexity/sonar",
-  "timeout": "20s"
+  "timeout": "20s",
+  "research_prompt": "..."
 }
 ```
 
@@ -181,8 +182,10 @@ OpenAI shape works — OpenRouter, vLLM, Ollama, LiteLLM, Together, Groq, OpenAI
 that does it (`perplexity/sonar`, or an `:online` suffix on OpenRouter) when the answer
 needs more than the model remembers. A keyless local provider can leave `key` unset.
 
-The prompt is an instruction, not a template. A rule that sets `research_prompt` replaces
-the default; either way, everything known about the aircraft is appended below it:
+The prompt is an instruction, not a template, and it comes from whichever of three places
+sets it first: a rule's own `research_prompt`, then `ai.research_prompt` under **Settings
+▸ AI research**, then the built-in default. Whichever wins, everything known about the
+aircraft is appended below it:
 
 ```
 Registration: N891DN

@@ -12,12 +12,11 @@ import (
 	"unicode"
 )
 
-// defaultResearchPrompt is what a rule asks when it says research: true and nothing more.
-// It is an instruction, not a template: the facts about the aircraft are appended by
-// facts() below, so a rule that wants to ask something else writes plain English and has
-// no syntax to get wrong.
-const defaultResearchPrompt = "Research this aircraft and reply with only the owner, " +
-	"the operator, and its most likely use, in one concise sentence."
+// defaultResearchPrompt is what a rule asks when it says research: true and the settings
+// page sets no prompt of its own. It is an instruction, not a template: the facts about
+// the aircraft are appended by facts() below, so a rule that wants to ask something else
+// writes plain English and has no syntax to get wrong.
+const defaultResearchPrompt = `Research this aircraft and concisely describe what it's most likely doing in one sentence. Use plain text only. Respond in the format of "{callsign} is an {aircraft type} operated by {operator} performing {operation}". Add a qualifier such as "likely" if you're guessing. Use FAA/IATA identifiers for major airports.`
 
 // aiKeyPath is the config path of the provider credential. Named because three places
 // have to agree on which value is the secret one: the env-lock listing, the GET that
@@ -284,12 +283,22 @@ func (a *Alert) facts() string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// effectiveResearchPrompt is what a rule gets when it asks for research and sets no
+// question of its own: the settings page's default when one is configured, or
+// defaultResearchPrompt otherwise.
+func (a *Alerts) effectiveResearchPrompt() string {
+	if p := strings.TrimSpace(a.AI.ResearchPrompt); p != "" {
+		return p
+	}
+	return defaultResearchPrompt
+}
+
 // researchPromptFor is what the rule behind this alert wants asked, as the rules are
 // now. "" when that rule no longer asks for research, or is no longer there at all.
 func researchPromptFor(cfg *Alerts, trigger string) string {
 	for i := range cfg.Rules {
 		if r := &cfg.Rules[i]; r.Key() == trigger {
-			return r.researchPrompt()
+			return r.researchPrompt(cfg.effectiveResearchPrompt())
 		}
 	}
 	return ""
@@ -299,8 +308,9 @@ func researchPromptFor(cfg *Alerts, trigger string) string {
 // nothing is configured to answer them.
 func researchRules(a *Alerts) []string {
 	var names []string
+	def := a.effectiveResearchPrompt()
 	for i := range a.Rules {
-		if a.Rules[i].researchPrompt() != "" {
+		if a.Rules[i].researchPrompt(def) != "" {
 			names = append(names, a.Rules[i].label())
 		}
 	}

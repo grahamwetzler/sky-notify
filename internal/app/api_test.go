@@ -664,6 +664,47 @@ func TestAIKeyIsWriteOnlyToTheBrowser(t *testing.T) {
 	}
 }
 
+// research_prompt_default is what a rule's placeholder shows, and must be the settings
+// page's own prompt when one is set, not the built-in constant it would otherwise fall
+// back to; research_prompt_builtin is that constant, unconditionally, so the settings
+// page's own field can show it as a placeholder.
+func TestResearchPromptDefaultReflectsTheSettingsPage(t *testing.T) {
+	store := newTestStore(t)
+	h := alertsHandler(t, store)
+	get := func() map[string]any {
+		t.Helper()
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/alerts", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET status %d: %s", w.Code, w.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+
+	body := get()
+	if body["research_prompt_default"] != defaultResearchPrompt {
+		t.Errorf("research_prompt_default = %v, want the built-in default with no setting", body["research_prompt_default"])
+	}
+	if body["research_prompt_builtin"] != defaultResearchPrompt {
+		t.Errorf("research_prompt_builtin = %v, want the built-in default", body["research_prompt_builtin"])
+	}
+
+	if _, err := store.Put("alerts", `{"ai":{"research_prompt":"what airline is this?"},"rules":[]}`); err != nil {
+		t.Fatal(err)
+	}
+	body = get()
+	if body["research_prompt_default"] != "what airline is this?" {
+		t.Errorf("research_prompt_default = %v, want the configured setting", body["research_prompt_default"])
+	}
+	if body["research_prompt_builtin"] != defaultResearchPrompt {
+		t.Errorf("research_prompt_builtin = %v, want the built-in default unchanged", body["research_prompt_builtin"])
+	}
+}
+
 // An env-set key is not the page's to edit, and its value is the one locked setting whose
 // value must not travel with the lock.
 func TestEnvAIKeyIsLockedWithoutItsValue(t *testing.T) {

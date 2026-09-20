@@ -439,21 +439,24 @@ type Rule struct {
 	PassesWithin   *Duration `yaml:"passes_within,omitempty" json:"passes_within,omitempty"`
 	// Research asks the configured AI provider who the aircraft belongs to and puts the
 	// answer in the notification. Not a condition: it describes an aircraft the rule has
-	// already claimed. ResearchPrompt replaces defaultResearchPrompt when it is set.
+	// already claimed. ResearchPrompt replaces the settings page's default prompt when
+	// it is set.
 	Research       *bool  `yaml:"research,omitempty" json:"research,omitempty"`
 	ResearchPrompt string `yaml:"research_prompt,omitempty" json:"research_prompt,omitempty"`
 }
 
 // researchPrompt is what to ask about an aircraft this rule claimed, or "" when the rule
-// did not ask for research.
-func (r *Rule) researchPrompt() string {
+// did not ask for research. def is what to ask when the rule sets no question of its
+// own — the caller's effective default, so this rule can be answered the same way
+// whether that default came from the settings page or, failing that, the constant.
+func (r *Rule) researchPrompt(def string) string {
 	if r.Research == nil || !*r.Research {
 		return ""
 	}
 	if p := strings.TrimSpace(r.ResearchPrompt); p != "" {
 		return p
 	}
-	return defaultResearchPrompt
+	return def
 }
 
 // Key is what the cooldown ledger and the logs call this rule. A name is optional: a

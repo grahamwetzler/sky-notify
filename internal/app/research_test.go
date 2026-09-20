@@ -384,9 +384,44 @@ func TestResearchPrompt(t *testing.T) {
 		{"custom", Rule{Research: &on, ResearchPrompt: "  who flies this?  "}, "who flies this?"},
 		{"blank custom", Rule{Research: &on, ResearchPrompt: "   "}, defaultResearchPrompt},
 	} {
-		if got := tc.rule.researchPrompt(); got != tc.want {
+		if got := tc.rule.researchPrompt(defaultResearchPrompt); got != tc.want {
 			t.Errorf("%s: researchPrompt = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// ---------- the settings page's default ----------
+
+func TestEffectiveResearchPrompt(t *testing.T) {
+	a := defaultAlerts()
+	if got := a.effectiveResearchPrompt(); got != defaultResearchPrompt {
+		t.Errorf("with no setting: effectiveResearchPrompt = %q, want the built-in default", got)
+	}
+	a.AI.ResearchPrompt = "  what airline is this?  "
+	if got := a.effectiveResearchPrompt(); got != "what airline is this?" {
+		t.Errorf("effectiveResearchPrompt = %q, want the trimmed setting", got)
+	}
+	a.AI.ResearchPrompt = "   "
+	if got := a.effectiveResearchPrompt(); got != defaultResearchPrompt {
+		t.Errorf("with a blank setting: effectiveResearchPrompt = %q, want the built-in default", got)
+	}
+}
+
+// A rule that asks the default gets the settings page's prompt when one is configured,
+// and a rule with its own prompt still wins over it.
+func TestResearchPromptForUsesSettingsDefault(t *testing.T) {
+	on := true
+	cfg := defaultAlerts()
+	cfg.AI.ResearchPrompt = "what airline is this?"
+	cfg.Rules = []Rule{
+		{Name: "default", Research: &on},
+		{Name: "custom", Research: &on, ResearchPrompt: "who flies this?"},
+	}
+	if got := researchPromptFor(cfg, "default"); got != "what airline is this?" {
+		t.Errorf("default rule: researchPromptFor = %q", got)
+	}
+	if got := researchPromptFor(cfg, "custom"); got != "who flies this?" {
+		t.Errorf("custom rule: researchPromptFor = %q", got)
 	}
 }
 

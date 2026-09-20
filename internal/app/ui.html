@@ -259,6 +259,7 @@ textarea{resize:vertical;line-height:1.45}
 .fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px 18px}
 .field{display:grid;gap:5px;align-content:start;min-width:0}
 .field.narrow{max-width:300px}
+.field.wide{grid-column:1/-1}
 
 .empty{padding:48px 20px;text-align:center;display:grid;gap:8px;justify-items:center}
 .empty .help{max-width:46ch}
@@ -488,7 +489,7 @@ let doc = null, vocab = {}, feedTypes = [], locks = {}, dbRows = null;
    prompt comes from the server so the page cannot show one the service does not use.
    keyEdited is set the moment the operator types in the key box: until then the save
    carries no key at all, which is what tells the server to keep the stored one. */
-let aiKeySet = false, keyEdited = false, defaultPrompt = '';
+let aiKeySet = false, keyEdited = false, defaultPrompt = '', builtinPrompt = '';
 /* The endpoint the stored key was issued for. A credential the page cannot read cannot
    follow the endpoint to a new host — the server refuses that save — so this is what
    says when one has to be typed in. */
@@ -1791,6 +1792,44 @@ function researchField(r) {
     bad.append(go);
     wrap.append(bad);
   }
+
+  /* Which prompt this rule asks. On by default, since most rules have nothing to add to
+     the one question every other rule is already asking — a rule only needs its own the
+     moment it wants something the default does not cover. */
+  const custom = !!(r.research_prompt && r.research_prompt.trim());
+  const group = el('div', 'vals');
+  group.setAttribute('role', 'radiogroup');
+  group.setAttribute('aria-label', 'Research prompt');
+  for (const [useCustom, label] of [[false, 'Use the default prompt'], [true, 'Custom prompt']]) {
+    const opt = el('label', 'chip radio');
+    const input = el('input');
+    input.type = 'radio';
+    input.name = 'research-prompt-source';
+    input.id = 'rule-research-prompt-' + (useCustom ? 'custom' : 'default');
+    input.checked = custom === useCustom;
+    input.onchange = () => {
+      /* Switching to custom starts the box empty rather than pre-filled with the
+         default: the two prompts usually have nothing in common, so there is nothing
+         here worth editing in place the way the default itself is in Settings. */
+      if (useCustom) { if (!r.research_prompt) r.research_prompt = ''; }
+      else delete r.research_prompt;
+      markDirty(); renderPane();
+    };
+    opt.append(input, document.createTextNode(label));
+    group.append(opt);
+  }
+  wrap.append(group);
+
+  if (!custom) {
+    const line = el('span', 'help', 'Asks the default prompt set under ');
+    const go = el('button', 'linkish', 'Settings ▸ AI research');
+    go.type = 'button';
+    go.onclick = () => select('settings');
+    line.append(go, ' for every aircraft this rule claims.');
+    wrap.append(line);
+    return wrap;
+  }
+
   const ta = el('textarea');
   ta.id = 'rule-research-prompt';
   ta.rows = 3;
@@ -1798,15 +1837,14 @@ function researchField(r) {
   ta.value = r.research_prompt || '';
   ta.setAttribute('aria-label', 'Research prompt');
   ta.oninput = () => {
-    const v = ta.value.trim();
-    if (v) r.research_prompt = ta.value; else delete r.research_prompt;
+    r.research_prompt = ta.value;
     markDirty();
   };
   wrap.append(ta);
   wrap.append(el('span', 'help',
     'Asked about every aircraft this rule claims, with what the alert already knows about '
     + 'it appended. The answer becomes one line of the notification; a call that fails '
-    + 'costs that line and nothing else. Leave it empty to ask the default above.'));
+    + 'costs that line and nothing else.'));
   /* The appended half of the question, shown rather than described: the prompt above is
      written against these lines, and a field an alert has nothing for is simply absent. */
   wrap.append(el('span', 'help', 'Sent with it, as the aircraft allows:'));
@@ -1935,6 +1973,10 @@ function renderSettings(pane) {
     {key: 'ai.key', label: 'API key', secret: true},
     {key: 'ai.timeout', label: 'Give up after', placeholder: '20s',
      help: 'A slow answer delays later alerts, since notifications are sent one at a time.'},
+    {key: 'ai.research_prompt', label: 'Default research prompt', multiline: true, rows: 5,
+     fallback: builtinPrompt, resettable: true,
+     help: 'Asked about an aircraft when a rule turns Research on and sets no question of '
+       + 'its own. A rule can still write its own prompt to override this.'},
   ]);
 
   const foot = el('div', 'group');
@@ -1947,10 +1989,15 @@ function renderSettings(pane) {
 }
 
 function settingField(f) {
-  const wrap = el('label', 'field');
+  /* A textarea gets the full width of the grid row: a 210px column, like the one every
+     other field sits in, is not where anyone writes a sentence. */
+  const wrap = el('label', f.multiline ? 'field wide' : 'field');
   wrap.append(el('span', 'lbl', f.label));
-  const input = f.options ? el('select') : el('input');
-  if (f.options) for (const [v, t] of f.options) input.append(new Option(t, v));
+  const input = f.multiline ? el('textarea') : f.options ? el('select') : el('input');
+  if (f.multiline) {
+    input.rows = f.rows || 3;
+    if (f.placeholder) input.placeholder = f.placeholder;
+  } else if (f.options) for (const [v, t] of f.options) input.append(new Option(t, v));
   else {
     input.type = f.secret ? 'password' : (f.type || 'text');
     if (f.secret) input.autocomplete = 'off';
@@ -1960,7 +2007,12 @@ function settingField(f) {
     if (f.placeholder) input.placeholder = f.placeholder;
   }
   input.id = 'set-' + f.key;
-  const value = at(doc, f.key);
+  const stored = at(doc, f.key);
+  /* fallback is a value to edit, not a placeholder: a field that offers one (the built-in
+     research prompt, so far) starts the box holding real, editable text instead of grey
+     placeholder text that has to be typed over from nothing. */
+  const value = (stored === null || stored === undefined || stored === '') && f.fallback !== undefined
+    ? f.fallback : stored;
   input.value = value === null || value === undefined ? '' : String(value);
   /* The key is never sent to this page, so the box starts empty whether or not one is
      stored. The placeholder is what says which. */
@@ -2074,6 +2126,19 @@ function settingField(f) {
   };
   wrap.append(input);
   if (f.secret) wrap.append(keyHelp());
+  /* Resetting discards whatever is in the box, not just what was last saved — so it
+     costs a confirmation, the same as any other action that throws editing away. */
+  if (f.resettable) {
+    const reset = el('button', 'mini', 'Reset to default');
+    reset.type = 'button';
+    reset.onclick = () => {
+      if (!confirm(`Discard this and use the built-in ${f.label.toLowerCase()}?`)) return;
+      put(doc, f.key, '');
+      input.value = f.fallback ?? '';
+      markDirty();
+    };
+    wrap.append(reset);
+  }
   if (f.help) wrap.append(el('span', 'help', f.help));
   return wrap;
 }
@@ -2359,6 +2424,7 @@ async function load() {
   keyOrigin = originOf(doc.ai?.url || '');
   doc.ai = doc.ai || {};
   defaultPrompt = body.research_prompt_default || '';
+  builtinPrompt = body.research_prompt_builtin || '';
   locks = Object.fromEntries((body.locked || []).map(l => [l.key, l]));
   const keys = body.rule_keys || [];
   /* key follows the draft as it is edited; savedKey is what the running service filed

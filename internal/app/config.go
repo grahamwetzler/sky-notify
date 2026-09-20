@@ -118,6 +118,10 @@ type Alerts struct {
 		Key     *string  `yaml:"key,omitempty" json:"key,omitempty"`
 		Model   string   `yaml:"model,omitempty" json:"model"`
 		Timeout Duration `yaml:"timeout" json:"timeout"`
+		// ResearchPrompt is the question asked when a rule says research: true and sets
+		// no question of its own. Empty means defaultResearchPrompt; a rule's own
+		// research_prompt still wins over this either way.
+		ResearchPrompt string `yaml:"research_prompt,omitempty" json:"research_prompt,omitempty"`
 	} `yaml:"ai" json:"ai"`
 
 	Cooldown Duration `yaml:"cooldown" json:"cooldown"`
@@ -442,7 +446,7 @@ func loadAlertsFile(store *SettingsStore) (*Alerts, error) {
 // added to the other struct: a key missing here still fails, but with
 // DisallowUnknownFields' "unknown field \"rules\"" instead of a message naming the
 // section it belongs in.
-var configMisplaced = []string{"rules", "cooldown", "lat", "lon", "log_level", "source.poll_interval", "ntfy.priority", "db.refresh_interval", "ai.url", "ai.key", "ai.model", "ai.timeout"}
+var configMisplaced = []string{"rules", "cooldown", "lat", "lon", "log_level", "source.poll_interval", "ntfy.priority", "db.refresh_interval", "ai.url", "ai.key", "ai.model", "ai.timeout", "ai.research_prompt"}
 var alertsMisplaced = []string{"source.url", "source.max_age", "ntfy.url", "ntfy.topic", "ntfy.token", "ntfy.user", "ntfy.password", "tar1090_url", "db.files", "db.base_url", "cache_dir", "listen"}
 
 // A key or variable deleted by the rules-only rewrite gets an explanation of where its
