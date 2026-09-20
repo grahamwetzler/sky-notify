@@ -1950,6 +1950,14 @@ function settingField(f) {
        Every other locked field can be filled with what the environment set and read as
        ordinary, if uneditable, text instead of going blank. */
     input.value = f.secret ? '' : lock.value;
+    /* A select only shows a value that matches one of its options exactly, and the raw
+       environment string might not — SKY_NTFY_PRIORITY=03 loads as priority 3 but is not
+       the option value "3". Build an option out of the raw string rather than silently
+       leaving the control showing nothing. */
+    if (f.options && !f.secret && input.value !== lock.value) {
+      input.add(new Option(lock.value, lock.value), input.firstChild);
+      input.value = lock.value;
+    }
     wrap.append(input);
     const note = el('span', 'help lock');
     if (!f.secret) {
