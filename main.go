@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"embed"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -33,6 +35,10 @@ const (
 
 func main() {
 	healthcheck := flag.Bool("healthcheck", false, "probe this container's own /healthz and exit 0/1")
+	configExport := flag.Bool("config-export", false, "print the settings database as one JSON document and exit")
+	configImport := flag.String("config-import", "", "load a JSON document exported by -config-export into the settings database and exit")
+	out := flag.String("out", "", "file to write -config-export to (default: stdout)")
+	redact := flag.Bool("redact", false, "with -config-export, blank ntfy and ai credentials")
 	flag.Parse()
 
 	if *healthcheck {
@@ -43,10 +49,58 @@ func main() {
 		return
 	}
 
+	if *configExport || *configImport != "" {
+		if err := runConfigCLI(*configExport, *configImport, *out, *redact); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if err := run(); err != nil {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
 	}
+}
+
+// runConfigCLI opens the settings database directly and does not start the HTTP server,
+// which is what makes it usable for bootstrapping (seeding a first-boot database with no
+// running server to POST to) and for scripted backup/restore.
+func runConfigCLI(doExport bool, importPath, out string, redact bool) error {
+	store, err := OpenSettings(dbPath(environMap(os.Environ())))
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	if doExport {
+		doc, err := exportSettings(store, redact)
+		if err != nil {
+			return err
+		}
+		blob, err := json.MarshalIndent(doc, "", "  ")
+		if err != nil {
+			return err
+		}
+		blob = append(blob, '\n')
+		if out == "" {
+			_, err = os.Stdout.Write(blob)
+			return err
+		}
+		return os.WriteFile(out, blob, 0o644)
+	}
+
+	blob, err := os.ReadFile(importPath)
+	if err != nil {
+		return err
+	}
+	var doc exportDocument
+	dec := json.NewDecoder(bytes.NewReader(blob))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&doc); err != nil {
+		return fmt.Errorf("%s: %w", importPath, err)
+	}
+	return importSettings(store, &doc, environMap(os.Environ()))
 }
 
 func run() error {

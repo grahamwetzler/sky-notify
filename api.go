@@ -285,6 +285,44 @@ func (s *server) mux(q *queue) http.Handler {
 		// effect until the process restarts, same as the config file always required.
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": version, "restart_required": true})
 	})
+	mux.HandleFunc("GET /api/config/export", func(w http.ResponseWriter, r *http.Request) {
+		redact := r.URL.Query().Get("redact") == "true"
+		doc, err := exportSettings(s.store, redact)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(doc)
+	})
+	mux.HandleFunc("POST /api/config/import", func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		var doc exportDocument
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&doc); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err)
+			return
+		}
+		env := environMap(os.Environ())
+		if err := importSettings(s.store, &doc, env); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err)
+			return
+		}
+		// The alerts document takes effect immediately rather than waiting for the
+		// next poll of the watcher, the same as any other write to that row.
+		if doc.Alerts != nil {
+			if reloaded, err := LoadAlerts(os.Environ(), s.store); err == nil {
+				s.live.p.Store(reloaded)
+			}
+		}
+		resp := map[string]any{"ok": true}
+		if doc.Config != nil {
+			resp["restart_required"] = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		lastPoll, pollErr, aircraft := s.lastFreshPoll, s.lastPollErr, s.aircraft

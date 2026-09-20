@@ -1096,3 +1096,109 @@ func TestConfigUIRejectsUnknownField(t *testing.T) {
 		t.Fatalf("status = %d, want 400", w.Code)
 	}
 }
+
+// ---------- export / import ----------
+
+func TestConfigExportImportRoundTrip(t *testing.T) {
+	store := newTestStore(t)
+	h := alertsHandler(t, store)
+
+	cfgBody, err := json.Marshal(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewReader(cfgBody)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT config status %d: %s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/alerts", strings.NewReader(`{"rules":[{"name":"exported","listed":true}]}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT alerts status %d: %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/config/export", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("export status %d: %s", w.Code, w.Body.String())
+	}
+	exported := w.Body.Bytes()
+
+	// Wipe the store and import the export back in.
+	fresh := newTestStore(t)
+	h2 := alertsHandler(t, fresh)
+	w = httptest.NewRecorder()
+	h2.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/config/import", bytes.NewReader(exported)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("import status %d: %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	h2.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/config/export", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("re-export status %d: %s", w.Code, w.Body.String())
+	}
+	reExported := w.Body.Bytes()
+
+	var first, second exportDocument
+	if err := json.Unmarshal(exported, &first); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(reExported, &second); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(first.Config, second.Config) {
+		t.Fatalf("config mismatch after round trip\ngot:  %+v\nwant: %+v", second.Config, first.Config)
+	}
+	if !reflect.DeepEqual(first.Alerts, second.Alerts) {
+		t.Fatalf("alerts mismatch after round trip\ngot:  %+v\nwant: %+v", second.Alerts, first.Alerts)
+	}
+}
+
+func TestConfigImportRejectsInvalidWithoutWriting(t *testing.T) {
+	store := newTestStore(t)
+	h := alertsHandler(t, store)
+	// A good config paired with an invalid alerts section: the import is all-or-nothing,
+	// so the good half must not land either.
+	cfgBlob, err := json.Marshal(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`{"config":%s,"alerts":{"ntfy":{"priority":9}}}`, cfgBlob)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/config/import", strings.NewReader(body)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+	if _, _, ok, err := store.Get("config"); ok || err != nil {
+		t.Fatalf("a rejected import must not write config either: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestConfigExportRedactsOnRequest(t *testing.T) {
+	store := newTestStore(t)
+	if _, err := store.Put("alerts", `{"ai":{"url":"https://openrouter.ai/api/v1","key":"sk-or-v1-secret","model":"perplexity/sonar"}}`); err != nil {
+		t.Fatal(err)
+	}
+	h := alertsHandler(t, store)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/config/export?redact=true", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "sk-or-v1-secret") {
+		t.Fatalf("redacted export leaked the key:\n%s", w.Body.String())
+	}
+	var doc exportDocument
+	if err := json.NewDecoder(w.Body).Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.AIKeySet == nil || !*doc.AIKeySet {
+		t.Errorf("ai_key_set = %v, want true", doc.AIKeySet)
+	}
+	if doc.Alerts == nil || doc.Alerts.AI.Key != nil {
+		t.Errorf("redacted export still carried the key: %+v", doc.Alerts)
+	}
+}
