@@ -7,9 +7,10 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 ARG TARGETOS TARGETARCH
-COPY *.go ui.html public-sans.woff2 icons.json ./
+COPY cmd ./cmd
+COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w" -o /out/sky-notify .
+    go build -trimpath -ldflags="-s -w" -o /out/sky-notify ./cmd/sky-notify
 
 # /data and /config are created here so they can be copied in with the runtime uid. Docker
 # seeds a fresh named volume from the image path *including its ownership* — without this

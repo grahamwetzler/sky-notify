@@ -408,5 +408,5 @@ by the SDR Enthusiasts, used under ODbL 1.0 / DbCL 1.0. This service only reads 
 
 The aircraft silhouettes in [`icons.json`](icons.json) are lifted from
 [tar1090](https://github.com/wiedehopf/tar1090)'s `html/markers.js` and are licensed
-GPL-2.0-or-later, not MIT. That file and [`icons.go`](icons.go), which draws it, carry
+GPL-2.0-or-later, not MIT. That file and [`icons.go`](internal/app/icons.go), which draws it, carry
 tar1090's licence.
