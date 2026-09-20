@@ -78,6 +78,8 @@ svg{display:block;fill:none;stroke:currentColor;stroke-width:1.6;
 .top{position:sticky;top:0;z-index:30;background:var(--bg);border-bottom:1px solid var(--line);
   padding:9px 18px;display:flex;align-items:center;gap:14px}
 .top h1{font-size:16px;letter-spacing:-.02em;flex:none}
+.top h1 .brand{all:unset;cursor:pointer;font:inherit;letter-spacing:inherit;color:inherit}
+.top h1 .brand:hover{color:var(--acc)}
 .top .meta{color:var(--fg3);font-size:12.5px;display:flex;gap:16px;min-width:0;flex:1 1 auto}
 .top .meta span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .top .meta span.ltr{flex:none}
@@ -103,6 +105,8 @@ svg{display:block;fill:none;stroke:currentColor;stroke-width:1.6;
 /* ── Shell ────────────────────────────────────────────────────────────── */
 .shell{max-width:1280px;margin:0 auto;padding:16px 18px 80px;
   display:grid;grid-template-columns:340px minmax(0,1fr);gap:16px;align-items:start}
+.shell.settings-view{grid-template-columns:minmax(0,1fr)}
+.shell.settings-view .list{display:none}
 .msg{grid-column:1/-1;border-radius:var(--r);padding:10px 13px;font-size:13.5px;line-height:1.5;
   border:1px solid}
 .msg.bad{background:var(--bad-soft);color:var(--bad);border-color:var(--bad-line)}
@@ -160,6 +164,9 @@ svg{display:block;fill:none;stroke:currentColor;stroke-width:1.6;
   white-space:nowrap}
 .pane-h h2.anon{color:var(--fg3);font-weight:500}
 .pane-h .back{display:none}
+/* Settings has no list beside it to click back into, at any width, so its own back
+   button stands in for the list regardless of viewport. */
+.pane-h .back.settings-back{display:grid}
 
 .group{padding:16px 18px;border-bottom:1px solid var(--line);display:grid;gap:10px}
 .group:last-child{border-bottom:0}
@@ -322,7 +329,7 @@ FORM: The category canon, taken as the standing exit from the direction roll (se
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
 -->
 <div class="top">
-  <h1>Sky Notify</h1>
+  <h1><button type="button" class="brand" id="brand" aria-label="Back to the rule list">Sky Notify</button></h1>
   <div class="meta"></div>
   <div class="acts">
     <button class="btn icon" id="settings" aria-pressed="false" aria-label="Settings"></button>
@@ -500,6 +507,7 @@ saveBtn.id = 'save';
 saveBtn.type = 'button';
 saveBtn.disabled = true;
 let sel = 0;            // rule index, or 'settings'
+let prevSel = 0;        // rule index to return to when settings is closed
 let dirty = false;
 
 /* Everything the page knows about a rule that is not part of the rule itself: its last
@@ -1231,17 +1239,24 @@ function renderList() {
   $('.list-f').hidden = !doc.rules.length && !isSettings();
 
   $('#settings').setAttribute('aria-pressed', String(isSettings()));
+  $('.shell').classList.toggle('settings-view', isSettings());
 
   if (focusIndex >= 0 && box.children[focusIndex]) box.children[focusIndex].focus();
 }
 
 function select(next) {
+  if (next === 'settings' && sel !== 'settings') prevSel = sel;
   sel = next;
   document.body.dataset.view = 'detail';
+  const path = isSettings() ? '/settings' : '/';
+  if (location.pathname !== path) history.pushState(null, '', path);
   renderList();
   renderPane();
   if (innerWidth <= 900) scrollTo({top: 0, behavior: 'smooth'});
 }
+/* Settings has nothing next to it to click back into, so leaving it returns to
+   whichever rule was open before — or the first one, if none was. */
+function closeSettings() { select(typeof prevSel === 'number' ? prevSel : 0); }
 
 /* ── The detail pane ──────────────────────────────────────────────────────
    A preview answer can arrive while the pane is being used, and a rebuild is the only
@@ -1864,10 +1879,10 @@ function priorityField(r) {
 /* ── Settings ─────────────────────────────────────────────────────────── */
 function renderSettings(pane) {
   const head = el('div', 'pane-h');
-  const back = el('button', 'btn icon back');
+  const back = el('button', 'btn icon back settings-back');
   back.innerHTML = svg(I.left, 15);
   back.setAttribute('aria-label', 'Back to the rule list');
-  back.onclick = () => { document.body.dataset.view = 'list'; };
+  back.onclick = closeSettings;
   head.append(back, el('h2', '', 'Settings'));
   pane.append(head);
 
@@ -2352,6 +2367,12 @@ async function load() {
 
 $('#settings').innerHTML = svg(I.sliders, 15);
 $('#settings').onclick = () => select('settings');
+$('#brand').onclick = () => { if (isSettings()) closeSettings(); else document.body.dataset.view = 'list'; };
+addEventListener('popstate', () => {
+  sel = location.pathname === '/settings' ? 'settings' : (typeof prevSel === 'number' ? prevSel : 0);
+  renderList();
+  renderPane();
+});
 $('#add').onclick = addRule;
 saveBtn.onclick = save;
 addEventListener('keydown', e => {
@@ -2360,6 +2381,7 @@ addEventListener('keydown', e => {
 addEventListener('beforeunload', e => { if (dirty) e.preventDefault(); });
 
 document.body.dataset.view = 'list';
+if (location.pathname === '/settings') sel = 'settings';
 load().catch(err => {
   message(err.message, 'bad');
   const e = el('div', 'empty');

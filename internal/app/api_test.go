@@ -560,6 +560,24 @@ func TestFontIsServedAndReferenced(t *testing.T) {
 	}
 }
 
+// Settings is a client-side route within the same single-page app: a direct load or a
+// refresh at /settings must land on the app rather than a 404.
+func TestSettingsRouteServesUI(t *testing.T) {
+	h := (&server{live: NewLive(defaultAlerts())}).mux(newQueue(1))
+	for _, path := range []string{"/", "/settings"} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `id="brand"`) {
+			t.Fatalf("%s: status = %d, want 200 with the app", path, w.Code)
+		}
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/settings/nope", nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("/settings/nope: status = %d, want 404", w.Code)
+	}
+}
+
 // The API key is handled the way a password field is: the page is never sent it, and a
 // save that carries none keeps the one on disk. Without the second half, saving any
 // unrelated setting from the page would wipe the credential.
