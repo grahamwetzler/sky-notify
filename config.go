@@ -169,33 +169,35 @@ const defaultDBPath = "/config/config.db"
 
 type envBinding struct {
 	name  string
+	key   string
 	apply func(*Config, string) error
 }
 
 // envBindings is an explicit table rather than a reflection walk: it is fewer lines
 // than the walker would be, and it is the one greppable place that answers "what can
-// this service be configured with".
+// this service be configured with". key is the config path GET /api/config reports a
+// locked field under, mirroring alertEnvBinding's key.
 func envBindings() []envBinding {
 	return []envBinding{
-		{"SKY_SOURCE_URL", func(c *Config, v string) error { c.Source.URL = v; return nil }},
-		{"SKY_SOURCE_MAX_AGE", func(c *Config, v string) error { return setDur(&c.Source.MaxAge, v) }},
+		{"SKY_SOURCE_URL", "source.url", func(c *Config, v string) error { c.Source.URL = v; return nil }},
+		{"SKY_SOURCE_MAX_AGE", "source.max_age", func(c *Config, v string) error { return setDur(&c.Source.MaxAge, v) }},
 
-		{"SKY_NTFY_URL", func(c *Config, v string) error { c.Ntfy.URL = v; return nil }},
-		{"SKY_NTFY_TOPIC", func(c *Config, v string) error { c.Ntfy.Topic = v; return nil }},
-		{"SKY_NTFY_TOKEN", func(c *Config, v string) error { c.Ntfy.Token = v; return nil }},
-		{"SKY_NTFY_USER", func(c *Config, v string) error { c.Ntfy.User = v; return nil }},
-		{"SKY_NTFY_PASSWORD", func(c *Config, v string) error { c.Ntfy.Password = v; return nil }},
+		{"SKY_NTFY_URL", "ntfy.url", func(c *Config, v string) error { c.Ntfy.URL = v; return nil }},
+		{"SKY_NTFY_TOPIC", "ntfy.topic", func(c *Config, v string) error { c.Ntfy.Topic = v; return nil }},
+		{"SKY_NTFY_TOKEN", "ntfy.token", func(c *Config, v string) error { c.Ntfy.Token = v; return nil }},
+		{"SKY_NTFY_USER", "ntfy.user", func(c *Config, v string) error { c.Ntfy.User = v; return nil }},
+		{"SKY_NTFY_PASSWORD", "ntfy.password", func(c *Config, v string) error { c.Ntfy.Password = v; return nil }},
 
-		{"SKY_DB_FILES", func(c *Config, v string) error { c.DB.Files = splitList(v); return nil }},
-		{"SKY_DB_BASE_URL", func(c *Config, v string) error { c.DB.BaseURL = v; return nil }},
+		{"SKY_DB_FILES", "db.files", func(c *Config, v string) error { c.DB.Files = splitList(v); return nil }},
+		{"SKY_DB_BASE_URL", "db.base_url", func(c *Config, v string) error { c.DB.BaseURL = v; return nil }},
 
-		{"SKY_MAP_ENABLED", func(c *Config, v string) error { return setBoolPtr(&c.Map.Enabled, v) }},
-		{"SKY_MAP_TILES_URL", func(c *Config, v string) error { c.Map.TilesURL = v; return nil }},
+		{"SKY_MAP_ENABLED", "map.enabled", func(c *Config, v string) error { return setBoolPtr(&c.Map.Enabled, v) }},
+		{"SKY_MAP_TILES_URL", "map.tiles_url", func(c *Config, v string) error { c.Map.TilesURL = v; return nil }},
 
-		{"SKY_CACHE_DIR", func(c *Config, v string) error { c.CacheDir = v; return nil }},
-		{"SKY_TAR1090_URL", func(c *Config, v string) error { c.Tar1090URL = v; return nil }},
-		{"SKY_ROUTE_API_URL", func(c *Config, v string) error { c.RouteAPIURL = v; return nil }},
-		{"SKY_LISTEN", func(c *Config, v string) error { c.Listen = v; return nil }},
+		{"SKY_CACHE_DIR", "cache_dir", func(c *Config, v string) error { c.CacheDir = v; return nil }},
+		{"SKY_TAR1090_URL", "tar1090_url", func(c *Config, v string) error { c.Tar1090URL = v; return nil }},
+		{"SKY_ROUTE_API_URL", "route_api_url", func(c *Config, v string) error { c.RouteAPIURL = v; return nil }},
+		{"SKY_LISTEN", "listen", func(c *Config, v string) error { c.Listen = v; return nil }},
 	}
 }
 
@@ -271,22 +273,39 @@ func splitList(v string) []string {
 // environment. environ is passed in rather than read from os so tests can drive it.
 func LoadConfig(environ []string, store *SettingsStore) (*Config, error) {
 	env := environMap(environ)
-	cfg := defaultConfig()
-	if err := loadJSON("config", cfg, configMisplaced, "alerts", "hot-reloaded", nil, store); err != nil {
+	cfg, err := loadConfigFile(store)
+	if err != nil {
 		return nil, err
 	}
 	if err := checkEnv(env); err != nil {
 		return nil, err
 	}
+	if err := applyConfigEnv(cfg, env); err != nil {
+		return nil, err
+	}
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// applyConfigEnv lays the environment over a loaded document, the config-side mirror of
+// applyAlertEnv. GET /api/config and PUT /api/config validate through this too, for the
+// same reason: what the service runs is the document plus the overrides.
+func applyConfigEnv(c *Config, env map[string]string) error {
 	for _, b := range envBindings() {
 		if v, ok := env[b.name]; ok {
-			if err := b.apply(cfg, v); err != nil {
-				return nil, fmt.Errorf("%s: %w", b.name, err)
+			if err := b.apply(c, v); err != nil {
+				return fmt.Errorf("%s: %w", b.name, err)
 			}
 		}
 	}
+	return nil
+}
 
-	if err := cfg.validate(); err != nil {
+func loadConfigFile(store *SettingsStore) (*Config, error) {
+	cfg := defaultConfig()
+	if err := loadJSON("config", cfg, configMisplaced, "alerts", "hot-reloaded", nil, store); err != nil {
 		return nil, err
 	}
 	return cfg, nil

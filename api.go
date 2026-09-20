@@ -222,6 +222,69 @@ func (s *server) mux(q *queue) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": version})
 	})
+	mux.HandleFunc("GET /api/config", func(w http.ResponseWriter, r *http.Request) {
+		env := environMap(os.Environ())
+		cfg, err := loadConfigFile(s.store)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err)
+			return
+		}
+		var locked []map[string]string
+		for _, b := range envBindings() {
+			v, ok := env[b.name]
+			if !ok {
+				continue
+			}
+			l := map[string]string{"key": b.key, "env": b.name, "value": v}
+			// Secrets are reported locked without their value, the same treatment
+			// ai.key gets. An empty value is not a credential, so it stays visible.
+			if (b.key == "ntfy.token" || b.key == "ntfy.password") && v != "" {
+				delete(l, "value")
+			}
+			locked = append(locked, l)
+		}
+		tokenSet, passwordSet := cfg.Ntfy.Token != "", cfg.Ntfy.Password != ""
+		cfg.Ntfy.Token, cfg.Ntfy.Password = "", ""
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"config": cfg, "locked": locked,
+			"ntfy_token_set": tokenSet, "ntfy_password_set": passwordSet,
+		})
+	})
+	mux.HandleFunc("PUT /api/config", func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		cfg := defaultConfig()
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(cfg); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err)
+			return
+		}
+		env := environMap(os.Environ())
+		overlaid := *cfg
+		if err := applyConfigEnv(&overlaid, env); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := overlaid.validate(); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err)
+			return
+		}
+		blob, err := json.Marshal(cfg)
+		var version int64
+		if err == nil {
+			version, err = s.store.Put("config", string(blob))
+		}
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// The live process objects (httpClient, DB, tile store, notifier) are built
+		// once at startup from the config LoadConfig read then; saving here has no
+		// effect until the process restarts, same as the config file always required.
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": version, "restart_required": true})
+	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		lastPoll, pollErr, aircraft := s.lastFreshPoll, s.lastPollErr, s.aircraft

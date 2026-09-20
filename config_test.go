@@ -970,3 +970,129 @@ func TestPartialAIBlockIsRefused(t *testing.T) {
 		t.Fatal("a zero ai.timeout validated")
 	}
 }
+
+// ---------- /api/config ----------
+
+func TestConfigUIRoundTrip(t *testing.T) {
+	store := newTestStore(t)
+	h := alertsHandler(t, store)
+	want := testConfig(t)
+	body, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewReader(body)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT status %d: %s", w.Code, w.Body.String())
+	}
+	var putResp struct {
+		OK              bool `json:"ok"`
+		RestartRequired bool `json:"restart_required"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&putResp); err != nil {
+		t.Fatal(err)
+	}
+	if !putResp.OK || !putResp.RestartRequired {
+		t.Fatalf("PUT response = %+v", putResp)
+	}
+
+	got, err := loadConfigFile(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("round trip mismatch\ngot:  %+v\nwant: %+v", got, want)
+	}
+
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET status %d: %s", w.Code, w.Body.String())
+	}
+	var getResp struct {
+		Config Config `json:"config"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&getResp); err != nil {
+		t.Fatal(err)
+	}
+	if getResp.Config.Source.URL != want.Source.URL || getResp.Config.Ntfy.Topic != want.Ntfy.Topic {
+		t.Fatalf("GET config = %+v", getResp.Config)
+	}
+}
+
+func TestConfigUILockedReflectsEnvironment(t *testing.T) {
+	t.Setenv("SKY_CACHE_DIR", "/env-cache")
+	h := alertsHandler(t, newTestStore(t))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET status %d: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Locked []map[string]string `json:"locked"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, item := range body.Locked {
+		if item["key"] == "cache_dir" {
+			found = true
+			if item["value"] != "/env-cache" {
+				t.Errorf("locked value = %q", item["value"])
+			}
+		}
+	}
+	if !found {
+		t.Error("cache_dir set by the environment must be reported as locked")
+	}
+}
+
+// A secret is reported set/not-set, never echoed, the same treatment ai.key gets.
+func TestConfigUISecretsAreNotEchoed(t *testing.T) {
+	store := newTestStore(t)
+	if _, err := store.Put("config", `{"ntfy":{"token":"tk_secret"}}`); err != nil {
+		t.Fatal(err)
+	}
+	h := alertsHandler(t, store)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET status %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "tk_secret") {
+		t.Fatalf("the ntfy token was served to the browser:\n%s", w.Body.String())
+	}
+	var body struct {
+		NtfyTokenSet bool `json:"ntfy_token_set"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.NtfyTokenSet {
+		t.Error("ntfy_token_set = false, want true")
+	}
+}
+
+func TestConfigUIRejectsInvalidWithoutWriting(t *testing.T) {
+	store := newTestStore(t)
+	h := alertsHandler(t, store)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/config", strings.NewReader(`{"ntfy":{"topic":"a/b"}}`)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+	if _, _, ok, err := store.Get("config"); ok || err != nil {
+		t.Fatalf("invalid payload wrote a row: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestConfigUIRejectsUnknownField(t *testing.T) {
+	h := alertsHandler(t, newTestStore(t))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/config", strings.NewReader(`{"nope":1}`)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+}
