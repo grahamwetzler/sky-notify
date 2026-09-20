@@ -3,7 +3,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>sky-notify</title>
+<title>Sky Notify</title>
 <style>
 /* Public Sans, latin subset, variable 400-700. Served by the binary alongside this page,
    not fetched from a CDN: the network this runs on need not have internet access, and a
@@ -345,11 +345,11 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   <nav class="list" aria-label="Rules">
     <div class="list-h">
       <h2>Rules</h2>
-      <p class="help">Checked in order. The first match wins.</p>
+      <p class="help">Evaluated in order</p>
     </div>
     <div class="rows" id="rows"></div>
     <div class="list-f">
-      <button class="btn" id="add">Add a rule</button>
+      <button class="btn" id="add">Add</button>
     </div>
   </nav>
 
@@ -422,7 +422,7 @@ const GROUPS = [
 const CONDITIONS = [
   {key: 'cmpg', label: 'Operator class', group: 'identity', source: 'db', kind: 'fixed',
    options: [['Civ', 'Civilian'], ['Gov', 'Government'], ['Mil', 'Military'], ['Pol', 'Police']],
-   help: 'Who operates the aircraft.'},
+   help: ''},
   {key: 'category', label: 'Category', group: 'identity', source: 'db', kind: 'pick',
    help: 'Interest lists like USAF, Heads of State and Police Forces.'},
   {key: 'tags', label: 'Tags', group: 'identity', source: 'db', kind: 'pick',
@@ -458,7 +458,7 @@ const CONDITIONS = [
   {key: 'max_distance_nm', label: 'Distance from receiver',
    short: 'a distance', group: 'position', source: 'feed', kind: 'num',
    unit: 'NM', min: 0, step: 'any', needsPosition: true,
-   help: 'Matches while the aircraft is within this many NM of the receiver.'},
+   help: 'Aircraft within this many nautical miles of the receiver.'},
 
   {key: 'circling', label: 'Circling', short: 'circling', group: 'path', source: 'feed', kind: 'tri',
    options: [['', 'Either'], ['true', 'Only while circling'], ['false', 'Only while not circling']],
@@ -1435,12 +1435,7 @@ function paintPane(pane) {
     gh.append(add);
     sec.append(gh);
     for (const k of keys) sec.append(conditionCard(r, k));
-    /* Only said where it is true: a rule with a distance and a circling condition states
-       no identity, and is not the wildcard. */
-    if (!keys.length) sec.append(el('p', 'help',
-      g.id === 'identity' && !stated(r).length
-        ? 'None. This rule matches every aircraft.'
-        : 'None.'));
+    if (!keys.length) sec.append(el('p', 'help', ''));
     pane.append(sec);
   }
 
@@ -1510,7 +1505,7 @@ function liveBand(r) {
     sec.append(el('p', 'help warn', 'Nothing recent from the receiver, so there is nothing to check this rule against.'));
     return sec;
   }
-  const overhead = `${(L.overhead || 0).toLocaleString()} aircraft overhead`;
+  const overhead = `${(L.overhead || 0).toLocaleString()} aircraft in range`;
   if (!L.total) {
     sec.append(el('p', 'help', `None of the ${overhead} match this rule right now.`));
     return sec;
@@ -1522,7 +1517,7 @@ function liveBand(r) {
   sec.append(el('p', 'help' + (muted ? ' warn' : ''),
     `${L.total.toLocaleString()} of the ${overhead} `
     + (muted ? 'match, but this rule is muted and would send nothing.'
-             : `would alert if you saved now${L.total > L.aircraft.length ? `; the nearest ${L.aircraft.length} are shown` : ''}.`)));
+             : 'would alert if you saved now.')));
 
   const wrap = el('div', 'hits');
   const table = el('table');
@@ -1654,7 +1649,7 @@ function historyBand(r) {
   sec.append(gh);
 
   if (!m.savedKey) {
-    sec.append(el('p', 'help', 'Not saved yet, so nothing has been sent.'));
+    sec.append(el('p', 'help', 'No history.'));
     return sec;
   }
   if (!h) {
@@ -1758,7 +1753,7 @@ function notificationBand(r) {
   const gh = el('div', 'group-h');
   const t = el('div', 'group-t');
   t.append(el('h3', 'lbl', 'Notification'));
-  t.append(el('p', 'help', 'What happens when this rule matches. None of it changes which aircraft it matches.'));
+  t.append(el('p', 'help', 'What happens when this rule matches'));
   gh.append(t);
   sec.append(gh);
 
@@ -1815,8 +1810,7 @@ function researchField(r) {
   vals.append(b);
   wrap.append(vals);
   if (!on) {
-    wrap.append(el('span', 'help',
-      'Off. The notification says only what the feed and the aircraft database know.'));
+    wrap.append(el('span', 'help', ''));
     return wrap;
   }
   /* The server cannot refuse this at save time — the page edits the alerts document,
@@ -1928,8 +1922,8 @@ function whenField(r) {
   wrap.append(held && noReceiver
     ? el('span', 'help bad', 'Set the receiver position in Settings first.')
     : el('span', 'help', held
-      ? 'Waits for the aircraft to pass, then sends one alert reporting the nearest point it reached.'
-      : 'Alerts on the first check that matches.'));
+      ? "Notifies at aircraft's closest pass to the receiver."
+      : 'Notifies immediately'));
   return wrap;
 }
 
@@ -1954,7 +1948,7 @@ function priorityField(r) {
   pl.append(el('span', 'help', r.priority === 0
     ? 'Muted. Matching aircraft stop here and nothing is sent — this is how you write an exception.'
     : r.priority == null
-      ? `Follows the default of ${doc.ntfy.priority}.`
+      ? ''
       : r.priority >= 4
         ? 'Overrides the default. Pops over other apps and vibrates.'
         : r.priority <= 2
@@ -2022,7 +2016,7 @@ function renderSettings(pane) {
 
   const foot = el('div', 'group');
   foot.append(el('p', 'help',
-    'Saved changes take effect within five seconds. The feeder address, ntfy account and cache settings are startup-only and not editable here.'));
+    'The feeder address, ntfy account and cache settings are startup-only and not editable here.'));
   foot.append(el('p', 'help',
     'Changes made outside this page — PUT /api/alerts, or -config-import — are picked up too. A direct edit to the database row is not: it must also bump that row\'s version column, which only those two paths do.'));
   foot.append(saveBtn);
