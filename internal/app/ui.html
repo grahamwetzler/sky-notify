@@ -1795,8 +1795,10 @@ function researchField(r) {
 
   /* Which prompt this rule asks. On by default, since most rules have nothing to add to
      the one question every other rule is already asking — a rule only needs its own the
-     moment it wants something the default does not cover. */
-  const custom = !!(r.research_prompt && r.research_prompt.trim());
+     moment it wants something the default does not cover. Presence of the property, not
+     its content, decides the mode: an empty custom prompt is still "custom" — the user is
+     mid-typing it — and must not snap back to "default" just because the box is empty. */
+  const custom = r.research_prompt !== undefined;
   const group = el('div', 'vals');
   group.setAttribute('role', 'radiogroup');
   group.setAttribute('aria-label', 'Research prompt');
