@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -9,8 +10,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 const defaultPassHorizon = 5 * time.Minute
@@ -474,7 +473,9 @@ func (r *Rule) Key() string {
 	conds := *r
 	conds.Name, conds.Priority, conds.All, conds.Notify = "", nil, nil, ""
 	conds.Research, conds.ResearchPrompt = nil, ""
-	blob, err := yaml.Marshal(conds)
+	// encoding/json marshals struct fields in declaration order just as deterministically
+	// as yaml.v3 did, so the property this fingerprint depends on holds identically.
+	blob, err := json.Marshal(conds)
 	if err != nil {
 		// A struct of scalars and string slices cannot fail to marshal, but a key that
 		// silently collapsed to one value for every rule would merge their cooldowns.
