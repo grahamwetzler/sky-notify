@@ -446,10 +446,10 @@ const CONDITIONS = [
    source: 'feed', kind: 'free',
    help: 'The flight number, e.g. SWA2504. Matched on the start, so SWA is every '
      + 'Southwest flight.'},
-  {key: 'listed', label: 'In the database', group: 'identity', source: 'db',
+  {key: 'listed', label: 'In the interesting aircraft database', group: 'identity', source: 'db',
    kind: 'tri',
    options: [['', 'Either'], ['true', 'Only listed aircraft'], ['false', 'Only unlisted aircraft']],
-   help: 'Whether the aircraft is in the database at all.'},
+   help: 'Whether the aircraft is in the interesting aircraft database at all.'},
 
   {key: 'min_altitude_ft', label: 'Altitude above', short: 'a minimum altitude',
    group: 'position', source: 'feed', kind: 'num', unit: 'ft', min: 0, integer: true},
@@ -462,9 +462,7 @@ const CONDITIONS = [
 
   {key: 'circling', label: 'Circling', short: 'circling', group: 'path', source: 'feed', kind: 'tri',
    options: [['', 'Either'], ['true', 'Only while circling'], ['false', 'Only while not circling']],
-   needsFastPoll: true,
-   help: 'A full turn within 2 NM in the last 10 minutes — how news and police helicopters fly. '
-     + 'When "Only while circling" is picked, how many turns in a row can be tightened below.'},
+   needsFastPoll: true},
   {key: 'passes_within_nm', label: 'Predicted to pass within', short: 'a predicted pass overhead',
    group: 'path', source: 'feed', kind: 'num', unit: 'NM', min: 0, step: 'any', needsPosition: true,
    help: 'Based on where the aircraft is heading now and how fast.'},
@@ -593,8 +591,8 @@ function summarise(r) {
   /* "starting" carries the whole difference from every other clause here, which reads
      as exact. Saying just "callsign SWA" would describe a rule nothing satisfies. */
   say('callsign', v => 'callsign starting ' + list(v));
-  if (r.listed === true) parts.push('listed in the database');
-  if (r.listed === false) parts.push('not in the database');
+  if (r.listed === true) parts.push('listed in the interesting aircraft database');
+  if (r.listed === false) parts.push('not in the interesting aircraft database');
   const lo = hasValue(r.min_altitude_ft), hi = hasValue(r.max_altitude_ft);
   if (lo && hi) parts.push(`between ${(+r.min_altitude_ft).toLocaleString()} and ${(+r.max_altitude_ft).toLocaleString()} ft`);
   else if (lo) parts.push(`above ${(+r.min_altitude_ft).toLocaleString()} ft`);
@@ -629,11 +627,11 @@ function coverage(r) {
        this rule has just asked for aircraft that have no row. It can never match. */
     const owned = DB_ONLY.filter(k => hasValue(r[k]));
     if (owned.length) return {kind: 'dead', figure: '—',
-      note: 'This rule wants aircraft that are not in the database, but '
+      note: 'This rule wants aircraft that are not in the interesting aircraft database, but '
         + list(owned.map(k => BY_KEY[k].short || BY_KEY[k].label.toLowerCase()), ' and ')
         + ' is only known for aircraft that are. It will never alert.'};
     return {kind: 'blind', figure: '—',
-      note: 'This rule matches only aircraft that are not in the database, so there is nothing to count.'};
+      note: 'This rule matches only aircraft that are not in the interesting aircraft database, so there is nothing to count.'};
   }
   if (!keys.some(k => BY_KEY[k].source !== 'feed')) return {kind: 'blind', figure: '—',
     note: 'Nothing here can be counted in advance. See Overhead right now, below.'};
@@ -642,10 +640,10 @@ function coverage(r) {
 
   const feedToo = canMatchFeed(r);
   if (p.total === 0) return feedToo
-    ? {kind: 'zero', figure: '0', note: 'No aircraft in the database match, but one broadcasting a match still alerts.'}
+    ? {kind: 'zero', figure: '0', note: 'No aircraft in the interesting aircraft database match, but one broadcasting a match still alerts.'}
     : {kind: 'dead', figure: '0', note: 'Nothing can match this rule. It will never alert.'};
   return {kind: 'count', figure: p.total.toLocaleString(),
-    note: `of the ${(p.database ?? 0).toLocaleString()} aircraft in the database match who this rule is looking for.`};
+    note: `of the ${(p.database ?? 0).toLocaleString()} aircraft in the interesting aircraft database match who this rule is looking for.`};
 }
 
 /* A zero is inconclusive two different ways. reg and icao_type are matched against either
@@ -680,7 +678,7 @@ function problem(r, key) {
   if (spec.kind === 'num' && hasValue(r[key]) && !Number.isFinite(Number(r[key])))
     return spec.integer ? 'Must be a whole number.' : 'Must be a number.';
   if (DB_ONLY.includes(key) && hasValue(r[key]) && r.listed === false)
-    return 'Only aircraft in the database have this, and this rule wants ones that are not. Remove this or the “in the database” condition.';
+    return 'Only aircraft in the interesting aircraft database have this, and this rule wants ones that are not. Remove this or the “in the interesting aircraft database” condition.';
   if (spec.needsPosition && hasValue(r[key]) && (setting('lat', doc.lat) == null || setting('lon', doc.lon) == null))
     return 'Set the receiver position in Settings first.';
   if (spec.needsFastPoll && r.circling === true) {
@@ -846,8 +844,8 @@ function valuePicker(anchor, r, key, after) {
           el('span', 'n', item.feed ? item.count.toLocaleString() + ' on your feed'
                                     : item.count.toLocaleString()));
         if (item.feed) b.title = item.inDb
-          ? 'Heard by your receiver. No aircraft in the database matches this rule and carries it.'
-          : 'Heard by your receiver, but not in the database.';
+          ? 'Heard by your receiver. No aircraft in the interesting aircraft database matches this rule and carries it.'
+          : 'Heard by your receiver, but not in the interesting aircraft database.';
         batch.append(b);
       }
       body.append(batch);
@@ -880,7 +878,7 @@ function valuePicker(anchor, r, key, after) {
       if (!shown.length) note.textContent = q.value.trim()
         ? (spec.open
           ? 'No match here. Press Enter to use it anyway.'
-          : 'No value matching that' + (scope || ' in the database') + '.')
+          : 'No value matching that' + (scope || ' in the interesting aircraft database') + '.')
         : 'Everything here is already selected.';
       else note.textContent = `${shown.length.toLocaleString()} ` +
         `${shown.length === 1 ? 'value' : 'values'}${scope}, with how many aircraft each covers.`;
@@ -1090,8 +1088,12 @@ function conditionCard(r, key) {
   /* The figure's own band already names every condition it cannot count, so a feed
      condition says nothing here. `both` is the one that adds something. */
   else if (spec.source === 'both') card.append(el('p', 'help',
-    'A value no aircraft in the database carries still alerts when one broadcasts it.'));
-  if (spec.help && !bad) card.append(el('p', 'help', spec.help));
+    'A value no aircraft in the interesting aircraft database carries still alerts when one broadcasts it.'));
+  if (key === 'circling' && !bad) {
+    const n = Math.round(Number(r.circling_turns)) || 1;
+    card.append(el('p', 'help',
+      `Circling is defined as ${n} full turn${n === 1 ? '' : 's'} within 2 NM in the last 10 minutes.`));
+  } else if (spec.help && !bad) card.append(el('p', 'help', spec.help));
   return card;
 }
 
@@ -1150,13 +1152,13 @@ function valueChips(r, key) {
         chip.append(el('span', 'n', !spec.open ? 'not found'
           : heard.has(low) ? heard.get(low).toLocaleString() + ' on your feed' : 'feed only'));
         chip.title = spec.open
-          ? 'Not in the database, but still alerts on any aircraft broadcasting it.'
-          : 'Not in the database — this value will never match.';
+          ? 'Not in the interesting aircraft database, but still alerts on any aircraft broadcasting it.'
+          : 'Not in the interesting aircraft database — this value will never match.';
       } else if (reach) {
         chip.classList.add(spec.open ? 'feed' : 'miss');
         chip.append(el('span', 'n', 'clashes'));
         chip.title = spec.open
-          ? 'Nothing in the database has this and matches the rule’s other conditions. Only a broadcast can.'
+          ? 'Nothing in the interesting aircraft database has this and matches the rule’s other conditions. Only a broadcast can.'
           : 'No aircraft has this and matches the rule’s other conditions, so the rule matches nothing.';
       }
     }
@@ -1555,7 +1557,7 @@ function hitsBand(r, cov) {
     const t = el('div', 'group-t');
     t.append(el('h3', 'lbl', 'Aircraft this selects'));
     t.append(el('p', 'help', `${p.total.toLocaleString()} of `
-      + `${(p.database ?? 0).toLocaleString()} aircraft in the database.`));
+      + `${(p.database ?? 0).toLocaleString()} aircraft in the interesting aircraft database.`));
     gh.append(t);
     sec.append(gh);
     const wrap = el('div', 'hits db');
@@ -1856,11 +1858,11 @@ function researchField(r) {
   wrap.append(group);
 
   if (!custom) {
-    const line = el('span', 'help', 'Asks the default prompt set under ');
+    const line = el('span', 'help', 'Uses default prompt configured under ');
     const go = el('button', 'linkish', 'Settings ▸ AI research');
     go.type = 'button';
     go.onclick = () => select('settings');
-    line.append(go, ' for every aircraft this rule claims.');
+    line.append(go);
     wrap.append(line);
     return wrap;
   }
@@ -1936,7 +1938,7 @@ function priorityField(r) {
     + '3 arrives as a normal notification, 1 arrives silently. 0 mutes the rule.';
   pl.append(lbl);
   const s = el('select');
-  s.append(new Option('Use the default', INHERIT));
+  s.append(new Option('default', INHERIT));
   for (const [v, t2] of PRIORITIES) s.append(new Option(`${v} — ${t2}`, v));
   /* ?? not ||: priority 0 is "muted", a real choice, and must not read as unset. */
   s.value = r.priority ?? INHERIT;
@@ -1995,7 +1997,7 @@ function renderSettings(pane) {
   band('Timing and logging', null, [
     {key: 'source.poll_interval', label: 'Check for aircraft every', placeholder: '15s',
      help: 'A circling condition needs 30s or less to see a full turn.'},
-    {key: 'db.refresh_interval', label: 'Update the database every', placeholder: '24h'},
+    {key: 'db.refresh_interval', label: 'Update the interesting aircraft database every', placeholder: '24h'},
     {key: 'log_level', label: 'Log level',
      options: ['debug', 'info', 'warn', 'error'].map(v => [v, v])},
   ]);
