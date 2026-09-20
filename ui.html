@@ -323,9 +323,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 -->
 <div class="top">
   <h1>Sky Notify</h1>
-  <div class="meta">
-    <span id="path">loading…</span>
-  </div>
+  <div class="meta"></div>
   <div class="acts">
     <button class="btn icon" id="settings" aria-pressed="false" aria-label="Settings"></button>
     <button class="btn icon" id="theme" aria-label="Switch between light and dark"></button>
@@ -354,13 +352,14 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 /* ─────────────────────────────────────────────────────────────────────────
    sky-notify alert settings.
 
-   The page edits alerts.yaml through three endpoints: GET /api/alerts for the
-   document plus the database's vocabulary and the env-locked keys, POST
+   The page edits the alerts document through three endpoints: GET /api/alerts for
+   the document plus the database's vocabulary and the env-locked keys, POST
    /api/preview for what one rule selects, and PUT /api/alerts to write it back.
 
    A rule is an allowlist, so the failure worth designing against is the rule
-   that matches nothing: it costs every alert it was meant to catch and the YAML
-   looks perfect. Coverage is therefore on screen at all times, never on request.
+   that matches nothing: it costs every alert it was meant to catch and the
+   document looks perfect. Coverage is therefore on screen at all times, never on
+   request.
    ───────────────────────────────────────────────────────────────────────── */
 
 const $ = s => document.querySelector(s);
@@ -381,7 +380,7 @@ const I = {
   grip: '<path d="M2.5 5h11M2.5 8h11M2.5 11h11"/>',
 };
 
-/* Every scalar setting, by the dotted path the API and the YAML both use. */
+/* Every scalar setting, by the dotted path the API and the document both use. */
 const SETTINGS = ['lat', 'lon', 'cooldown', 'ntfy.priority',
   'source.poll_interval', 'db.refresh_interval', 'log_level'];
 
@@ -469,14 +468,14 @@ const CONDITIONS = [
 const SOURCE = {db: 'Database', both: 'Database + live'};
 const BY_KEY = Object.fromEntries(CONDITIONS.map(c => [c.key, c]));
 const PICKABLE = CONDITIONS.filter(c => c.kind === 'pick').map(c => c.key);
-/* Values inside these are lists in the YAML; everything else holds one value. */
+/* Values inside these are lists in the document; everything else holds one value. */
 const LIST_KEYS = CONDITIONS.filter(c => c.kind === 'pick' || c.kind === 'free' || c.kind === 'fixed')
   .map(c => c.key);
 
 /* ── State ────────────────────────────────────────────────────────────────
    `doc` is the alerts document exactly as it will be PUT back — nothing else is
    ever added to it, so saving is a serialisation and not a reconstruction.   */
-let doc = null, vocab = {}, feedTypes = [], locks = {}, dbRows = null, alertsPath = '';
+let doc = null, vocab = {}, feedTypes = [], locks = {}, dbRows = null;
 /* Whether the service holds an API key, and the prompt a research rule asks when it names
    none. The key itself is never sent here — only whether there is one — and the default
    prompt comes from the server so the page cannot show one the service does not use.
@@ -560,7 +559,7 @@ const put = (o, p, v) => { const q = p.split('.'), k = q.pop();
 
 /* ── Saying what a rule does ──────────────────────────────────────────────
    A rule set is audited by reading down it, so each rule has to read back as a
-   sentence. The YAML is the record; this is the thing you can scan.          */
+   sentence. The document is the record; this is the thing you can scan.      */
 function list(values, join = ' or ') {
   const v = values.map(String);
   if (v.length <= 2) return v.join(join);
@@ -1077,7 +1076,7 @@ function conditionCard(r, key) {
 /* The chips for a list-valued condition, plus the button that adds another.
    Two different ways a value can cost you every alert it was meant to catch:
    one the database has never heard of, and a real one that no aircraft matching
-   this rule's OTHER conditions carries. Both look fine in the YAML. */
+   this rule's OTHER conditions carries. Both look fine in the document. */
 function valueChips(r, key) {
   const spec = BY_KEY[key];
   const vals = el('div', 'vals');
@@ -1757,9 +1756,10 @@ function researchField(r) {
       'Off. The notification says only what the feed and the aircraft database know.'));
     return wrap;
   }
-  /* The server cannot refuse this at save time — the page edits alerts.yaml, and the
-     provider is a config.yaml fact the validator has never been able to see — so the
-     warning is here rather than after a save that succeeded and changed nothing. */
+  /* The server cannot refuse this at save time — the page edits the alerts document,
+     and whether a provider is configured is a fact the validator sees only as part of
+     this same document — so the warning is here rather than after a save that
+     succeeded and changed nothing. */
   if (!aiReady()) {
     const bad = el('span', 'help bad', 'No AI provider is set up yet, so this rule will send without its research line. ');
     const go = el('button', 'linkish', 'Set one up in Settings.');
@@ -1916,9 +1916,9 @@ function renderSettings(pane) {
 
   const foot = el('div', 'group');
   foot.append(el('p', 'help',
-    'Saved changes take effect within five seconds. The feeder address, ntfy account and cache settings live in config.yaml and are not editable here.'));
+    'Saved changes take effect within five seconds. The feeder address, ntfy account and cache settings are startup-only and not editable here.'));
   foot.append(el('p', 'help',
-    'Hand edits to alerts.yaml are picked up too. Comments in it do not survive a save.'));
+    'Changes made outside this page — the API, or a direct edit to the settings database — are picked up too.'));
   foot.append(saveBtn);
   pane.append(foot);
 }
@@ -2313,7 +2313,6 @@ async function load() {
   const body = await res.json();
   doc = body.alerts;
   doc.rules = doc.rules || [];
-  alertsPath = body.path;
   vocab = body.vocabulary || {};
   feedTypes = body.feed_types || [];
   aiKeySet = body.ai_key_set === true;
@@ -2326,10 +2325,6 @@ async function load() {
   /* key follows the draft as it is edited; savedKey is what the running service filed
      its deliveries under, and is the only one history can be asked for. */
   doc.rules.forEach((r, i) => { meta(r).key = meta(r).savedKey = keys[i] || ''; });
-  /* The path can be long and its tail is the part that identifies it. */
-  const parts = body.path.split('/');
-  $('#path').textContent = parts.length > 3 ? '…/' + parts.slice(-2).join('/') : body.path;
-  $('#path').title = body.path;
   if (sel !== 'settings' && sel > doc.rules.length - 1) sel = Math.max(0, doc.rules.length - 1);
   renderList();
   renderPane();

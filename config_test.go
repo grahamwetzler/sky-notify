@@ -630,6 +630,36 @@ func TestEmptyConfigRowsUseDefaults(t *testing.T) {
 	}
 }
 
+// The two sections of the combined example document still respect the same
+// startup/hot-reload split the two example files used to: neither carries a key that
+// belongs to the other, and each decodes strictly under its own struct.
+func TestExampleFileRespectsConfigSplit(t *testing.T) {
+	blob, err := os.ReadFile("config.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Config json.RawMessage `json:"config"`
+		Alerts json.RawMessage `json:"alerts"`
+	}
+	if err := json.Unmarshal(blob, &doc); err != nil {
+		t.Fatal(err)
+	}
+	store := newTestStore(t)
+	if _, err := store.Put("config", string(doc.Config)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put("alerts", string(doc.Alerts)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadConfigFile(store); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadAlertsFile(store); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMisplacedConfigKeysNameAlertsSection(t *testing.T) {
 	store := newTestStore(t)
 	if _, err := store.Put("config", `{"rules":[],"lat":0,"source":{"poll_interval":"1s"}}`); err != nil {

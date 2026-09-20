@@ -41,14 +41,14 @@ services:
       # Both survive restarts; without this you re-download the list and re-alert on
       # everything currently overhead every time the container restarts.
       - sky-notify-data:/data
-      # Holds alerts.yaml, which the web UI writes. Without a writable /config the UI
+      # Holds config.db, which the web UI writes. Without a writable /config the UI
       # loads and previews but every save fails: the image runs as a non-root user.
       - sky-notify-config:/config
-      # Optional YAML config. Everything above can be set this way instead.
-      # - ./config.yaml:/config/config.yaml:ro
-      # A read-only bind mount makes alerts.yaml yours to hand-edit and read-only to the
-      # UI — saves will fail. Use the named volume above if you want to edit in the browser.
-      # - ./alerts.yaml:/config/alerts.yaml:ro
+      # To seed config.db without touching a shell inside the container, bind-mount a
+      # JSON document in the shape config.example.json documents and run the image once
+      # with `-config-import /seed.json` before the normal entrypoint (an init container
+      # or a compose `command:` override), e.g.:
+      # - ./seed.json:/seed.json:ro
 
 volumes:
   sky-notify-data:

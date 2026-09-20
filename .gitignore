@@ -1,7 +1,7 @@
 /sky-notify
 .DS_Store
 /data/
-config.yaml
+config.db*
 compose.test.yaml
 run-test.sh
 PLAN*.md

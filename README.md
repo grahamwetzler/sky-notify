@@ -50,16 +50,17 @@ The `/data` volume matters: it holds the cached aircraft list, the alert cooldow
 and the record of what has been sent. Without it you re-download the list on every restart,
 re-alert on everything currently overhead, and lose the history.
 
-`/config` is where `alerts.yaml` lives, and the web UI writes it. It has to be writable by
+`/config` is where `config.db` lives — a small SQLite database holding both the startup
+config and the hot-reloaded alerts, and the web UI writes to it. It has to be writable by
 the container's non-root user, which a named volume is — a read-only bind mount is not, and
-saves will fail against one. Set `SKY_ALERTS_CONFIG` to put the file somewhere else.
+saves will fail against one. Set `SKY_CONFIG_DB` to put the database somewhere else.
 
 See [`docker-compose.yml`](docker-compose.yml) for a fuller example and
-[`config.example.yaml`](config.example.yaml) for every setting.
+[`config.example.json`](config.example.json) for every setting.
 
 ### Rules
 
-Nothing alerts unless a rule in `alerts.yaml` matches, including emergency squawks and
+Nothing alerts unless a rule in the alerts section matches, including emergency squawks and
 aircraft in plane-alert-db. Every condition is an optional filter of the same kind:
 
 | | |
@@ -146,16 +147,17 @@ Type: EC45
 Circling: yes
 ```
 
-Configure a provider under **Settings ▸ AI research** in the web UI, or in `alerts.yaml`
-directly — it is hot-reloaded like the rest of that file, so a model can be swapped
-without a restart:
+Configure a provider under **Settings ▸ AI research** in the web UI, or in the alerts
+section of `config.db` directly (see `config.example.json`) — it is hot-reloaded like
+the rest of that section, so a model can be swapped without a restart:
 
-```yaml
-ai:
-  url: https://openrouter.ai/api/v1
-  key: sk-or-v1-...
-  model: perplexity/sonar
-  timeout: 20s
+```json
+"ai": {
+  "url": "https://openrouter.ai/api/v1",
+  "key": "sk-or-v1-...",
+  "model": "perplexity/sonar",
+  "timeout": "20s"
+}
 ```
 
 The key is the one setting the page never reads back. `GET /api/alerts` reports only
@@ -206,23 +208,24 @@ air, so tar1090 asks a lookup service which airports that callsign flies between
 we. `route_api_url` is the same service tar1090 defaults to, asked only when a rule wants
 research and only about a callsign with a position:
 
-```yaml
-route_api_url: https://adsb.im/api/0/routeset   # "" to ask nobody
+```json
+"route_api_url": "https://adsb.im/api/0/routeset"
 ```
+
+(`""` to ask nobody.)
 
 Most callsigns have no schedule to find — military, GA, anything not on a timetable — and
 the line is simply left out. A lookup that fails costs the model that one line, nothing
 more.
 
-```yaml
-rules:
-  - name: Police helicopters
-    cmpg: [Pol]
-    max_distance_nm: 25
-    research: true
-    research_prompt: >-
-      Research this helicopter and reply with only the owner, the operator, and its
-      most likely use, in one concise sentence.
+```json
+{
+  "name": "Police helicopters",
+  "cmpg": ["Pol"],
+  "max_distance_nm": 25,
+  "research": true,
+  "research_prompt": "Research this helicopter and reply with only the owner, the operator, and its most likely use, in one concise sentence."
+}
 ```
 
 Research follows the same rule the map does: an unreachable provider, a 401, a rate
@@ -234,10 +237,11 @@ latitude and longitude.
 
 ## Configuration
 
-Configure with environment variables and two optional YAML files — **environment wins
-over the files, which win over the defaults**. `config.yaml` contains startup-only
-settings. `alerts.yaml` contains hot-reloaded settings and defaults beside the resolved
-config path. Missing files are fine. See both example files for the exact split.
+Configure with environment variables and a settings database — **environment wins
+over the database, which wins over the defaults**. `config.db` (SQLite, at `SKY_CONFIG_DB`,
+default `/config/config.db`) holds two documents: `config` (startup-only settings) and
+`alerts` (hot-reloaded settings). A missing database, or a missing document in it, is fine
+— defaults apply. See `config.example.json` for the exact split and every setting.
 
 | Variable | Default | |
 |---|---|---|
@@ -264,19 +268,18 @@ config path. Missing files are fine. See both example files for the exact split.
 | `SKY_LAT` / `SKY_LON` | — | your receiver; needed by rules with `max_distance_nm` or `passes_within_nm` |
 | `SKY_LOG_LEVEL` | `info` | |
 | `SKY_LISTEN` | `:8080` | serves `/healthz` |
-| `SKY_CONFIG` | `/config/config.yaml` | |
-| `SKY_ALERTS_CONFIG` | `alerts.yaml` beside `SKY_CONFIG` | |
+| `SKY_CONFIG_DB` | `/config/config.db` | where the settings database lives |
 
-A typo'd YAML key or an unrecognised `SKY_*` variable is a **startup error**, not a
-silent fallback to the default. `SKY_` is this service's namespace, and
+A typo'd key in the database or an unrecognised `SKY_*` variable is a **startup error**,
+not a silent fallback to the default. `SKY_` is this service's namespace, and
 `SKY_COOLDWON=1h` quietly leaving you on 24h is exactly the bug worth failing loudly on.
 
 ### Alert settings web UI
 
-Browse to the configured listen address to edit every setting in `alerts.yaml`. The rule
-list is the page: each rule reads back as a sentence — "Police aircraft, within 15 NM of
-the receiver" — beside a figure for how much of the database it selects, so the set can be
-audited by reading down it rather than by reading the YAML. Rules below a wildcard are
+Browse to the configured listen address to edit every setting in the alerts document. The
+rule list is the page: each rule reads back as a sentence — "Police aircraft, within 15 NM
+of the receiver" — beside a figure for how much of the database it selects, so the set can
+be audited by reading down it rather than by reading the JSON. Rules below a wildcard are
 struck through as unreachable. Selecting one opens it; conditions are grouped by the
 question they ask (which aircraft it is, where it is right now, how it is flying) and are
 built from the database's own vocabulary rather than typed. A typo'd tag is otherwise
@@ -309,9 +312,25 @@ which is its name, or a fingerprint of its conditions if it has none — so rena
 or re-conditioning an unnamed one, starts a fresh list rather than claiming alerts it
 never sent.
 
-The file remains authoritative, hand edits still work, and environment variables still win
-over it. Saved changes are picked up within the next 5-second reload tick. Comments do not
-survive a save. There is no authentication — put it on a local network or behind a proxy.
+The database row remains authoritative, and environment variables still win over it. Saved
+changes are picked up within the next 5-second reload tick. There is no authentication —
+put it on a local network or behind a proxy.
+
+### Backup, restore and scripted setup
+
+`GET /api/config/export` returns the whole database as one JSON document (`?redact=true`
+blanks the ntfy and AI credentials, adding an `_set` boolean for each instead); `POST
+/api/config/import` accepts the same shape and writes both sections in one transaction — a
+payload with only `alerts` (the common case) leaves `config` untouched. The binary exposes
+the same two operations without a running server, for CI or an init container:
+
+```
+sky-notify -config-export [-out backup.json] [-redact]
+sky-notify -config-import backup.json
+```
+
+`-config-import` is also how a fresh deployment is seeded from `config.example.json`
+without shell access to the volume — see `docker-compose.yml` for the bind-mount pattern.
 
 The AI provider's API key is the one setting the page is never shown: it is reported as
 stored or not stored, and a save that carries no key keeps the one on disk. It still
@@ -320,9 +339,9 @@ trust — or keep it out of the page entirely with `SKY_AI_KEY`, which locks the
 
 ## Things worth knowing
 
-`config.yaml` is read at startup. `alerts.yaml` is re-read every 5 seconds, so every
-setting in it updates live. A key placed in the wrong file is a startup error that names
-the file it belongs in.
+The `config` document is read at startup. The `alerts` document is re-read every 5
+seconds, so every setting in it updates live. A key placed in the wrong document is a
+startup error that names the one it belongs in.
 
 **An alert waits for a position.** No aircraft alerts until it has reported `lat`/`lon`,
 and with them its distance from your `lat`/`lon` when you have set one — a notification

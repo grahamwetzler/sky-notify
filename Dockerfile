@@ -14,7 +14,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
 # /data and /config are created here so they can be copied in with the runtime uid. Docker
 # seeds a fresh named volume from the image path *including its ownership* — without this
 # the non-root process cannot create db.json or state.json on a brand-new volume, and the
-# web UI cannot write alerts.yaml back to its default location.
+# web UI cannot write config.db back to its default location.
 RUN mkdir -p /out/data /out/config
 
 FROM gcr.io/distroless/static-debian12:nonroot

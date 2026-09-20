@@ -1,0 +1,88 @@
+{
+  "exported_at": "example",
+  "config": {
+    "source": {
+      "url": "",
+      "max_age": "60s"
+    },
+    "ntfy": {
+      "url": "",
+      "topic": "",
+      "token": "",
+      "user": "",
+      "password": ""
+    },
+    "db": {
+      "files": [],
+      "base_url": ""
+    },
+    "map": {
+      "enabled": true,
+      "tiles_url": "https://tiles.openfreemap.org/planet"
+    },
+    "cache_dir": "",
+    "tar1090_url": "",
+    "listen": ":8080",
+    "route_api_url": "https://adsb.im/api/0/routeset"
+  },
+  "alerts": {
+    "source": {
+      "poll_interval": "15s"
+    },
+    "ntfy": {
+      "priority": 3
+    },
+    "db": {
+      "refresh_interval": "24h"
+    },
+    "ai": {
+      "url": "",
+      "model": "",
+      "timeout": "20s"
+    },
+    "cooldown": "24h",
+    "lat": 51.5007,
+    "lon": -0.1246,
+    "rules": [
+      {
+        "name": "Emergency squawks",
+        "squawk": ["7500", "7600", "7700"],
+        "priority": 5
+      },
+      {
+        "name": "Police helicopters",
+        "cmpg": ["Pol"],
+        "max_distance_nm": 25,
+        "notify": "closest_pass",
+        "research": true
+      },
+      {
+        "name": "Listed aircraft nearby",
+        "listed": true,
+        "max_distance_nm": 50
+      },
+      {
+        "name": "Unlisted low flyers",
+        "listed": false,
+        "max_altitude_ft": 2000,
+        "max_distance_nm": 3
+      },
+      {
+        "name": "Southwest overhead",
+        "callsign": ["SWA"],
+        "max_distance_nm": 10
+      },
+      {
+        "passes_within_nm": 1,
+        "passes_within": "5m",
+        "max_altitude_ft": 10000
+      },
+      {
+        "name": "Orbiting aircraft",
+        "circling": true,
+        "max_distance_nm": 10
+      }
+    ],
+    "log_level": "info"
+  }
+}

@@ -1,5 +1,4 @@
 .git
 *.md
 docker-compose.yml
-config.example.yaml
-config.yaml
+config.db*
