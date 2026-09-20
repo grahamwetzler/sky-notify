@@ -238,17 +238,19 @@ func (s *server) mux(q *queue) http.Handler {
 			l := map[string]string{"key": b.key, "env": b.name, "value": v}
 			// Secrets are reported locked without their value, the same treatment
 			// ai.key gets. An empty value is not a credential, so it stays visible.
-			if (b.key == "ntfy.token" || b.key == "ntfy.password") && v != "" {
+			// ntfy.topic counts as one too: on public ntfy.sh it is the only secret
+			// protecting the notification stream.
+			if (b.key == "ntfy.token" || b.key == "ntfy.password" || b.key == "ntfy.topic") && v != "" {
 				delete(l, "value")
 			}
 			locked = append(locked, l)
 		}
-		tokenSet, passwordSet := cfg.ntfyToken() != "", cfg.ntfyPassword() != ""
-		cfg.Ntfy.Token, cfg.Ntfy.Password = nil, nil
+		tokenSet, passwordSet, topicSet := cfg.ntfyToken() != "", cfg.ntfyPassword() != "", cfg.ntfyTopic() != ""
+		cfg.Ntfy.Token, cfg.Ntfy.Password, cfg.Ntfy.Topic = nil, nil, nil
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"config": cfg, "locked": locked,
-			"ntfy_token_set": tokenSet, "ntfy_password_set": passwordSet,
+			"ntfy_token_set": tokenSet, "ntfy_password_set": passwordSet, "ntfy_topic_set": topicSet,
 		})
 	})
 	mux.HandleFunc("PUT /api/config", func(w http.ResponseWriter, r *http.Request) {
@@ -286,6 +288,15 @@ func (s *server) mux(q *queue) http.Handler {
 			cfg.Ntfy.Password = onDisk.Ntfy.Password
 		} else if *cfg.Ntfy.Password == "" {
 			cfg.Ntfy.Password = nil
+		}
+		// Same three-way handling as the credentials above: the page is never sent the
+		// topic either, so an omitted field means "keep it" and an explicit empty string
+		// means "clear it" — which validate() below then rejects, since a topic is
+		// required.
+		if cfg.Ntfy.Topic == nil {
+			cfg.Ntfy.Topic = onDisk.Ntfy.Topic
+		} else if *cfg.Ntfy.Topic == "" {
+			cfg.Ntfy.Topic = nil
 		}
 		overlaid := *cfg
 		if err := applyConfigEnv(&overlaid, env); err != nil {

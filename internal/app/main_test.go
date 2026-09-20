@@ -52,7 +52,7 @@ func TestConfigCLIExportImportRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(blob, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if doc.Config == nil || doc.Config.Ntfy.Topic != "test-topic" {
+	if doc.Config == nil || doc.Config.ntfyTopic() != "test-topic" {
 		t.Fatalf("exported config = %+v", doc.Config)
 	}
 	if doc.Alerts == nil || len(doc.Alerts.Rules) != 1 || doc.Alerts.Rules[0].Name != "test" {

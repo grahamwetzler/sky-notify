@@ -18,6 +18,7 @@ type exportDocument struct {
 	// credentials blanked, in place of echoing them.
 	NtfyTokenSet    *bool `json:"ntfy_token_set,omitempty"`
 	NtfyPasswordSet *bool `json:"ntfy_password_set,omitempty"`
+	NtfyTopicSet    *bool `json:"ntfy_topic_set,omitempty"`
 	AIKeySet        *bool `json:"ai_key_set,omitempty"`
 }
 
@@ -35,6 +36,7 @@ type importDocument struct {
 	Alerts           json.RawMessage `json:"alerts,omitempty"`
 	NtfyTokenSet     *bool           `json:"ntfy_token_set,omitempty"`
 	NtfyPasswordSet  *bool           `json:"ntfy_password_set,omitempty"`
+	NtfyTopicSet     *bool           `json:"ntfy_topic_set,omitempty"`
 	AIKeySet         *bool           `json:"ai_key_set,omitempty"`
 }
 
@@ -70,9 +72,9 @@ func exportSettings(store *SettingsStore, redact bool) (*exportDocument, error) 
 			return nil, err
 		}
 		if redact {
-			tokenSet, passwordSet := cfg.ntfyToken() != "", cfg.ntfyPassword() != ""
-			doc.NtfyTokenSet, doc.NtfyPasswordSet = &tokenSet, &passwordSet
-			cfg.Ntfy.Token, cfg.Ntfy.Password = nil, nil
+			tokenSet, passwordSet, topicSet := cfg.ntfyToken() != "", cfg.ntfyPassword() != "", cfg.ntfyTopic() != ""
+			doc.NtfyTokenSet, doc.NtfyPasswordSet, doc.NtfyTopicSet = &tokenSet, &passwordSet, &topicSet
+			cfg.Ntfy.Token, cfg.Ntfy.Password, cfg.Ntfy.Topic = nil, nil, nil
 		}
 		doc.Config = &cfg
 	}
@@ -136,6 +138,11 @@ func importSettings(store *SettingsStore, doc *importDocument, env map[string]st
 			cfg.Ntfy.Password = onDisk.Ntfy.Password
 		} else if *cfg.Ntfy.Password == "" {
 			cfg.Ntfy.Password = nil
+		}
+		if cfg.Ntfy.Topic == nil {
+			cfg.Ntfy.Topic = onDisk.Ntfy.Topic
+		} else if *cfg.Ntfy.Topic == "" {
+			cfg.Ntfy.Topic = nil
 		}
 		overlaid := *cfg
 		if err := applyConfigEnv(&overlaid, env); err != nil {

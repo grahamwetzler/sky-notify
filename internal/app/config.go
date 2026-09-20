@@ -55,8 +55,13 @@ type Config struct {
 	} `yaml:"source" json:"source"`
 
 	Ntfy struct {
-		URL   string `yaml:"url" json:"url"`
-		Topic string `yaml:"topic" json:"topic"`
+		URL string `yaml:"url" json:"url"`
+		// Topic is a pointer for the same reason Token and Password are: on public
+		// ntfy.sh it is the only secret protecting the notification stream, so GET
+		// /api/config never echoes it, and a PUT/import that omits it must mean "keep
+		// the stored value", not "clear it" — only an explicit empty string means that
+		// (and validate rejects the result, since topic is required).
+		Topic *string `yaml:"topic,omitempty" json:"topic,omitempty"`
 		// Token and Password are pointers for the same three-way reason AI.Key is: GET
 		// /api/config never echoes them, so a PUT/import that omits one must mean "keep
 		// the stored value", not "clear it" — only an explicit empty string means that.
@@ -189,7 +194,7 @@ func envBindings() []envBinding {
 		{"SKY_SOURCE_MAX_AGE", "source.max_age", func(c *Config, v string) error { return setDur(&c.Source.MaxAge, v) }},
 
 		{"SKY_NTFY_URL", "ntfy.url", func(c *Config, v string) error { c.Ntfy.URL = v; return nil }},
-		{"SKY_NTFY_TOPIC", "ntfy.topic", func(c *Config, v string) error { c.Ntfy.Topic = v; return nil }},
+		{"SKY_NTFY_TOPIC", "ntfy.topic", func(c *Config, v string) error { c.Ntfy.Topic = &v; return nil }},
 		{"SKY_NTFY_TOKEN", "ntfy.token", func(c *Config, v string) error { c.Ntfy.Token = &v; return nil }},
 		{"SKY_NTFY_USER", "ntfy.user", func(c *Config, v string) error { c.Ntfy.User = v; return nil }},
 		{"SKY_NTFY_PASSWORD", "ntfy.password", func(c *Config, v string) error { c.Ntfy.Password = &v; return nil }},
@@ -207,12 +212,13 @@ func envBindings() []envBinding {
 	}
 }
 
-// The three variables the guard below reasons about by name, the config-side mirror of
+// The variables the guard below reasons about by name, the config-side mirror of
 // aiKeyEnv/aiURLEnv.
 const (
 	ntfyURLEnv      = "SKY_NTFY_URL"
 	ntfyTokenEnv    = "SKY_NTFY_TOKEN"
 	ntfyPasswordEnv = "SKY_NTFY_PASSWORD"
+	ntfyTopicEnv    = "SKY_NTFY_TOPIC"
 )
 
 // ntfyEndpoint is the endpoint a document's stored ntfy credential belongs to — the
@@ -232,11 +238,14 @@ func ntfyReach(c *Config, env map[string]string) []string {
 	return []string{ntfyEndpoint(c, env), c.Ntfy.URL}
 }
 
-// checkNtfyCredsStayPut refuses a save that would send a stored ntfy token or password it
-// did not supply to an endpoint it did — the config-side mirror of checkAIKeyStaysPut. A
-// token and a password are mutually exclusive (validate() enforces it), so both are judged
-// as one credential here: either one being carried silently to a new endpoint is the same
-// disclosure.
+// checkNtfyCredsStayPut refuses a save that would send a stored ntfy token, password, or
+// topic it did not supply to an endpoint it did — the config-side mirror of
+// checkAIKeyStaysPut. A token and a password are mutually exclusive (validate() enforces
+// it), so both are judged as one credential here: either one being carried silently to a
+// new endpoint is the same disclosure. The topic travels in every publish's request body
+// rather than the URL, so moving ntfy.url to a host that did not earn the topic would hand
+// it the one secret a public ntfy.sh deployment relies on, the moment the next notification
+// goes out.
 func checkNtfyCredsStayPut(onDisk, saved *Config, env map[string]string) error {
 	was := ntfyReach(onDisk, env)
 	for _, now := range ntfyReach(saved, env) {
@@ -261,14 +270,17 @@ func checkNtfyCredsStayPut(onDisk, saved *Config, env map[string]string) error {
 // save that only clears the untouched one (e.g. `"password":""` alongside a stored
 // token) carry the real, untouched credential to the new endpoint for free.
 func refuseNtfyCredsMove(onDisk, saved *Config, env map[string]string, now string) error {
-	if env[ntfyTokenEnv] != "" || env[ntfyPasswordEnv] != "" {
-		return fmt.Errorf("ntfy.url: %s or %s holds a credential, so the endpoint it is sent to is not editable here — set %s to the endpoint you want", ntfyTokenEnv, ntfyPasswordEnv, ntfyURLEnv)
+	if env[ntfyTokenEnv] != "" || env[ntfyPasswordEnv] != "" || env[ntfyTopicEnv] != "" {
+		return fmt.Errorf("ntfy.url: %s, %s or %s holds a credential, so the endpoint it is sent to is not editable here — set %s to the endpoint you want", ntfyTokenEnv, ntfyPasswordEnv, ntfyTopicEnv, ntfyURLEnv)
 	}
 	if onDisk.ntfyToken() != "" && saved.Ntfy.Token == nil {
 		return fmt.Errorf("ntfy.url: the stored token was issued for %s and is never sent to this page, so it cannot follow the endpoint to %s — enter the token for the new endpoint, or clear it", aiOrigin(ntfyEndpoint(onDisk, env)), aiOrigin(now))
 	}
 	if onDisk.ntfyPassword() != "" && saved.Ntfy.Password == nil {
 		return fmt.Errorf("ntfy.url: the stored password was issued for %s and is never sent to this page, so it cannot follow the endpoint to %s — enter the password for the new endpoint, or clear it", aiOrigin(ntfyEndpoint(onDisk, env)), aiOrigin(now))
+	}
+	if onDisk.ntfyTopic() != "" && saved.Ntfy.Topic == nil {
+		return fmt.Errorf("ntfy.url: the stored topic was issued for %s and is never sent to this page, so it cannot follow the endpoint to %s — enter the topic for the new endpoint", aiOrigin(ntfyEndpoint(onDisk, env)), aiOrigin(now))
 	}
 	return nil
 }

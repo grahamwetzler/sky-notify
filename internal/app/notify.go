@@ -73,7 +73,7 @@ func NewNotifier(cfg *Config) (*Notifier, error) {
 	return &Notifier{
 		cfg:     cfg,
 		url:     base.String(),
-		fileURL: base.JoinPath(cfg.Ntfy.Topic).String(),
+		fileURL: base.JoinPath(cfg.ntfyTopic()).String(),
 		client: &http.Client{
 			Timeout: 15 * time.Second,
 			// Go's default would silently downgrade a redirected POST to a GET and hand
@@ -465,7 +465,7 @@ func (n *Notifier) render(a *Alert) ntfyMessage {
 	}
 
 	return ntfyMessage{
-		Topic:    n.cfg.Ntfy.Topic,
+		Topic:    n.cfg.ntfyTopic(),
 		Title:    title,
 		Message:  strings.TrimRight(b.String(), "\n"),
 		Priority: a.Priority,

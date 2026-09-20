@@ -124,7 +124,7 @@ func TestNotifySuccess(t *testing.T) {
 		t.Errorf("publish must POST to the server root, got %q", s.paths[0])
 	}
 	m := s.bodies[0]
-	if m.Topic != cfg.Ntfy.Topic || m.Title != "US Air Force C-17" {
+	if m.Topic != cfg.ntfyTopic() || m.Title != "US Air Force C-17" {
 		t.Errorf("unexpected message: %+v", m)
 	}
 	if m.Priority != 2 {

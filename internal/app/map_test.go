@@ -563,8 +563,8 @@ func TestNotifyPutsTheImageWithTheSameMessageInHeaders(t *testing.T) {
 		t.Fatalf("want one PUT, got %v", s.methods)
 	}
 	// ntfy takes an attachment only at /<topic>, not at the root the JSON path uses.
-	if s.paths[0] != "/"+cfg.Ntfy.Topic {
-		t.Errorf("attachment path = %q, want /%s", s.paths[0], cfg.Ntfy.Topic)
+	if s.paths[0] != "/"+cfg.ntfyTopic() {
+		t.Errorf("attachment path = %q, want /%s", s.paths[0], cfg.ntfyTopic())
 	}
 	if len(s.files[0]) == 0 || !bytes.HasPrefix(s.files[0], []byte("\x89PNG")) {
 		t.Errorf("body is not a PNG (%d bytes)", len(s.files[0]))
@@ -618,7 +618,7 @@ func TestNotifyWithoutAnImagePostsExactlyAsBefore(t *testing.T) {
 			if len(s.methods) != 1 || s.methods[0] != http.MethodPost || s.paths[0] != "/" {
 				t.Fatalf("want one POST to the root, got %v %v", s.methods, s.paths)
 			}
-			if s.bodies[0].Topic != cfg.Ntfy.Topic {
+			if s.bodies[0].Topic != cfg.ntfyTopic() {
 				t.Errorf("the JSON publish document lost its topic: %+v", s.bodies[0])
 			}
 		})

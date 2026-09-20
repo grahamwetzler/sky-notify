@@ -66,16 +66,16 @@ func TestConfigPrecedenceEnvOverStoreOverDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Ntfy.Topic != "from-store" {
-		t.Errorf("the stored document should override defaults, got %q", cfg.Ntfy.Topic)
+	if cfg.ntfyTopic() != "from-store" {
+		t.Errorf("the stored document should override defaults, got %q", cfg.ntfyTopic())
 	}
 
 	cfg, err = loadWith(t, doc, "SKY_NTFY_TOPIC=from-env")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Ntfy.Topic != "from-env" {
-		t.Errorf("env should win over the stored document, got %q", cfg.Ntfy.Topic)
+	if cfg.ntfyTopic() != "from-env" {
+		t.Errorf("env should win over the stored document, got %q", cfg.ntfyTopic())
 	}
 }
 
@@ -1099,13 +1099,22 @@ func TestConfigUIRoundTrip(t *testing.T) {
 		t.Fatalf("GET status %d: %s", w.Code, w.Body.String())
 	}
 	var getResp struct {
-		Config Config `json:"config"`
+		Config       Config `json:"config"`
+		NtfyTopicSet bool   `json:"ntfy_topic_set"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&getResp); err != nil {
 		t.Fatal(err)
 	}
-	if getResp.Config.Source.URL != want.Source.URL || getResp.Config.Ntfy.Topic != want.Ntfy.Topic {
+	if getResp.Config.Source.URL != want.Source.URL {
 		t.Fatalf("GET config = %+v", getResp.Config)
+	}
+	// The topic is the one secret a public ntfy.sh deployment relies on, so it gets the
+	// same treatment as token/password: reported set, never echoed.
+	if getResp.Config.Ntfy.Topic != nil {
+		t.Fatalf("GET must not echo the ntfy topic: %+v", getResp.Config.Ntfy)
+	}
+	if !getResp.NtfyTopicSet {
+		t.Error("ntfy_topic_set = false, want true")
 	}
 }
 
@@ -1161,6 +1170,178 @@ func TestConfigUISecretsAreNotEchoed(t *testing.T) {
 	if !body.NtfyTokenSet {
 		t.Error("ntfy_token_set = false, want true")
 	}
+}
+
+// On public ntfy.sh the topic is the only secret protecting the notification stream, so it
+// gets the same treatment as ntfy.token and ntfy.password.
+func TestConfigUITopicIsNotEchoed(t *testing.T) {
+	store := newTestStore(t)
+	if _, err := store.Put("config", `{"ntfy":{"topic":"secret-topic"}}`); err != nil {
+		t.Fatal(err)
+	}
+	h := alertsHandler(t, store)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET status %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "secret-topic") {
+		t.Fatalf("the ntfy topic was served to the browser:\n%s", w.Body.String())
+	}
+	var body struct {
+		NtfyTopicSet bool `json:"ntfy_topic_set"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.NtfyTopicSet {
+		t.Error("ntfy_topic_set = false, want true")
+	}
+}
+
+// A topic locked by SKY_NTFY_TOPIC must not be echoed in the locked-value display either —
+// the same treatment cache_dir gets for its value, except a credential's value is withheld.
+func TestConfigUILockedTopicIsNotEchoed(t *testing.T) {
+	t.Setenv("SKY_NTFY_TOPIC", "secret-topic")
+	h := alertsHandler(t, newTestStore(t))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET status %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "secret-topic") {
+		t.Fatalf("the ntfy topic was served to the browser:\n%s", w.Body.String())
+	}
+	var body struct {
+		Locked []map[string]string `json:"locked"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, item := range body.Locked {
+		if item["key"] == "ntfy.topic" {
+			found = true
+			if _, ok := item["value"]; ok {
+				t.Errorf("locked ntfy.topic must not carry a value: %+v", item)
+			}
+		}
+	}
+	if !found {
+		t.Error("ntfy.topic set by the environment must be reported as locked")
+	}
+}
+
+// An empty string is the page saying "clear it", distinct from omitting the field, which
+// means "leave it alone" — mirroring TestNtfyTokenClearVsKeep. Unlike a credential, a
+// cleared topic with nothing to replace it fails validation: it is required.
+func TestNtfyTopicClearVsKeep(t *testing.T) {
+	seed := testConfig(t)
+	topic := "secret-topic"
+	seed.Ntfy.Topic = &topic
+	blob, err := json.Marshal(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := newTestStore(t)
+	if _, err := store.Put("config", string(blob)); err != nil {
+		t.Fatal(err)
+	}
+	h := alertsHandler(t, store)
+
+	// Omitted (nil): the stored topic survives an unrelated edit.
+	kept := testConfig(t)
+	kept.Ntfy.Topic = nil
+	keptBlob, _ := json.Marshal(kept)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewReader(keptBlob)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT status %d: %s", w.Code, w.Body.String())
+	}
+	if saved, _ := loadConfigFile(store); saved.ntfyTopic() != "secret-topic" {
+		t.Errorf("topic = %q, want it kept", saved.ntfyTopic())
+	}
+
+	// Empty string: an explicit clear, refused because a topic is required.
+	cleared := testConfig(t)
+	empty := ""
+	cleared.Ntfy.Topic = &empty
+	clearedBlob, _ := json.Marshal(cleared)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewReader(clearedBlob)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("PUT status %d, want 400: %s", w.Code, w.Body.String())
+	}
+	if saved, _ := loadConfigFile(store); saved.ntfyTopic() != "secret-topic" {
+		t.Errorf("a refused clear must not touch the row: topic = %q", saved.ntfyTopic())
+	}
+}
+
+// The topic travels in every publish's request body, so it must not silently follow
+// ntfy.url to a new host any more than the token or password does — the topic-side mirror
+// of TestNtfyCredsDoNotFollowTheEndpoint.
+func TestNtfyTopicDoesNotFollowTheEndpoint(t *testing.T) {
+	stored := func(t *testing.T) *Config {
+		t.Helper()
+		c := testConfig(t)
+		c.Ntfy.URL = "https://ntfy.example.com"
+		topic := "secret-topic"
+		c.Ntfy.Topic = &topic
+		return c
+	}
+	put := func(t *testing.T, h http.Handler, cfg *Config) *httptest.ResponseRecorder {
+		t.Helper()
+		blob, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewReader(blob)))
+		return w
+	}
+
+	t.Run("a move with no topic is refused", func(t *testing.T) {
+		store := newTestStore(t)
+		blob, _ := json.Marshal(stored(t))
+		if _, err := store.Put("config", string(blob)); err != nil {
+			t.Fatal(err)
+		}
+		h := alertsHandler(t, store)
+		moved := stored(t)
+		moved.Ntfy.URL, moved.Ntfy.Topic = "https://attacker.invalid", nil
+		w := put(t, h, moved)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+		}
+		saved, err := loadConfigFile(store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if saved.Ntfy.URL != "https://ntfy.example.com" || saved.ntfyTopic() != "secret-topic" {
+			t.Fatalf("a refused save must not touch the row: %+v", saved.Ntfy)
+		}
+	})
+
+	t.Run("a move with a topic of its own is allowed", func(t *testing.T) {
+		store := newTestStore(t)
+		blob, _ := json.Marshal(stored(t))
+		if _, err := store.Put("config", string(blob)); err != nil {
+			t.Fatal(err)
+		}
+		h := alertsHandler(t, store)
+		moved := stored(t)
+		moved.Ntfy.URL = "https://ntfy.new.example.com"
+		newTopic := "new-topic"
+		moved.Ntfy.Topic = &newTopic
+		w := put(t, h, moved)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		}
+		saved, _ := loadConfigFile(store)
+		if saved.ntfyTopic() != "new-topic" {
+			t.Errorf("topic = %q, want the one the save supplied", saved.ntfyTopic())
+		}
+	})
 }
 
 func TestConfigUIRejectsInvalidWithoutWriting(t *testing.T) {
@@ -1288,6 +1469,39 @@ func TestConfigExportRedactsOnRequest(t *testing.T) {
 	}
 	if doc.Alerts == nil || doc.Alerts.AI.Key != nil {
 		t.Errorf("redacted export still carried the key: %+v", doc.Alerts)
+	}
+}
+
+// The topic-side mirror of TestConfigExportRedactsOnRequest: redact=true must blank the
+// one secret a public ntfy.sh deployment relies on, not just the token and password.
+func TestConfigExportRedactsTopic(t *testing.T) {
+	store := newTestStore(t)
+	blob, err := json.Marshal(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put("config", string(blob)); err != nil {
+		t.Fatal(err)
+	}
+	h := alertsHandler(t, store)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/config/export?redact=true", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "test-topic") {
+		t.Fatalf("redacted export leaked the topic:\n%s", w.Body.String())
+	}
+	var doc exportDocument
+	if err := json.NewDecoder(w.Body).Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.NtfyTopicSet == nil || !*doc.NtfyTopicSet {
+		t.Errorf("ntfy_topic_set = %v, want true", doc.NtfyTopicSet)
+	}
+	if doc.Config == nil || doc.Config.Ntfy.Topic != nil {
+		t.Errorf("redacted export still carried the topic: %+v", doc.Config)
 	}
 }
 

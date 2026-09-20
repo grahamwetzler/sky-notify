@@ -24,7 +24,8 @@ func testConfig(t *testing.T) *Config {
 	c := defaultConfig()
 	c.Source.URL = "http://source.invalid/data/aircraft.json"
 	c.Ntfy.URL = "https://ntfy.invalid"
-	c.Ntfy.Topic = "test-topic"
+	topic := "test-topic"
+	c.Ntfy.Topic = &topic
 	c.DB.BaseURL = "https://db.invalid/plane-alert-db"
 	c.DB.Files = []string{"plane-alert-db.csv"}
 	c.CacheDir = t.TempDir()

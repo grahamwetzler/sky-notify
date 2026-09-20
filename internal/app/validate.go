@@ -30,11 +30,22 @@ func (c *Config) ntfyPassword() string {
 	return *c.Ntfy.Password
 }
 
+// ntfyTopic is the topic to publish to, "" when none is stored — mirroring ntfyToken and
+// ntfyPassword: nil is not the same as an empty string, only the latter of which the
+// GET/PUT round trip is allowed to treat as "clear it" (and validate rejects the result,
+// since a topic is required).
+func (c *Config) ntfyTopic() string {
+	if c.Ntfy.Topic == nil {
+		return ""
+	}
+	return *c.Ntfy.Topic
+}
+
 func (c *Config) validate() error {
 	for _, r := range []struct{ name, env, val string }{
 		{"source.url", "SKY_SOURCE_URL", c.Source.URL},
 		{"ntfy.url", "SKY_NTFY_URL", c.Ntfy.URL},
-		{"ntfy.topic", "SKY_NTFY_TOPIC", c.Ntfy.Topic},
+		{"ntfy.topic", "SKY_NTFY_TOPIC", c.ntfyTopic()},
 		{"db.base_url", "SKY_DB_BASE_URL", c.DB.BaseURL},
 		{"cache_dir", "SKY_CACHE_DIR", c.CacheDir},
 	} {
@@ -45,7 +56,7 @@ func (c *Config) validate() error {
 	if len(c.DB.Files) == 0 {
 		return fmt.Errorf("db.files is required (set SKY_DB_FILES)")
 	}
-	if len(c.Ntfy.Topic) > 64 || !regexp.MustCompile(`^[A-Za-z0-9_-]+$`).MatchString(c.Ntfy.Topic) {
+	if len(c.ntfyTopic()) > 64 || !regexp.MustCompile(`^[A-Za-z0-9_-]+$`).MatchString(c.ntfyTopic()) {
 		return fmt.Errorf("ntfy.topic must be 1-64 chars of [A-Za-z0-9_-]")
 	}
 	for _, u := range []struct{ name, val string }{
