@@ -1063,9 +1063,6 @@ function conditionCard(r, key) {
     s.setAttribute('aria-label', spec.label);
     s.onchange = () => {
       if (s.value === '') delete r[key]; else r[key] = s.value === 'true';
-      /* Turns describes circling, not the other two states — carrying it past a switch
-         away from "Only while circling" would leave it silently meaningless. */
-      if (key === 'circling' && r.circling !== true) delete r.circling_turns;
       markDirty(); schedulePreview(r); renderPane(); renderList();
     };
     card.append(s);

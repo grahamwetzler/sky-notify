@@ -83,19 +83,32 @@ func (tk *track) path() []sample {
 	return append([]sample(nil), tk.samples...)
 }
 
-// turns reports how many full rotations the aircraft has completed without leaving a
-// small area, and whether that measurement means anything at all. The area limit is what
+// turns reports how many full rotations the aircraft has completed within the trailing
+// window, and whether that measurement means anything at all. The area limit is what
 // separates an orbit from a holding pattern, which turns just as far but over several
 // miles: ok is false, regardless of how far it turned, the moment the path leaves it. ok
 // is also false with fewer than two samples since the last gap — too little to say
 // anything. Only the magnitude of the turn is reported: a rule compares it against how
 // many turns it requires, and direction never matters, only that it kept turning the same
 // way for that long.
-func (tk *track) turns() (turns float64, ok bool) {
-	if tk == nil {
+//
+// window bounds the measurement to the aircraft's own recent history, not whatever the
+// tracker happens to retain: retention (windowFor) grows to fit the strictest configured
+// rule, and without this bound that longer history would leak into every other rule's
+// answer — a stricter rule elsewhere could carry stale, out-of-radius samples into a
+// lenient rule's check and fail it. The cutoff is relative to the latest sample, not wall
+// clock time, so it works the same whether called live or against a frozen track.
+func (tk *track) turns(window time.Duration) (turns float64, ok bool) {
+	if tk == nil || len(tk.samples) == 0 {
 		return 0, false
 	}
 	s := tk.samples
+	cutoff := s[len(s)-1].t.Add(-window)
+	i := 0
+	for i < len(s) && s[i].t.Before(cutoff) {
+		i++
+	}
+	s = s[i:]
 	for i := len(s) - 1; i > 0; i-- {
 		if s[i].t.Sub(s[i-1].t) > maxSampleGap {
 			s = s[i:]
@@ -136,4 +149,28 @@ func windowFor(rules []Rule) time.Duration {
 		}
 	}
 	return circleWindow * time.Duration(turns)
+}
+
+// turnMeasurement is track.turns()'s result for one requested turn count.
+type turnMeasurement struct {
+	turns float64
+	ok    bool
+}
+
+// turnState is one aircraft's circling measurement, keyed by how many turns a rule might
+// require (1..maxCirclingTurns) and each measured over that count's own window. A map
+// rather than a fixed-size array so an out-of-range key — a preview request has not gone
+// through validate() — reads as the zero value (not circling) instead of panicking.
+type turnState map[int]turnMeasurement
+
+// newTurnState measures every turn count a rule can legally require, once per aircraft
+// per poll, so both the live alert path and the draft-rule preview can look up whichever
+// count the rule in front of them asks for without recomputing from raw samples.
+func newTurnState(tk *track) turnState {
+	ts := make(turnState, maxCirclingTurns)
+	for n := 1; n <= maxCirclingTurns; n++ {
+		turns, ok := tk.turns(circleWindow * time.Duration(n))
+		ts[n] = turnMeasurement{turns, ok}
+	}
+	return ts
 }

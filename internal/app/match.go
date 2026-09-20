@@ -44,14 +44,12 @@ type Alert struct {
 	HasDistance bool
 	Priority    int
 	Circling    bool
-	// turns and turnsOK are the raw measurement Circling and matchesFlightPath are both
-	// judged from: how many full rotations track.turns() found, and whether that
-	// measurement means anything at all. Unexported because turns() is per-rule (each
-	// rule states its own required count), unlike every other field here — Circling
-	// stays the one fixed answer ("at least one turn") that notify.go and research.go
-	// already read.
-	turns   float64
-	turnsOK bool
+	// turns is the raw per-turn-count measurement Circling and matchesFlightPath are both
+	// judged from, keyed by how many turns a rule requires. Unexported because it is
+	// per-rule (each rule states its own required count), unlike every other field here —
+	// Circling stays the one fixed answer ("at least one turn") that notify.go and
+	// research.go already read.
+	turns turnState
 	// Research is the answer the provider gave, filled on the notify path and not here:
 	// what to ask is read from the rules as they are at delivery, never as they were at
 	// the match, so a rule that stopped asking in between is not asked for.
@@ -105,7 +103,7 @@ func (a *Alert) acType() string {
 // it is relative to the receiver. Shared by the alert path and the live rule preview, so
 // the preview cannot answer a different question than the save. nil when the aircraft
 // has no usable address or has not reported a position.
-func newAlert(ac Aircraft, db *DB, cfg *Alerts, turns float64, turnsOK bool) *Alert {
+func newAlert(ac Aircraft, db *DB, cfg *Alerts, turns turnState) *Alert {
 	hex := normalizeHex(ac.Hex)
 	if hex == "" {
 		return nil
@@ -114,7 +112,8 @@ func newAlert(ac Aircraft, db *DB, cfg *Alerts, turns float64, turnsOK bool) *Al
 	if !isNonICAO(hex) {
 		plane, _ = db.Lookup(hex)
 	}
-	a := &Alert{Hex: hex, Plane: plane, AC: ac, Circling: turnsOK && turns >= 1, turns: turns, turnsOK: turnsOK}
+	one := turns[1]
+	a := &Alert{Hex: hex, Plane: plane, AC: ac, Circling: one.ok && one.turns >= 1, turns: turns}
 	if cfg.Lat != nil && cfg.Lon != nil && ac.Lat != nil && ac.Lon != nil {
 		a.DistanceNM = haversineNM(*cfg.Lat, *cfg.Lon, *ac.Lat, *ac.Lon)
 		a.HasDistance = true
@@ -136,8 +135,7 @@ func newAlert(ac Aircraft, db *DB, cfg *Alerts, turns float64, turnsOK bool) *Al
 // anything alerts: with no rules configured this always returns nil, emergencies included.
 // trk is the aircraft's recent history, nil when there is none.
 func Evaluate(ac Aircraft, db *DB, cfg *Alerts, trk *track) *Alert {
-	turns, turnsOK := trk.turns()
-	a := newAlert(ac, db, cfg, turns, turnsOK)
+	a := newAlert(ac, db, cfg, newTurnState(trk))
 	if a == nil {
 		return nil
 	}
@@ -170,7 +168,7 @@ func (a *Alert) matchInput() *Alert {
 	return &Alert{
 		Hex: a.Hex, Plane: a.Plane, AC: a.AC,
 		DistanceNM: a.DistanceNM, HasDistance: a.HasDistance, Circling: a.Circling,
-		turns: a.turns, turnsOK: a.turnsOK,
+		turns:   a.turns,
 		recvLat: a.recvLat, recvLon: a.recvLon,
 	}
 }
@@ -269,7 +267,9 @@ func (r *Rule) matchesPosition(ac Aircraft, a *Alert) bool {
 // belong together.
 func (r *Rule) matchesFlightPath(ac Aircraft, a *Alert) bool {
 	if r.Circling != nil {
-		is := a.turnsOK && a.turns >= float64(r.circlingTurns())
+		n := r.circlingTurns()
+		m := a.turns[n]
+		is := m.ok && m.turns >= float64(n)
 		if *r.Circling != is {
 			return false
 		}
@@ -364,26 +364,21 @@ type LiveHit struct {
 	DistanceNM *float64 `json:"distance_nm,omitempty"`
 }
 
-// turnState is one aircraft's circling measurement as of the last poll, cached by
-// server.snapshot so a request goroutine never reads the Tracker directly. turns and ok
-// are exactly track.turns()'s return values for that aircraft.
-type turnState struct {
-	turns float64
-	ok    bool
-}
-
 // MatchLive reports which of the aircraft overhead right now a draft rule matches. It
 // runs the whole rule — position and flight path included — against the same alert
 // context the poll loop builds, so unlike the database preview this answers "what would
 // this alert on if I saved it now" rather than "what could it ever select".
+//
+// circling is cached by server.snapshot so a request goroutine never reads the Tracker
+// directly; it holds every turn count a rule could legally require, so a draft rule's own
+// circling_turns is looked up rather than assumed.
 //
 // ponytail: one rule in isolation, so a match an earlier rule would claim first still
 // appears here. Pass the preceding rules too if shadowing needs to show.
 func MatchLive(rule Rule, overhead []Aircraft, circling map[string]turnState, db *DB, cfg *Alerts, limit int) (total int, sample []LiveHit) {
 	var hits []LiveHit
 	for _, ac := range overhead {
-		ts := circling[normalizeHex(ac.Hex)]
-		a := newAlert(ac, db, cfg, ts.turns, ts.ok)
+		a := newAlert(ac, db, cfg, circling[normalizeHex(ac.Hex)])
 		if a == nil || !rule.matches(ac, a.Plane, a) {
 			continue
 		}

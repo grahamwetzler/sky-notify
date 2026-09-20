@@ -487,7 +487,7 @@ func repeat(n int, v float64) []float64 {
 // research.go and Alert.Circling still read regardless of what any particular rule asks
 // track.turns() for.
 func isCircling(tk *track) bool {
-	turns, ok := tk.turns()
+	turns, ok := tk.turns(circleWindow)
 	return ok && turns >= 1
 }
 
@@ -527,7 +527,7 @@ func TestCirclingDetection(t *testing.T) {
 	// The holding pattern's radius violation must reject it outright, not merely leave it
 	// short of a turn count: ok is false however many turns were asked for. This is the
 	// property that lets circling_turns rise without ever starting to match a racetrack.
-	if turns, ok := fly(180, hold).turns(); ok {
+	if turns, ok := fly(180, hold).turns(circleWindow); ok {
 		t.Errorf("a holding pattern must fail on radius, not turn count: turns=%v ok=%v", turns, ok)
 	}
 }
@@ -538,27 +538,58 @@ func TestCirclingDetection(t *testing.T) {
 func TestCirclingTurnsThreshold(t *testing.T) {
 	oneLap := fly(60, repeat(20, 30))  // 20 * 30 deg = 600 deg = 1.67 turns
 	twoLaps := fly(60, repeat(40, 30)) // 40 * 30 deg = 1200 deg = 3.33 turns
-	turns1, ok1 := oneLap.turns()
-	turns2, ok2 := twoLaps.turns()
-	if !ok1 || !ok2 {
-		t.Fatalf("both orbits should stay inside the radius: ok1=%v ok2=%v", ok1, ok2)
+	ts1, ts2 := newTurnState(oneLap), newTurnState(twoLaps)
+	if !ts1[1].ok || !ts2[1].ok {
+		t.Fatalf("both orbits should stay inside the radius: ok1=%v ok2=%v", ts1[1].ok, ts2[1].ok)
 	}
-	if turns1 >= 3 || turns2 < 3 {
-		t.Fatalf("want oneLap short of 3 turns and twoLaps past it, got %v and %v", turns1, turns2)
+	if ts1[3].turns >= 3 || ts2[3].turns < 3 {
+		t.Fatalf("want oneLap short of 3 turns and twoLaps past it, got %v and %v", ts1[3].turns, ts2[3].turns)
 	}
 
 	strict := Rule{Circling: boolp(true), CirclingTurns: intp(3)}
-	if strict.matchesFlightPath(Aircraft{}, &Alert{turns: turns1, turnsOK: ok1}) {
+	if strict.matchesFlightPath(Aircraft{}, &Alert{turns: ts1}) {
 		t.Error("1.67 turns must not satisfy a rule requiring 3")
 	}
-	if !strict.matchesFlightPath(Aircraft{}, &Alert{turns: turns2, turnsOK: ok2}) {
+	if !strict.matchesFlightPath(Aircraft{}, &Alert{turns: ts2}) {
 		t.Error("3.33 turns must satisfy a rule requiring 3")
 	}
 	// The default rule, with no circling_turns, is satisfied by either — proving the two
 	// rules can disagree about the very same track.
 	lenient := Rule{Circling: boolp(true)}
-	if !lenient.matchesFlightPath(Aircraft{}, &Alert{turns: turns1, turnsOK: ok1}) {
+	if !lenient.matchesFlightPath(Aircraft{}, &Alert{turns: ts1}) {
 		t.Error("the default threshold (1 turn) should already be satisfied by 1.67 turns")
+	}
+}
+
+// TestCirclingRuleUnaffectedByAnotherRulesStricterWindow reproduces the regression a
+// stricter, unrelated circling_turns rule used to cause: the tracker keeps more history
+// so that rule has room to complete its turns, and the old single shared measurement
+// checked the *entire* retained history against the radius — so an aircraft that spent
+// a long time approaching from outside the circling radius before it started orbiting
+// could fail even a plain, lenient circling rule, purely because a stricter rule
+// elsewhere had widened retention. Each rule must be judged over its own window.
+func TestCirclingRuleUnaffectedByAnotherRulesStricterWindow(t *testing.T) {
+	tk := &track{}
+	// 20 minutes of straight, level flight far outside the 2NM circling radius — old
+	// enough that only a rule wanting several turns would keep it around at all, but
+	// still part of one continuous track (no gap big enough to trim it on its own).
+	for i := 0; i < 80; i++ { // 80 * 15s = 20 minutes
+		tk.samples = append(tk.samples, sample{time.Unix(int64(i*15), 0), 51.9, -0.12, 180})
+	}
+	// Then over 12.5 minutes — longer than the default 10-minute window — a tight orbit
+	// far from that approach, the same shape fly() already proves is circling, several
+	// times over.
+	orbit := fly(60, repeat(50, 30)) // 50 * 30 deg = 1500 deg = 4.17 turns
+	base := tk.samples[len(tk.samples)-1].t
+	for i, s := range orbit.samples {
+		s.t = base.Add(time.Duration(i+1) * 15 * time.Second)
+		tk.samples = append(tk.samples, s)
+	}
+
+	lenient := Rule{Circling: boolp(true)}
+	a := &Alert{turns: newTurnState(tk)}
+	if !lenient.matchesFlightPath(Aircraft{}, a) {
+		t.Error("a 1-turn rule must match the recent orbit even though 20 extra minutes of unrelated approach history are retained")
 	}
 }
 

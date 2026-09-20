@@ -55,10 +55,7 @@ func (s *server) setPollOK(f *feed, tr *Tracker) {
 		if t != "" {
 			s.typeOf[hex] = t
 		}
-		turns, ok := tr.get(hex).turns()
-		if ok {
-			s.circling[hex] = turnState{turns: turns, ok: ok}
-		}
+		s.circling[hex] = newTurnState(tr.get(hex))
 	}
 	s.mu.Unlock()
 }
