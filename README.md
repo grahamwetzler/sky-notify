@@ -406,7 +406,7 @@ by the SDR Enthusiasts, used under ODbL 1.0 / DbCL 1.0. This service only reads 
 `aircraft.json` comes from [readsb](https://github.com/wiedehopf/readsb) via
 [ultrafeeder](https://github.com/sdr-enthusiasts/docker-adsb-ultrafeeder).
 
-The aircraft silhouettes in [`icons.json`](icons.json) are lifted from
+The aircraft silhouettes in [`icons.json`](internal/app/icons.json) are lifted from
 [tar1090](https://github.com/wiedehopf/tar1090)'s `html/markers.js` and are licensed
 GPL-2.0-or-later, not MIT. That file and [`icons.go`](internal/app/icons.go), which draws it, carry
 tar1090's licence.
