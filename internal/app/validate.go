@@ -199,6 +199,14 @@ func (a *Alerts) validate() error {
 		if rule.Circling != nil && *rule.Circling && a.Source.PollInterval.Std() > maxSampleGap/2 {
 			return fmt.Errorf("rule %d (%s): circling needs source.poll_interval of at most %s", i, rule.label(), maxSampleGap/2)
 		}
+		if rule.CirclingTurns != nil {
+			if rule.Circling == nil || !*rule.Circling {
+				return fmt.Errorf("rule %d (%s): circling_turns requires circling: true", i, rule.label())
+			}
+			if *rule.CirclingTurns < 1 || *rule.CirclingTurns > maxCirclingTurns {
+				return fmt.Errorf("rule %d (%s): circling_turns must be between 1 and %d", i, rule.label(), maxCirclingTurns)
+			}
+		}
 	}
 	for _, d := range []struct {
 		name string

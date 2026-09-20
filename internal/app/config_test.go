@@ -809,6 +809,10 @@ func TestRuleValidationNamesRule(t *testing.T) {
 		{"zero horizon", `{"lat":0,"lon":0,"rules":[{"name":"overhead","passes_within_nm":1,"passes_within":"0s"}]}`},
 		{"backwards horizon", `{"lat":0,"lon":0,"rules":[{"name":"overhead","passes_within_nm":1,"passes_within":"-1m"}]}`},
 		{"circling with slow polls", `{"source":{"poll_interval":"45s"},"rules":[{"name":"orbit","circling":true}]}`},
+		{"circling_turns without circling", `{"rules":[{"name":"turns","circling_turns":2}]}`},
+		{"circling_turns with circling false", `{"rules":[{"name":"turns","circling":false,"circling_turns":2}]}`},
+		{"circling_turns zero", `{"rules":[{"name":"turns","circling":true,"circling_turns":0}]}`},
+		{"circling_turns above the ceiling", `{"rules":[{"name":"turns","circling":true,"circling_turns":7}]}`},
 	} {
 		_, err := loadAlertsWith(t, tc.doc)
 		if err == nil || !strings.Contains(err.Error(), "rule ") {
@@ -818,6 +822,9 @@ func TestRuleValidationNamesRule(t *testing.T) {
 	// Motion keys are conditions in their own right.
 	if _, err := loadAlertsWith(t, `{"rules":[{"name":"orbit","circling":true}]}`); err != nil {
 		t.Errorf("circling alone should be a valid rule: %v", err)
+	}
+	if _, err := loadAlertsWith(t, `{"rules":[{"name":"orbit","circling":true,"circling_turns":6}]}`); err != nil {
+		t.Errorf("circling_turns at the ceiling should be a valid rule: %v", err)
 	}
 }
 
@@ -931,6 +938,33 @@ func TestNotifyIsNotACondition(t *testing.T) {
 	}
 	if _, err := loadAlertsWith(t, `{"rules":[{"cmpg":["Mil"],"notify":"on_sight"}]}`); err != nil {
 		t.Errorf("on_sight needs no receiver: %v", err)
+	}
+}
+
+// Unlike notify, circling_turns changes which aircraft the rule claims — a rule asking
+// for three laps matches fewer aircraft than one asking for one — so it belongs in the
+// fingerprint, not beside notify in Key()'s exclusion list.
+func TestCirclingTurnsIsACondition(t *testing.T) {
+	one, err := loadAlertsWith(t, `{"rules":[{"circling":true}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	three, err := loadAlertsWith(t, `{"rules":[{"circling":true,"circling_turns":3}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, b := one.Rules[0].Key(), three.Rules[0].Key(); a == b {
+		t.Errorf("circling_turns must change the cooldown key, both %q", a)
+	}
+	// Every existing circling rule leaves circling_turns unset, so the new nil field
+	// changes nothing about what they already marshal to, and their keys survive the
+	// upgrade unmoved.
+	again, err := loadAlertsWith(t, `{"rules":[{"circling":true}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, b := one.Rules[0].Key(), again.Rules[0].Key(); a != b {
+		t.Errorf("an unrelated reload of the same rule must key identically: %q became %q", a, b)
 	}
 }
 

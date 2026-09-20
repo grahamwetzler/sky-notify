@@ -68,7 +68,7 @@ aircraft in plane-alert-db. Every condition is an optional filter of the same ki
 | identity, from the feed | `icao`, `reg`, `icao_type`, `squawk`, `callsign` |
 | identity, from the database | `operator`, `type`, `cmpg`, `category`, `tags`, `listed` |
 | altitude and distance | `min_altitude_ft`, `max_altitude_ft`, `max_distance_nm` |
-| flight path | `circling`, `passes_within_nm`, `passes_within` |
+| flight path | `circling`, `circling_turns`, `passes_within_nm`, `passes_within` |
 
 Three keys are not conditions. `notify` says *when* the alert goes out, and `research`
 and `research_prompt` say what it carries — none of them changes which aircraft the rule
@@ -106,6 +106,9 @@ the next five minutes". `circling: true` matches an aircraft that has turned a f
 inside 2 NM during the last 10 minutes, which is how news and police helicopters fly. It
 needs several minutes of positions before it can match, and that history is held in
 memory only, so a restart starts it again. It needs `source.poll_interval` of 30s or less.
+`circling_turns` (1-6, default 1) asks for more than one lap before it counts; the history
+kept in memory grows with it automatically, so a stricter count just takes longer to trip
+rather than needing a longer `source.poll_interval` window of its own.
 
 `notify: closest_pass` is what you want for a rule you have written to see something go
 over rather than to be told it exists. It needs `lat`/`lon`, since there has to be

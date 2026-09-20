@@ -9,10 +9,14 @@ import (
 // defaults are wrong.
 const (
 	circleWindow      = 10 * time.Minute
-	circleMinTurnDeg  = 360.0
 	circleMaxRadiusNM = 2.0
 	// A heading change across a longer gap has no known direction: 180° could be either way.
 	maxSampleGap = 60 * time.Second
+	// maxCirclingTurns bounds circling_turns (validate.go): windowFor grows the tracker's
+	// history by circleWindow per turn, so this is also the ceiling on how much history is
+	// kept for one orbiting aircraft — an hour, at the default circleWindow. Past this many
+	// laps "how many times has it gone around" stops being the interesting question.
+	maxCirclingTurns = 6
 )
 
 type sample struct {
@@ -34,7 +38,11 @@ func (tr *Tracker) get(hex string) *track { return tr.tracks[hex] }
 // Update records each aircraft's latest position. The sample is timed by when readsb
 // last heard a position, not by the poll, and a repeat of it is dropped: readsb keeps
 // serving the last position for a while after an aircraft goes quiet.
-func (tr *Tracker) Update(f *feed) {
+//
+// window is how much history to keep, from windowFor — a fixed circleWindow when nothing
+// configured asks for more than one turn, longer when something does, so a slow orbit has
+// room to complete the laps a rule requires before its early samples are trimmed away.
+func (tr *Tracker) Update(f *feed, window time.Duration) {
 	now := time.UnixMilli(int64(f.Now * 1000))
 	for _, ac := range f.Aircraft {
 		hex := normalizeHex(ac.Hex)
@@ -52,7 +60,7 @@ func (tr *Tracker) Update(f *feed) {
 		}
 		tk.samples = append(tk.samples, sample{t, *ac.Lat, *ac.Lon, *ac.Track})
 	}
-	cutoff := now.Add(-circleWindow)
+	cutoff := now.Add(-window)
 	for hex, tk := range tr.tracks {
 		i := 0
 		for i < len(tk.samples) && tk.samples[i].t.Before(cutoff) {
@@ -75,12 +83,17 @@ func (tk *track) path() []sample {
 	return append([]sample(nil), tk.samples...)
 }
 
-// circling reports whether the aircraft has turned a full circle without leaving a small
-// area. The area limit is what separates an orbit from a holding pattern, which turns
-// just as far but over several miles. Only samples since the last gap count.
-func (tk *track) circling() bool {
+// turns reports how many full rotations the aircraft has completed without leaving a
+// small area, and whether that measurement means anything at all. The area limit is what
+// separates an orbit from a holding pattern, which turns just as far but over several
+// miles: ok is false, regardless of how far it turned, the moment the path leaves it. ok
+// is also false with fewer than two samples since the last gap — too little to say
+// anything. Only the magnitude of the turn is reported: a rule compares it against how
+// many turns it requires, and direction never matters, only that it kept turning the same
+// way for that long.
+func (tk *track) turns() (turns float64, ok bool) {
 	if tk == nil {
-		return false
+		return 0, false
 	}
 	s := tk.samples
 	for i := len(s) - 1; i > 0; i-- {
@@ -90,7 +103,7 @@ func (tk *track) circling() bool {
 		}
 	}
 	if len(s) < 2 {
-		return false
+		return 0, false
 	}
 	var turn, lat, lon float64
 	for i, p := range s {
@@ -102,14 +115,25 @@ func (tk *track) circling() bool {
 		// average 179.99 and -179.99 to 0.
 		lon += wrap180(p.lon - s[0].lon)
 	}
-	if math.Abs(turn) < circleMinTurnDeg {
-		return false
-	}
 	lat, lon = lat/float64(len(s)), s[0].lon+lon/float64(len(s))
 	for _, p := range s {
 		if haversineNM(lat, lon, p.lat, p.lon) > circleMaxRadiusNM {
-			return false
+			return 0, false
 		}
 	}
-	return true
+	return math.Abs(turn) / 360, true
+}
+
+// windowFor is how much track history to keep so the slowest circling rule configured
+// still has room to complete its turns: circleWindow per turn required, for whichever
+// rule asks for the most. 1 when nothing asks for more than the default, so a config with
+// no circling rule — or only ordinary ones — keeps today's fixed circleWindow unchanged.
+func windowFor(rules []Rule) time.Duration {
+	turns := 1
+	for _, r := range rules {
+		if r.Circling != nil && *r.Circling && r.circlingTurns() > turns {
+			turns = r.circlingTurns()
+		}
+	}
+	return circleWindow * time.Duration(turns)
 }

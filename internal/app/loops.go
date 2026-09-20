@@ -108,7 +108,7 @@ func (p *poller) poll(ctx context.Context, cfg *Alerts) {
 		p.sweepHolds(cfg, time.Now())
 		return
 	}
-	p.tr.Update(f)
+	p.tr.Update(f, windowFor(cfg.Rules))
 	p.h.setPollOK(f, p.tr)
 
 	now := time.Now()

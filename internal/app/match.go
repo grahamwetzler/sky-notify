@@ -44,6 +44,14 @@ type Alert struct {
 	HasDistance bool
 	Priority    int
 	Circling    bool
+	// turns and turnsOK are the raw measurement Circling and matchesFlightPath are both
+	// judged from: how many full rotations track.turns() found, and whether that
+	// measurement means anything at all. Unexported because turns() is per-rule (each
+	// rule states its own required count), unlike every other field here — Circling
+	// stays the one fixed answer ("at least one turn") that notify.go and research.go
+	// already read.
+	turns   float64
+	turnsOK bool
 	// Research is the answer the provider gave, filled on the notify path and not here:
 	// what to ask is read from the rules as they are at delivery, never as they were at
 	// the match, so a rule that stopped asking in between is not asked for.
@@ -97,7 +105,7 @@ func (a *Alert) acType() string {
 // it is relative to the receiver. Shared by the alert path and the live rule preview, so
 // the preview cannot answer a different question than the save. nil when the aircraft
 // has no usable address or has not reported a position.
-func newAlert(ac Aircraft, db *DB, cfg *Alerts, circling bool) *Alert {
+func newAlert(ac Aircraft, db *DB, cfg *Alerts, turns float64, turnsOK bool) *Alert {
 	hex := normalizeHex(ac.Hex)
 	if hex == "" {
 		return nil
@@ -106,7 +114,7 @@ func newAlert(ac Aircraft, db *DB, cfg *Alerts, circling bool) *Alert {
 	if !isNonICAO(hex) {
 		plane, _ = db.Lookup(hex)
 	}
-	a := &Alert{Hex: hex, Plane: plane, AC: ac, Circling: circling}
+	a := &Alert{Hex: hex, Plane: plane, AC: ac, Circling: turnsOK && turns >= 1, turns: turns, turnsOK: turnsOK}
 	if cfg.Lat != nil && cfg.Lon != nil && ac.Lat != nil && ac.Lon != nil {
 		a.DistanceNM = haversineNM(*cfg.Lat, *cfg.Lon, *ac.Lat, *ac.Lon)
 		a.HasDistance = true
@@ -128,7 +136,8 @@ func newAlert(ac Aircraft, db *DB, cfg *Alerts, circling bool) *Alert {
 // anything alerts: with no rules configured this always returns nil, emergencies included.
 // trk is the aircraft's recent history, nil when there is none.
 func Evaluate(ac Aircraft, db *DB, cfg *Alerts, trk *track) *Alert {
-	a := newAlert(ac, db, cfg, trk.circling())
+	turns, turnsOK := trk.turns()
+	a := newAlert(ac, db, cfg, turns, turnsOK)
 	if a == nil {
 		return nil
 	}
@@ -161,6 +170,7 @@ func (a *Alert) matchInput() *Alert {
 	return &Alert{
 		Hex: a.Hex, Plane: a.Plane, AC: a.AC,
 		DistanceNM: a.DistanceNM, HasDistance: a.HasDistance, Circling: a.Circling,
+		turns: a.turns, turnsOK: a.turnsOK,
 		recvLat: a.recvLat, recvLon: a.recvLon,
 	}
 }
@@ -258,8 +268,11 @@ func (r *Rule) matchesPosition(ac Aircraft, a *Alert) bool {
 // it is predicted to pass close by. Both read the same recent motion, which is why they
 // belong together.
 func (r *Rule) matchesFlightPath(ac Aircraft, a *Alert) bool {
-	if r.Circling != nil && *r.Circling != a.Circling {
-		return false
+	if r.Circling != nil {
+		is := a.turnsOK && a.turns >= float64(r.circlingTurns())
+		if *r.Circling != is {
+			return false
+		}
 	}
 	return r.passesOverhead(ac, a)
 }
@@ -351,6 +364,14 @@ type LiveHit struct {
 	DistanceNM *float64 `json:"distance_nm,omitempty"`
 }
 
+// turnState is one aircraft's circling measurement as of the last poll, cached by
+// server.snapshot so a request goroutine never reads the Tracker directly. turns and ok
+// are exactly track.turns()'s return values for that aircraft.
+type turnState struct {
+	turns float64
+	ok    bool
+}
+
 // MatchLive reports which of the aircraft overhead right now a draft rule matches. It
 // runs the whole rule — position and flight path included — against the same alert
 // context the poll loop builds, so unlike the database preview this answers "what would
@@ -358,10 +379,11 @@ type LiveHit struct {
 //
 // ponytail: one rule in isolation, so a match an earlier rule would claim first still
 // appears here. Pass the preceding rules too if shadowing needs to show.
-func MatchLive(rule Rule, overhead []Aircraft, circling map[string]bool, db *DB, cfg *Alerts, limit int) (total int, sample []LiveHit) {
+func MatchLive(rule Rule, overhead []Aircraft, circling map[string]turnState, db *DB, cfg *Alerts, limit int) (total int, sample []LiveHit) {
 	var hits []LiveHit
 	for _, ac := range overhead {
-		a := newAlert(ac, db, cfg, circling[normalizeHex(ac.Hex)])
+		ts := circling[normalizeHex(ac.Hex)]
+		a := newAlert(ac, db, cfg, ts.turns, ts.ok)
 		if a == nil || !rule.matches(ac, a.Plane, a) {
 			continue
 		}
@@ -430,11 +452,14 @@ type Rule struct {
 	// only to say so, since DisallowUnknownFields would otherwise report it as a typo
 	// with no explanation. Decoded like any other field — validate() is what refuses it,
 	// with a message that names what moved, rather than an opaque "unknown field".
-	All            *bool     `yaml:"all,omitempty" json:"all,omitempty"`
-	MinAltitudeFt  *int      `yaml:"min_altitude_ft,omitempty" json:"min_altitude_ft,omitempty"`
-	MaxAltitudeFt  *int      `yaml:"max_altitude_ft,omitempty" json:"max_altitude_ft,omitempty"`
-	MaxDistanceNM  *float64  `yaml:"max_distance_nm,omitempty" json:"max_distance_nm,omitempty"`
-	Circling       *bool     `yaml:"circling,omitempty" json:"circling,omitempty"`
+	All           *bool    `yaml:"all,omitempty" json:"all,omitempty"`
+	MinAltitudeFt *int     `yaml:"min_altitude_ft,omitempty" json:"min_altitude_ft,omitempty"`
+	MaxAltitudeFt *int     `yaml:"max_altitude_ft,omitempty" json:"max_altitude_ft,omitempty"`
+	MaxDistanceNM *float64 `yaml:"max_distance_nm,omitempty" json:"max_distance_nm,omitempty"`
+	Circling      *bool    `yaml:"circling,omitempty" json:"circling,omitempty"`
+	// CirclingTurns is how many full rotations circling: true requires, meaningless (and
+	// rejected by validate) without it. Nil means 1 — a single lap, today's behavior.
+	CirclingTurns  *int      `yaml:"circling_turns,omitempty" json:"circling_turns,omitempty"`
 	PassesWithinNM *float64  `yaml:"passes_within_nm,omitempty" json:"passes_within_nm,omitempty"`
 	PassesWithin   *Duration `yaml:"passes_within,omitempty" json:"passes_within,omitempty"`
 	// Research asks the configured AI provider who the aircraft belongs to and puts the
@@ -443,6 +468,15 @@ type Rule struct {
 	// it is set.
 	Research       *bool  `yaml:"research,omitempty" json:"research,omitempty"`
 	ResearchPrompt string `yaml:"research_prompt,omitempty" json:"research_prompt,omitempty"`
+}
+
+// circlingTurns is how many full rotations this rule requires of a circling: true
+// condition, 1 when it does not say — today's behavior, unchanged.
+func (r *Rule) circlingTurns() int {
+	if r.CirclingTurns != nil {
+		return *r.CirclingTurns
+	}
+	return 1
 }
 
 // researchPrompt is what to ask about an aircraft this rule claimed, or "" when the rule

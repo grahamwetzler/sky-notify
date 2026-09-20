@@ -67,7 +67,7 @@ first matching rule wins; a rule stating no condition is the wildcard and matche
 - identity, matched against database **and** live feed: `reg`, `icao_type`
 - identity, from the feed only: `icao`, `squawk`, `callsign`
 - where it is: `min_altitude_ft`, `max_altitude_ft`, `max_distance_nm`
-- how it is flying: `circling`, `passes_within_nm`, `passes_within`
+- how it is flying: `circling`, `circling_turns`, `passes_within_nm`, `passes_within`
 
 The preview searches the database only. Altitude, distance, flight path, squawk and
 callsign cannot narrow it, and the UI must say so on each such condition rather than
@@ -85,8 +85,9 @@ own conditions, so reordering rules does not reset cooldowns and editing a rule'
 does. Named rules still must be unique.
 
 `max_distance_nm` and `passes_within_nm` require top-level `lat`/`lon`; `circling` requires
-`source.poll_interval` ≤ 30s. Both are save-time validation errors from the server, and the
-UI should not let the operator walk into them unwarned.
+`source.poll_interval` ≤ 30s. `circling_turns` (1-6, default 1) requires `circling: true` and
+is meaningless without it. All are save-time validation errors from the server, and the UI
+should not let the operator walk into them unwarned.
 
 ## Brand Commitments
 

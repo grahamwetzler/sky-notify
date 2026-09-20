@@ -483,6 +483,14 @@ func repeat(n int, v float64) []float64 {
 	return out
 }
 
+// isCircling is today's fixed definition — at least one full turn — that notify.go,
+// research.go and Alert.Circling still read regardless of what any particular rule asks
+// track.turns() for.
+func isCircling(tk *track) bool {
+	turns, ok := tk.turns()
+	return ok && turns >= 1
+}
+
 func TestCirclingDetection(t *testing.T) {
 	// A holding pattern turns a full circle too, but over miles: two 6 NM legs.
 	var hold []float64
@@ -512,9 +520,64 @@ func TestCirclingDetection(t *testing.T) {
 		{"orbit across the antimeridian", dateline, true},
 		{"no history", nil, false},
 	} {
-		if got := tc.tk.circling(); got != tc.want {
+		if got := isCircling(tc.tk); got != tc.want {
 			t.Errorf("%s: circling = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+	// The holding pattern's radius violation must reject it outright, not merely leave it
+	// short of a turn count: ok is false however many turns were asked for. This is the
+	// property that lets circling_turns rise without ever starting to match a racetrack.
+	if turns, ok := fly(180, hold).turns(); ok {
+		t.Errorf("a holding pattern must fail on radius, not turn count: turns=%v ok=%v", turns, ok)
+	}
+}
+
+// TestCirclingTurnsThreshold drives two laps of the same orbit fly() already proves is
+// "circling" at the default threshold, and checks that a stricter rule can tell one lap
+// from two on the same track — the whole point of making the count configurable.
+func TestCirclingTurnsThreshold(t *testing.T) {
+	oneLap := fly(60, repeat(20, 30))  // 20 * 30 deg = 600 deg = 1.67 turns
+	twoLaps := fly(60, repeat(40, 30)) // 40 * 30 deg = 1200 deg = 3.33 turns
+	turns1, ok1 := oneLap.turns()
+	turns2, ok2 := twoLaps.turns()
+	if !ok1 || !ok2 {
+		t.Fatalf("both orbits should stay inside the radius: ok1=%v ok2=%v", ok1, ok2)
+	}
+	if turns1 >= 3 || turns2 < 3 {
+		t.Fatalf("want oneLap short of 3 turns and twoLaps past it, got %v and %v", turns1, turns2)
+	}
+
+	strict := Rule{Circling: boolp(true), CirclingTurns: intp(3)}
+	if strict.matchesFlightPath(Aircraft{}, &Alert{turns: turns1, turnsOK: ok1}) {
+		t.Error("1.67 turns must not satisfy a rule requiring 3")
+	}
+	if !strict.matchesFlightPath(Aircraft{}, &Alert{turns: turns2, turnsOK: ok2}) {
+		t.Error("3.33 turns must satisfy a rule requiring 3")
+	}
+	// The default rule, with no circling_turns, is satisfied by either — proving the two
+	// rules can disagree about the very same track.
+	lenient := Rule{Circling: boolp(true)}
+	if !lenient.matchesFlightPath(Aircraft{}, &Alert{turns: turns1, turnsOK: ok1}) {
+		t.Error("the default threshold (1 turn) should already be satisfied by 1.67 turns")
+	}
+}
+
+func TestWindowForScalesWithTheStrictestCirclingRule(t *testing.T) {
+	if got := windowFor(nil); got != circleWindow {
+		t.Errorf("no rules: window = %v, want %v", got, circleWindow)
+	}
+	plain := []Rule{{Circling: boolp(true)}}
+	if got := windowFor(plain); got != circleWindow {
+		t.Errorf("circling with no turn count: window = %v, want %v", got, circleWindow)
+	}
+	// circling: false must not count, however its (meaningless) turn count reads.
+	notCircling := []Rule{{Circling: boolp(false)}}
+	if got := windowFor(notCircling); got != circleWindow {
+		t.Errorf("circling: false: window = %v, want %v", got, circleWindow)
+	}
+	mixed := []Rule{{Circling: boolp(true)}, {Circling: boolp(true), CirclingTurns: intp(3)}}
+	if got, want := windowFor(mixed), 3*circleWindow; got != want {
+		t.Errorf("the stricter of two rules should win: window = %v, want %v", got, want)
 	}
 }
 
@@ -524,19 +587,43 @@ func TestTrackerRecordsNewPositionsAndForgets(t *testing.T) {
 	at := func(now, seenPos float64) *feed {
 		return &feed{Now: now, Aircraft: []Aircraft{{Hex: "ABCDEF", Lat: &lat, Lon: &lon, Track: &hdg, SeenPos: seenPos}}}
 	}
-	tr.Update(at(1000, 0))
-	tr.Update(at(1000, 0))
-	tr.Update(at(1015, 15)) // readsb repeating the same position
+	tr.Update(at(1000, 0), circleWindow)
+	tr.Update(at(1000, 0), circleWindow)
+	tr.Update(at(1015, 15), circleWindow) // readsb repeating the same position
 	if n := len(tr.get("abcdef").samples); n != 1 {
 		t.Fatalf("repeated positions must be one sample, got %d", n)
 	}
-	tr.Update(at(1030, 0))
+	tr.Update(at(1030, 0), circleWindow)
 	if n := len(tr.get("abcdef").samples); n != 2 {
 		t.Fatalf("a new position must be recorded, got %d samples", n)
 	}
-	tr.Update(&feed{Now: 1030 + circleWindow.Seconds() + 1})
+	tr.Update(&feed{Now: 1030 + circleWindow.Seconds() + 1}, circleWindow)
 	if tr.get("abcdef") != nil {
 		t.Fatal("a track with nothing left in the window must be forgotten")
+	}
+}
+
+// A wider window (from a stricter circling_turns elsewhere in the config) must actually
+// change what Update keeps, not just what windowFor computes in isolation.
+func TestTrackerWindowWidensWithTheWindowItIsGiven(t *testing.T) {
+	lat, lon, hdg := 51.5, -0.12, 90.0
+	tr := NewTracker()
+	at := func(now float64) *feed {
+		return &feed{Now: now, Aircraft: []Aircraft{{Hex: "ABCDEF", Lat: &lat, Lon: &lon, Track: &hdg}}}
+	}
+	tr.Update(at(0), circleWindow)
+	past := circleWindow.Seconds() + 1
+	tr.Update(at(past), 3*circleWindow)
+	if tr.get("abcdef") == nil || len(tr.get("abcdef").samples) != 2 {
+		t.Fatal("a sample older than circleWindow must survive under a 3x window")
+	}
+	// Shrinking the window back to circleWindow: the t=0 sample, now circleWindow+2
+	// seconds old, no longer fits and must be trimmed even though a 3x window once kept
+	// it; the t=past sample is only 1s old and survives alongside the new one.
+	tr.Update(at(past+1), circleWindow)
+	samples := tr.get("abcdef").samples
+	if len(samples) != 2 || samples[0].t.UnixMilli() == 0 {
+		t.Fatalf("want exactly the two most recent samples, got %d, oldest at %v", len(samples), samples[0].t)
 	}
 }
 

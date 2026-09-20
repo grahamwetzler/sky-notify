@@ -80,6 +80,7 @@
       {
         "name": "Orbiting aircraft",
         "circling": true,
+        "circling_turns": 2,
         "max_distance_nm": 10
       }
     ],

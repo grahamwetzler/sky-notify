@@ -34,7 +34,7 @@ type server struct {
 	// now. The tracker belongs to the poll loop and is not safe to read from a request,
 	// so the one question a rule asks it is answered while the poll loop still holds it.
 	overhead []Aircraft
-	circling map[string]bool
+	circling map[string]turnState
 }
 
 // setPollOK records a good poll. tr may be nil; when it is not it must already have
@@ -46,7 +46,7 @@ func (s *server) setPollOK(f *feed, tr *Tracker) {
 		s.typeOf = map[string]string{}
 	}
 	s.overhead = f.Aircraft
-	s.circling = map[string]bool{}
+	s.circling = map[string]turnState{}
 	for _, ac := range f.Aircraft {
 		hex, t := normalizeHex(ac.Hex), strings.TrimSpace(ac.Type)
 		if hex == "" {
@@ -55,8 +55,9 @@ func (s *server) setPollOK(f *feed, tr *Tracker) {
 		if t != "" {
 			s.typeOf[hex] = t
 		}
-		if tr.get(hex).circling() {
-			s.circling[hex] = true
+		turns, ok := tr.get(hex).turns()
+		if ok {
+			s.circling[hex] = turnState{turns: turns, ok: ok}
 		}
 	}
 	s.mu.Unlock()
@@ -121,7 +122,7 @@ func (s *server) pollAge() (age time.Duration, ok, fresh bool) {
 
 // snapshot is the last poll's traffic, for matching a draft rule against what is
 // overhead right now.
-func (s *server) snapshot() ([]Aircraft, map[string]bool) {
+func (s *server) snapshot() ([]Aircraft, map[string]turnState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.overhead, s.circling

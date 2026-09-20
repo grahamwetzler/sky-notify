@@ -705,7 +705,7 @@ func TestAlertCarriesACopyOfTheTrack(t *testing.T) {
 	tr := NewTracker()
 	for i := range 3 {
 		tr.Update(&feed{Now: float64(1000 + i*10), Aircraft: []Aircraft{
-			{Hex: "adeb2f", Lat: &lat, Lon: &lon, Track: &hdg, SeenPos: float64(-i * 10)}}})
+			{Hex: "adeb2f", Lat: &lat, Lon: &lon, Track: &hdg, SeenPos: float64(-i * 10)}}}, circleWindow)
 	}
 	a := Evaluate(at(Aircraft{Hex: "adeb2f"}), db, alerts, tr.get("adeb2f"))
 	if a == nil {
@@ -721,7 +721,7 @@ func TestAlertCarriesACopyOfTheTrack(t *testing.T) {
 	// The preview path has no map and no use for a path.
 	if hits := func() []LiveHit {
 		_, h := MatchLive(alerts.Rules[0], []Aircraft{at(Aircraft{Hex: "adeb2f"})},
-			map[string]bool{}, db, alerts, 10)
+			map[string]turnState{}, db, alerts, 10)
 		return h
 	}(); len(hits) != 1 {
 		t.Fatalf("the live preview should still match, got %d", len(hits))
