@@ -1090,9 +1090,12 @@ function conditionCard(r, key) {
   else if (spec.source === 'both') card.append(el('p', 'help',
     'A value no aircraft in the interesting aircraft database carries still alerts when one broadcasts it.'));
   if (key === 'circling' && !bad) {
-    const n = Math.round(Number(r.circling_turns)) || 1;
+    /* A retained-but-hidden circling_turns (see circlingTurnsField) is excluded from the
+       payload whenever circling isn't true, so the definition must not credit it either —
+       only true actually asks the server for more than one turn. */
+    const n = r.circling === true ? Math.round(Number(r.circling_turns)) || 1 : 1;
     card.append(el('p', 'help',
-      `Circling is defined as ${n} full turn${n === 1 ? '' : 's'} within 2 NM in the last 10 minutes.`));
+      `Circling is defined as ${n} full turn${n === 1 ? '' : 's'} within 2 NM in the last ${n * 10} minutes.`));
   } else if (spec.help && !bad) card.append(el('p', 'help', spec.help));
   return card;
 }
