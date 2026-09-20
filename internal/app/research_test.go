@@ -470,8 +470,8 @@ func TestResearchEndToEnd(t *testing.T) {
 		t.Fatalf("Publish: %v", err)
 	}
 	body := nt.bodies[0].Message
-	if !strings.HasPrefix(body, researchMark+ai.answer+"\n") {
-		t.Fatalf("notification body:\n%s", body)
+	if want := researchMark + ai.answer; body != want {
+		t.Fatalf("notification body:\ngot:  %s\nwant: %s", body, want)
 	}
 }
 
@@ -543,8 +543,8 @@ func TestResearchTurnedOnWhileAnAlertWaits(t *testing.T) {
 	if content, _ := m["content"].(string); !strings.HasPrefix(content, "Who flies this?") {
 		t.Errorf("asked with the stale prompt: %q", content)
 	}
-	if !strings.HasPrefix(nt.bodies[0].Message, researchMark+ai.answer+"\n") {
-		t.Errorf("notification body:\n%s", nt.bodies[0].Message)
+	if got, want := nt.bodies[0].Message, researchMark+ai.answer; got != want {
+		t.Errorf("notification body = %q, want %q", got, want)
 	}
 }
 
@@ -666,8 +666,8 @@ func TestASlowRouteLookupDoesNotSpendTheAITimeout(t *testing.T) {
 	if err := n.Publish(context.Background(), a); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
-	if !strings.HasPrefix(nt.bodies[0].Message, researchMark+ai.answer+"\n") {
-		t.Errorf("a slow route lookup took the research line with it:\n%s", nt.bodies[0].Message)
+	if got, want := nt.bodies[0].Message, researchMark+ai.answer; got != want {
+		t.Errorf("a slow route lookup took the research line with it: got %q, want %q", got, want)
 	}
 }
 

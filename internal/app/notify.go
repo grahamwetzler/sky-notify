@@ -416,41 +416,44 @@ func (n *Notifier) render(a *Alert) ntfyMessage {
 
 	var b strings.Builder
 	line := func(k, v string) { writeLine(&b, k, v) }
-	// First, and without a key: the research line is the one sentence someone reads on a
-	// phone before the shade collapses, and "Research:" spends the front of it on a label.
-	if a.Research != "" {
-		b.WriteString(researchMark + a.Research + "\n")
-	}
-	if a.Emergency {
-		line("Emergency", a.Squawk+" ("+a.SquawkMeans+")")
-	}
-	line("Registration", a.reg())
-	line("Callsign", strings.TrimSpace(a.AC.Flight))
-	if p != nil {
-		line("Operator", p.Operator)
-	}
-	line("Type", a.acType())
-	if p != nil {
-		line("Category", p.Category)
-		line("Tags", strings.Join(p.Tags, ", "))
-	}
-	if a.HasPass {
-		when := "now"
-		if a.PassIn >= time.Second {
-			when = "in " + a.PassIn.Round(time.Second).String()
+	// A research answer replaces the notification body outright: it is the one sentence
+	// someone reads on a phone before the shade collapses, and the Key: value lines below
+	// are the facts the model was already given to write it, not more for the reader.
+	switch {
+	case a.Research != "":
+		b.WriteString(researchMark + a.Research)
+	default:
+		if a.Emergency {
+			line("Emergency", a.Squawk+" ("+a.SquawkMeans+")")
 		}
-		line("Overhead", fmt.Sprintf("closest %.1f NM %s", a.PassNM, when))
-	}
-	// What actually happened, next to the Overhead line above, which is the prediction a
-	// passes_within_nm condition recorded. A rule may state both.
-	if a.AtClosest && a.HasDistance {
-		line("Closest pass", fmt.Sprintf("%.1f NM", a.DistanceNM))
-	}
-	if a.Circling {
-		line("Circling", "yes")
-	}
-	if flags := describeDBFlags(a.AC.DBFlags); flags != "" {
-		line("Feeder flags", flags)
+		line("Registration", a.reg())
+		line("Callsign", strings.TrimSpace(a.AC.Flight))
+		if p != nil {
+			line("Operator", p.Operator)
+		}
+		line("Type", a.acType())
+		if p != nil {
+			line("Category", p.Category)
+			line("Tags", strings.Join(p.Tags, ", "))
+		}
+		if a.HasPass {
+			when := "now"
+			if a.PassIn >= time.Second {
+				when = "in " + a.PassIn.Round(time.Second).String()
+			}
+			line("Overhead", fmt.Sprintf("closest %.1f NM %s", a.PassNM, when))
+		}
+		// What actually happened, next to the Overhead line above, which is the prediction a
+		// passes_within_nm condition recorded. A rule may state both.
+		if a.AtClosest && a.HasDistance {
+			line("Closest pass", fmt.Sprintf("%.1f NM", a.DistanceNM))
+		}
+		if a.Circling {
+			line("Circling", "yes")
+		}
+		if flags := describeDBFlags(a.AC.DBFlags); flags != "" {
+			line("Feeder flags", flags)
+		}
 	}
 
 	tags := []string{"airplane"}

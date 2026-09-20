@@ -524,8 +524,10 @@ func TestPublishCarriesTheResearchLine(t *testing.T) {
 	if err := n.Publish(context.Background(), a); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
-	if !strings.HasPrefix(nt.bodies[0].Message, researchMark+answer+"\n") {
-		t.Errorf("message missing the research line:\n%s", nt.bodies[0].Message)
+	// A research answer replaces the body outright: no Registration/Callsign/Type lines
+	// alongside it, just the sentence the model wrote.
+	if got, want := nt.bodies[0].Message, researchMark+answer; got != want {
+		t.Errorf("message = %q, want only the research line %q", got, want)
 	}
 }
 
@@ -604,8 +606,8 @@ func TestResearchAnswerIsHeaderSafe(t *testing.T) {
 		t.Fatalf("Publish: %v", err)
 	}
 	msg := nt.bodies[0].Message
-	if !strings.HasPrefix(msg, researchMark+"Owned by X. Operated by Y.\n") {
-		t.Errorf("answer was not flattened to one line:\n%s", msg)
+	if want := researchMark + "Owned by X. Operated by Y."; msg != want {
+		t.Errorf("answer was not flattened to one line:\ngot:  %s\nwant: %s", msg, want)
 	}
 	if got := headerSafe(strings.ReplaceAll(msg, "\n", `\n`)); strings.ContainsAny(got, "\r\n") {
 		t.Errorf("header form still carries a line break: %q", got)
