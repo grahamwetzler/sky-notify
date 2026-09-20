@@ -135,6 +135,40 @@ func TestConfigCLIExportIsOwnerOnly(t *testing.T) {
 	}
 }
 
+// The export is written via a temp file renamed into place, not straight to out, so a
+// reader never observes the destination at its old (possibly looser) permissions while
+// the plaintext is being written. Confirm the helper leaves no temp file behind and the
+// destination directory ends up holding exactly the export.
+func TestConfigCLIExportLeavesNoTempFile(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "config.db")
+	t.Setenv("SKY_CONFIG_DB", dbPath)
+	store, err := OpenSettings(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put("alerts", `{"ai":{"key":"sk-or-v1-secret"}}`); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	dir := t.TempDir()
+	out := filepath.Join(dir, "export.json")
+	if err := runConfigCLI(true, "", out, false); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "export.json" {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("destination dir = %v, want only export.json (a leftover temp file would leak the export)", names)
+	}
+}
+
 // An import that omits a field must get the same default a PUT would give it, not that
 // field's zero value: importSettings decodes each section onto defaultAlerts()/
 // defaultConfig(), exactly as its PUT handler decodes onto them.

@@ -101,10 +101,19 @@ func exportSettings(store *SettingsStore, redact bool) (*exportDocument, error) 
 // Each section also passes the same credential-destination guard its PUT handler does
 // (checkNtfyCredsStayPut, checkAIKeyStaysPut): import is another way to move ntfy.url or
 // ai.url, and a credential the payload does not carry must not follow it there either.
+// isJSONNull reports whether raw is the JSON literal null (whitespace aside) rather than
+// an absent field. json.RawMessage cannot tell "the key was omitted" (nil, len 0) apart
+// from "the key was sent as null" on its own: both must read as "section absent" here, or
+// decoding null onto defaultConfig()/defaultAlerts() leaves those defaults untouched and
+// an explicit `"alerts":null` silently overwrites the stored section with them.
+func isJSONNull(raw json.RawMessage) bool {
+	return string(bytes.TrimSpace(raw)) == "null"
+}
+
 func importSettings(store *SettingsStore, doc *importDocument, env map[string]string) error {
 	writes := map[string]string{}
 
-	if len(doc.Config) > 0 {
+	if len(doc.Config) > 0 && !isJSONNull(doc.Config) {
 		cfg := defaultConfig()
 		dec := json.NewDecoder(bytes.NewReader(doc.Config))
 		dec.DisallowUnknownFields()
@@ -142,7 +151,7 @@ func importSettings(store *SettingsStore, doc *importDocument, env map[string]st
 		writes["config"] = string(blob)
 	}
 
-	if len(doc.Alerts) > 0 {
+	if len(doc.Alerts) > 0 && !isJSONNull(doc.Alerts) {
 		alerts := defaultAlerts()
 		dec := json.NewDecoder(bytes.NewReader(doc.Alerts))
 		dec.DisallowUnknownFields()

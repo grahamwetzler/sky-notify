@@ -254,17 +254,23 @@ func checkNtfyCredsStayPut(onDisk, saved *Config, env map[string]string) error {
 
 // refuseNtfyCredsMove says why a credential cannot follow ntfy.url to now, or nil when
 // there is no credential at stake and the move costs nothing. Mirrors refuseAIKeyMove.
+//
+// Token and password are judged independently rather than as one unit: validate() makes
+// them mutually exclusive, so at most one is ever stored, but the save could supply
+// either field. Treating "the save touched either field" as proof for both would let a
+// save that only clears the untouched one (e.g. `"password":""` alongside a stored
+// token) carry the real, untouched credential to the new endpoint for free.
 func refuseNtfyCredsMove(onDisk, saved *Config, env map[string]string, now string) error {
 	if env[ntfyTokenEnv] != "" || env[ntfyPasswordEnv] != "" {
 		return fmt.Errorf("ntfy.url: %s or %s holds a credential, so the endpoint it is sent to is not editable here — set %s to the endpoint you want", ntfyTokenEnv, ntfyPasswordEnv, ntfyURLEnv)
 	}
-	if saved.Ntfy.Token != nil || saved.Ntfy.Password != nil {
-		return nil // the save brought (or cleared) a credential for wherever it is pointing
+	if onDisk.ntfyToken() != "" && saved.Ntfy.Token == nil {
+		return fmt.Errorf("ntfy.url: the stored token was issued for %s and is never sent to this page, so it cannot follow the endpoint to %s — enter the token for the new endpoint, or clear it", aiOrigin(ntfyEndpoint(onDisk, env)), aiOrigin(now))
 	}
-	if onDisk.ntfyToken() == "" && onDisk.ntfyPassword() == "" {
-		return nil // nothing stored to carry anywhere
+	if onDisk.ntfyPassword() != "" && saved.Ntfy.Password == nil {
+		return fmt.Errorf("ntfy.url: the stored password was issued for %s and is never sent to this page, so it cannot follow the endpoint to %s — enter the password for the new endpoint, or clear it", aiOrigin(ntfyEndpoint(onDisk, env)), aiOrigin(now))
 	}
-	return fmt.Errorf("ntfy.url: the stored credential was issued for %s and is never sent to this page, so it cannot follow the endpoint to %s — enter the credential for the new endpoint, or clear it", aiOrigin(ntfyEndpoint(onDisk, env)), aiOrigin(now))
+	return nil
 }
 
 type alertEnvBinding struct {

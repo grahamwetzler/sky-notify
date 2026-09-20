@@ -1377,6 +1377,34 @@ func TestNtfyCredsDoNotFollowTheEndpoint(t *testing.T) {
 			t.Errorf("an omitted token wiped the stored one: %q", saved.ntfyToken())
 		}
 	})
+
+	// A stored token must not be moved to a new endpoint just because the save touched
+	// the *other* credential field. Touching password (even to clear it) is not evidence
+	// the token was shown to the page, so the untouched, still-stored token must not be
+	// allowed to silently follow ntfy.url to the new host.
+	t.Run("a move is refused when only the other credential field is touched", func(t *testing.T) {
+		store := newTestStore(t)
+		blob, _ := json.Marshal(stored(t))
+		if _, err := store.Put("config", string(blob)); err != nil {
+			t.Fatal(err)
+		}
+		h := alertsHandler(t, store)
+		moved := stored(t)
+		moved.Ntfy.URL, moved.Ntfy.Token = "https://attacker.invalid", nil
+		empty := ""
+		moved.Ntfy.Password = &empty
+		w := put(t, h, moved)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+		}
+		saved, err := loadConfigFile(store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if saved.Ntfy.URL != "https://ntfy.example.com" || saved.ntfyToken() != "tk_secret" {
+			t.Fatalf("a refused save must not touch the row: %+v", saved.Ntfy)
+		}
+	})
 }
 
 // An empty string is the page saying "clear it", distinct from omitting the field, which
@@ -1482,4 +1510,64 @@ func TestImportCredsDoNotFollowTheEndpoint(t *testing.T) {
 			t.Fatalf("a refused import must not touch the row: %+v", saved.Ntfy)
 		}
 	})
+}
+
+// An explicit `"alerts":null` must read the same as the key being omitted entirely:
+// json.RawMessage cannot distinguish the two on its own, and decoding the JSON literal
+// null onto defaultAlerts() leaves those defaults untouched, so treating null as
+// "present" would silently overwrite the stored section — including its rules — with
+// defaults. A config-only import that sends "alerts":null must update config and leave
+// the stored alerts (and its rules) exactly as they were.
+func TestImportNullSectionIsTreatedAsAbsent(t *testing.T) {
+	store := newTestStore(t)
+
+	seedAlerts := defaultAlerts()
+	seedAlerts.Rules = []Rule{{Name: "watch", ICAO: []string{"a1b2c3"}}}
+	alertsBlob, err := json.Marshal(seedAlerts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put("alerts", string(alertsBlob)); err != nil {
+		t.Fatal(err)
+	}
+
+	seedConfig := testConfig(t)
+	configBlob, err := json.Marshal(seedConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put("config", string(configBlob)); err != nil {
+		t.Fatal(err)
+	}
+
+	h := alertsHandler(t, store)
+
+	updated := testConfig(t)
+	updated.Listen = ":9090"
+	updatedBlob, err := json.Marshal(updated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`{"config":%s,"alerts":null}`, updatedBlob)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/config/import", strings.NewReader(body)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	savedConfig, err := loadConfigFile(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if savedConfig.Listen != ":9090" {
+		t.Fatalf("config section was not applied: %+v", savedConfig)
+	}
+
+	savedAlerts, err := LoadAlerts(nil, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(savedAlerts.Rules) != 1 || savedAlerts.Rules[0].Name != "watch" {
+		t.Fatalf("a null alerts section wiped the stored rules: %+v", savedAlerts.Rules)
+	}
 }

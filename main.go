@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -87,14 +88,13 @@ func runConfigCLI(doExport bool, importPath, out string, redact bool) error {
 			_, err = os.Stdout.Write(blob)
 			return err
 		}
-		// An export carries plaintext credentials by default (-redact aside), so it is
-		// written owner-only. WriteFile's mode only applies to a file it creates: an
-		// existing file at out keeps its prior permissions, so those are set explicitly
-		// too rather than trusted to already be this narrow.
-		if err := os.WriteFile(out, blob, 0o600); err != nil {
-			return err
-		}
-		return os.Chmod(out, 0o600)
+		// An export carries plaintext credentials by default (-redact aside), so it must
+		// never be readable by anyone but the owner. Writing straight to out and
+		// chmod'ing after leaves a window — and an existing looser-permissioned file
+		// stays that way until the chmod lands — where the plaintext is exposed, so the
+		// owner-only file is written next to the destination and renamed into place
+		// instead.
+		return writeFileAtomic(out, blob, 0o600)
 	}
 
 	blob, err := os.ReadFile(importPath)
@@ -108,6 +108,31 @@ func runConfigCLI(doExport bool, importPath, out string, redact bool) error {
 		return fmt.Errorf("%s: %w", importPath, err)
 	}
 	return importSettings(store, &doc, environMap(os.Environ()))
+}
+
+// writeFileAtomic writes data to a fresh, perm-moded file in path's directory and renames
+// it over path, so a reader never observes a partially written file nor one that briefly
+// carries path's old (possibly looser) permissions.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func run() error {
