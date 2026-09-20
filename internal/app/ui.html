@@ -1946,9 +1946,17 @@ function settingField(f) {
   const lock = locks[f.key];
   if (lock) {
     input.disabled = true;
-    input.value = '';
+    /* Only a secret has nothing to show — the server deliberately withholds its value.
+       Every other locked field can be filled with what the environment set and read as
+       ordinary, if uneditable, text instead of going blank. */
+    input.value = f.secret ? '' : lock.value;
     wrap.append(input);
     const note = el('span', 'help lock');
+    if (!f.secret) {
+      note.append('Set by ' + lock.env + ' environment variable.');
+      wrap.append(note);
+      return wrap;
+    }
     /* A locked secret has no value to show: the server deliberately does not send it. An
        empty key is not a secret, but a value here would still be pointless: the env wins
        on every reload, so what gets saved is never what runs. */
