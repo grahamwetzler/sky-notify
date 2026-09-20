@@ -248,6 +248,7 @@ td.num{white-space:nowrap;font-variant-numeric:tabular-nums}
   text-decoration-thickness:from-font;font:inherit}
 .linkish:hover{color:var(--fg)}
 .numrow{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.numrow.turns[hidden]{display:none}
 .numrow .unit{color:var(--fg2);flex:none}
 input[type=text],input[type=number],input[type=password],select,textarea{border:1px solid var(--line2);background:var(--panel);
   border-radius:var(--rs);padding:7px 9px;width:100%;min-width:0}
@@ -462,11 +463,8 @@ const CONDITIONS = [
   {key: 'circling', label: 'Circling', short: 'circling', group: 'path', source: 'feed', kind: 'tri',
    options: [['', 'Either'], ['true', 'Only while circling'], ['false', 'Only while not circling']],
    needsFastPoll: true,
-   help: 'A full turn within 2 NM in the last 10 minutes — how news and police helicopters fly.'},
-  {key: 'circling_turns', label: '…for at least this many turns', short: 'turns',
-   group: 'path', source: 'feed', kind: 'num', unit: 'turns', integer: true, requires: 'circling',
-   help: 'How many full rotations in a row before this counts, from 1 (the default) to 6. '
-     + 'History is kept for longer automatically, so a stricter count just takes longer to trip.'},
+   help: 'A full turn within 2 NM in the last 10 minutes — how news and police helicopters fly. '
+     + 'When "Only while circling" is picked, how many turns in a row can be tightened below.'},
   {key: 'passes_within_nm', label: 'Predicted to pass within', short: 'a predicted pass overhead',
    group: 'path', source: 'feed', kind: 'num', unit: 'NM', min: 0, step: 'any', needsPosition: true,
    help: 'Based on where the aircraft is heading now and how fast.'},
@@ -691,13 +689,12 @@ function problem(r, key) {
     if (s != null && s > 30)
       return `Needs a check interval of 30s or less; it is ${iv}.`;
   }
-  if (key === 'circling_turns' && hasValue(r.circling_turns) && r.circling !== true)
-    return 'Only meaningful alongside "Only while circling". Remove this or change that.';
-  // Mirrors maxCirclingTurns in track.go: past this many laps the tracker would be
-  // asked to hold more history than the feature is meant to trade for.
-  if (key === 'circling_turns' && hasValue(r.circling_turns) && Number.isFinite(+r.circling_turns)
-      && (+r.circling_turns < 1 || +r.circling_turns > 6))
-    return 'Must be between 1 and 6.';
+  if (key === 'circling' && r.circling === true && hasValue(r.circling_turns)) {
+    if (!Number.isFinite(+r.circling_turns)) return 'Turns must be a whole number.';
+    // Mirrors maxCirclingTurns in track.go: past this many laps the tracker would be
+    // asked to hold more history than the feature is meant to trade for.
+    if (+r.circling_turns < 1 || +r.circling_turns > 6) return 'Turns must be between 1 and 6.';
+  }
   if (key === 'max_altitude_ft' && hasValue(r.min_altitude_ft) && hasValue(r.max_altitude_ft)
       && +r.max_altitude_ft <= +r.min_altitude_ft)
     return 'Must be above the lowest altitude.';
@@ -1018,6 +1015,9 @@ function conditionCard(r, key) {
     /* passes_within is meaningless without the distance it qualifies, and the
        server rejects the pair, so it leaves with it. */
     if (key === 'passes_within_nm') { delete r.passes_within; meta(r).shown.delete('passes_within'); }
+    /* circling_turns is not a condition of its own — see below — so nothing else ever
+       deletes it. */
+    if (key === 'circling') delete r.circling_turns;
     markDirty(); schedulePreview(r); renderPane(); renderList();
   };
   head.append(drop);
@@ -1063,9 +1063,13 @@ function conditionCard(r, key) {
     s.setAttribute('aria-label', spec.label);
     s.onchange = () => {
       if (s.value === '') delete r[key]; else r[key] = s.value === 'true';
+      /* Turns describes circling, not the other two states — carrying it past a switch
+         away from "Only while circling" would leave it silently meaningless. */
+      if (key === 'circling' && r.circling !== true) delete r.circling_turns;
       markDirty(); schedulePreview(r); renderPane(); renderList();
     };
     card.append(s);
+    if (key === 'circling') card.append(circlingTurnsField(r));
   } else if (spec.kind === 'fixed') {
     const vals = el('div', 'vals');
     for (const [v, t] of spec.options) {
@@ -1092,6 +1096,32 @@ function conditionCard(r, key) {
     'A value no aircraft in the database carries still alerts when one broadcasts it.'));
   if (spec.help && !bad) card.append(el('p', 'help', spec.help));
   return card;
+}
+
+/* The turn count lives inside the circling condition's own card, not as a condition of
+   its own: asking for more turns sharpens the one rule already there rather than adding
+   a second. Hidden — not omitted — when circling isn't "Only while circling", so the
+   value the operator typed is still there if they switch back. */
+function circlingTurnsField(r) {
+  const row = el('div', 'numrow turns');
+  row.hidden = r.circling !== true;
+  row.append(el('span', 'unit lbl', 'for at least'));
+  const input = el('input');
+  input.id = 'c-circling_turns';
+  input.type = 'text';
+  input.className = 'num';
+  input.inputMode = 'numeric';
+  input.placeholder = '1';
+  input.value = r.circling_turns ?? '';
+  input.setAttribute('aria-label', 'Full turns required');
+  input.oninput = () => {
+    const n = Number(input.value);
+    r.circling_turns = input.value === '' ? '' : !Number.isFinite(n) ? input.value : Math.round(n);
+    markDirty(); schedulePreview(r); renderList();
+  };
+  row.append(input);
+  row.append(el('span', 'unit lbl', 'turns in a row (1-6, default 1)'));
+  return row;
 }
 
 /* The chips for a list-valued condition, plus the button that adds another.
@@ -2199,6 +2229,9 @@ function payloadRule(r) {
     if (!hasValue(v)) continue;
     out[key] = LIST_KEYS.includes(key) ? v.map(String) : v;
   }
+  // circling_turns isn't a condition of its own (it lives inside the circling card), so
+  // it isn't in CONDITIONS — carried the same way notify and research are above.
+  if (out.circling === true && hasValue(r.circling_turns)) out.circling_turns = r.circling_turns;
   return out;
 }
 
