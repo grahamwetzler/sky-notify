@@ -147,9 +147,12 @@ Type: EC45
 Circling: yes
 ```
 
-Configure a provider under **Settings ▸ AI research** in the web UI, or in the alerts
-section of `config.db` directly (see `config.example.json`) — it is hot-reloaded like
-the rest of that section, so a model can be swapped without a restart:
+Configure a provider under **Settings ▸ AI research** in the web UI, or by importing an
+alerts document (see `config.example.json`) with `-config-import` or `POST
+/api/config/import` — either is hot-reloaded like the rest of that section, so a model can
+be swapped without a restart. A direct edit to the `alerts` row's `data` column is not
+picked up: the watcher polls that row's `version` column, which only a write through the
+API, the UI or `-config-import` bumps.
 
 ```json
 "ai": {

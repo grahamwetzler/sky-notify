@@ -13,6 +13,23 @@ var dbFileRe = regexp.MustCompile(`^[A-Za-z0-9._-]+\.csv$`)
 // mapEnabled reports whether notifications should carry a map. Absent means on.
 func (c *Config) mapEnabled() bool { return c.Map.Enabled == nil || *c.Map.Enabled }
 
+// ntfyToken and ntfyPassword are the credentials to present, "" when there is none —
+// mirroring aiKey below for the same reason: nil is not the same as an empty string, only
+// the latter of which the GET/PUT round trip is allowed to treat as "clear it".
+func (c *Config) ntfyToken() string {
+	if c.Ntfy.Token == nil {
+		return ""
+	}
+	return *c.Ntfy.Token
+}
+
+func (c *Config) ntfyPassword() string {
+	if c.Ntfy.Password == nil {
+		return ""
+	}
+	return *c.Ntfy.Password
+}
+
 func (c *Config) validate() error {
 	for _, r := range []struct{ name, env, val string }{
 		{"source.url", "SKY_SOURCE_URL", c.Source.URL},
@@ -67,10 +84,10 @@ func (c *Config) validate() error {
 		return fmt.Errorf("source.url must be an http(s) URL or an absolute file path, got %q", c.Source.URL)
 	}
 
-	if c.Ntfy.Token != "" && (c.Ntfy.User != "" || c.Ntfy.Password != "") {
+	if c.ntfyToken() != "" && (c.Ntfy.User != "" || c.ntfyPassword() != "") {
 		return fmt.Errorf("ntfy: token and user/password are mutually exclusive")
 	}
-	if (c.Ntfy.User == "") != (c.Ntfy.Password == "") {
+	if (c.Ntfy.User == "") != (c.ntfyPassword() == "") {
 		return fmt.Errorf("ntfy: user and password must be set together")
 	}
 

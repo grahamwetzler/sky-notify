@@ -57,18 +57,47 @@ func (s *SettingsStore) Get(section string) (data string, version int64, ok bool
 
 // Put upserts a section's document and returns the version it now has, so a caller that
 // needs to report what changed (the API handlers) does not have to read it back.
+//
+// The upsert and the version read are one statement, via RETURNING, rather than an Exec
+// followed by a separate QueryRow: two statements would let a concurrent Put on the same
+// section commit in between them, so both callers could read back the same version.
 func (s *SettingsStore) Put(section, data string) (version int64, err error) {
-	_, err = s.db.Exec(`
+	err = s.db.QueryRow(`
 		INSERT INTO settings (section, data, version, updated_at) VALUES (?, ?, 1, ?)
 		ON CONFLICT (section) DO UPDATE SET data = excluded.data, version = version + 1, updated_at = excluded.updated_at
-	`, section, data, time.Now().UnixMilli())
+		RETURNING version
+	`, section, data, time.Now().UnixMilli()).Scan(&version)
 	if err != nil {
 		return 0, err
 	}
-	if err := s.db.QueryRow(`SELECT version FROM settings WHERE section = ?`, section).Scan(&version); err != nil {
-		return 0, err
-	}
 	return version, nil
+}
+
+// GetSections returns several sections' documents in one read transaction, so a caller
+// that builds one artifact from more than one row (an export) cannot observe a write that
+// commits between two separate reads — a config row and an alerts row that never coexisted.
+// A section with no stored row is simply absent from the result, the same "missing is
+// fine" contract Get has.
+func (s *SettingsStore) GetSections(sections ...string) (map[string]string, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	out := make(map[string]string, len(sections))
+	for _, section := range sections {
+		var data string
+		err := tx.QueryRow(`SELECT data FROM settings WHERE section = ?`, section).Scan(&data)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out[section] = data
+	}
+	return out, tx.Commit()
 }
 
 // PutMany upserts several sections in one transaction, so an import that touches both

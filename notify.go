@@ -351,10 +351,10 @@ func headerSafe(s string) string {
 
 func (n *Notifier) attempt(req *http.Request) (retryable bool, wait time.Duration, err error) {
 	switch {
-	case n.cfg.Ntfy.Token != "":
-		req.Header.Set("Authorization", "Bearer "+n.cfg.Ntfy.Token)
+	case n.cfg.ntfyToken() != "":
+		req.Header.Set("Authorization", "Bearer "+n.cfg.ntfyToken())
 	case n.cfg.Ntfy.User != "":
-		req.SetBasicAuth(n.cfg.Ntfy.User, n.cfg.Ntfy.Password)
+		req.SetBasicAuth(n.cfg.Ntfy.User, n.cfg.ntfyPassword())
 	}
 
 	resp, err := n.client.Do(req)

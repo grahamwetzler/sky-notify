@@ -1,16 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"runtime/debug"
 	"time"
 )
 
-// exportDocument is the shape GET /api/config/export and -config-export produce, and
-// POST /api/config/import and -config-import consume. Either section is optional: an
-// alerts-only export/import round trip is the common case, and a payload missing a
-// section leaves that section alone rather than forcing the other one along.
+// exportDocument is the shape GET /api/config/export and -config-export produce.
 type exportDocument struct {
 	ExportedAt       string  `json:"exported_at"`
 	SkyNotifyVersion string  `json:"sky_notify_version,omitempty"`
@@ -21,6 +19,23 @@ type exportDocument struct {
 	NtfyTokenSet    *bool `json:"ntfy_token_set,omitempty"`
 	NtfyPasswordSet *bool `json:"ntfy_password_set,omitempty"`
 	AIKeySet        *bool `json:"ai_key_set,omitempty"`
+}
+
+// importDocument is the shape POST /api/config/import and -config-import consume. It
+// accepts exactly what exportSettings produces — the same optional fields, in the same
+// positions — but keeps config and alerts as raw JSON rather than decoded structs: each
+// section is decoded onto its own defaults in importSettings, exactly as its PUT handler
+// decodes onto defaultConfig()/defaultAlerts(), so a payload that omits a field gets the
+// same default a PUT would give it rather than that field's zero value. Either section is
+// optional: an alerts-only import (the common case) leaves config untouched.
+type importDocument struct {
+	ExportedAt       string          `json:"exported_at"`
+	SkyNotifyVersion string          `json:"sky_notify_version,omitempty"`
+	Config           json.RawMessage `json:"config,omitempty"`
+	Alerts           json.RawMessage `json:"alerts,omitempty"`
+	NtfyTokenSet     *bool           `json:"ntfy_token_set,omitempty"`
+	NtfyPasswordSet  *bool           `json:"ntfy_password_set,omitempty"`
+	AIKeySet         *bool           `json:"ai_key_set,omitempty"`
 }
 
 // buildVersion is the module's build info, "" when it is not available (a plain `go
@@ -37,27 +52,32 @@ func buildVersion() string {
 // default — this is a backup/restore document, and the database file already holds them
 // in plaintext — and blanked only when redact is requested, for pasting a config shape
 // into an issue without the credentials.
+//
+// Both sections are read in one GetSections call rather than two separate store.Get
+// calls, so a concurrent import cannot commit between them and leave this document
+// pairing a config and an alerts section that never coexisted in the database.
 func exportSettings(store *SettingsStore, redact bool) (*exportDocument, error) {
 	doc := &exportDocument{ExportedAt: time.Now().UTC().Format(time.RFC3339), SkyNotifyVersion: buildVersion()}
 
-	if data, _, ok, err := store.Get("config"); err != nil {
+	rows, err := store.GetSections("config", "alerts")
+	if err != nil {
 		return nil, err
-	} else if ok {
+	}
+
+	if data, ok := rows["config"]; ok {
 		var cfg Config
 		if err := json.Unmarshal([]byte(data), &cfg); err != nil {
 			return nil, err
 		}
 		if redact {
-			tokenSet, passwordSet := cfg.Ntfy.Token != "", cfg.Ntfy.Password != ""
+			tokenSet, passwordSet := cfg.ntfyToken() != "", cfg.ntfyPassword() != ""
 			doc.NtfyTokenSet, doc.NtfyPasswordSet = &tokenSet, &passwordSet
-			cfg.Ntfy.Token, cfg.Ntfy.Password = "", ""
+			cfg.Ntfy.Token, cfg.Ntfy.Password = nil, nil
 		}
 		doc.Config = &cfg
 	}
 
-	if data, _, ok, err := store.Get("alerts"); err != nil {
-		return nil, err
-	} else if ok {
+	if data, ok := rows["alerts"]; ok {
 		var alerts Alerts
 		if err := json.Unmarshal([]byte(data), &alerts); err != nil {
 			return nil, err
@@ -74,36 +94,84 @@ func exportSettings(store *SettingsStore, redact bool) (*exportDocument, error) 
 }
 
 // importSettings validates each section present in doc exactly as its own PUT handler
-// does — the environment overlaid, then validated — and writes both in one transaction:
-// a bad alerts section must not leave a good config section written from the same
-// payload.
-func importSettings(store *SettingsStore, doc *exportDocument, env map[string]string) error {
+// does — decoded onto defaults, the environment overlaid, then validated — and writes
+// both in one transaction: a bad alerts section must not leave a good config section
+// written from the same payload.
+//
+// Each section also passes the same credential-destination guard its PUT handler does
+// (checkNtfyCredsStayPut, checkAIKeyStaysPut): import is another way to move ntfy.url or
+// ai.url, and a credential the payload does not carry must not follow it there either.
+func importSettings(store *SettingsStore, doc *importDocument, env map[string]string) error {
 	writes := map[string]string{}
 
-	if doc.Config != nil {
-		overlaid := *doc.Config
+	if len(doc.Config) > 0 {
+		cfg := defaultConfig()
+		dec := json.NewDecoder(bytes.NewReader(doc.Config))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(cfg); err != nil {
+			return fmt.Errorf("config: %w", err)
+		}
+		onDisk, err := loadConfigFile(store)
+		if err != nil {
+			return fmt.Errorf("config: %w", err)
+		}
+		if err := checkNtfyCredsStayPut(onDisk, cfg, env); err != nil {
+			return err
+		}
+		if cfg.Ntfy.Token == nil {
+			cfg.Ntfy.Token = onDisk.Ntfy.Token
+		} else if *cfg.Ntfy.Token == "" {
+			cfg.Ntfy.Token = nil
+		}
+		if cfg.Ntfy.Password == nil {
+			cfg.Ntfy.Password = onDisk.Ntfy.Password
+		} else if *cfg.Ntfy.Password == "" {
+			cfg.Ntfy.Password = nil
+		}
+		overlaid := *cfg
 		if err := applyConfigEnv(&overlaid, env); err != nil {
 			return err
 		}
 		if err := overlaid.validate(); err != nil {
 			return err
 		}
-		blob, err := json.Marshal(doc.Config)
+		blob, err := json.Marshal(cfg)
 		if err != nil {
 			return err
 		}
 		writes["config"] = string(blob)
 	}
 
-	if doc.Alerts != nil {
-		overlaid := *doc.Alerts
+	if len(doc.Alerts) > 0 {
+		alerts := defaultAlerts()
+		dec := json.NewDecoder(bytes.NewReader(doc.Alerts))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(alerts); err != nil {
+			return fmt.Errorf("alerts: %w", err)
+		}
+		onDisk, err := loadAlertsFile(store)
+		if err != nil {
+			return fmt.Errorf("alerts: %w", err)
+		}
+		if err := checkAIKeyStaysPut(onDisk, alerts, env); err != nil {
+			return err
+		}
+		switch {
+		case aiKeyEndpoint(alerts, env) == "":
+			alerts.AI.Key = nil
+		case alerts.AI.Key == nil:
+			alerts.AI.Key = onDisk.AI.Key
+		case *alerts.AI.Key == "":
+			alerts.AI.Key = nil
+		}
+		overlaid := *alerts
 		if err := applyAlertEnv(&overlaid, env); err != nil {
 			return err
 		}
 		if err := overlaid.validate(); err != nil {
 			return err
 		}
-		blob, err := json.Marshal(doc.Alerts)
+		blob, err := json.Marshal(alerts)
 		if err != nil {
 			return err
 		}

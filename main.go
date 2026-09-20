@@ -87,14 +87,21 @@ func runConfigCLI(doExport bool, importPath, out string, redact bool) error {
 			_, err = os.Stdout.Write(blob)
 			return err
 		}
-		return os.WriteFile(out, blob, 0o644)
+		// An export carries plaintext credentials by default (-redact aside), so it is
+		// written owner-only. WriteFile's mode only applies to a file it creates: an
+		// existing file at out keeps its prior permissions, so those are set explicitly
+		// too rather than trusted to already be this narrow.
+		if err := os.WriteFile(out, blob, 0o600); err != nil {
+			return err
+		}
+		return os.Chmod(out, 0o600)
 	}
 
 	blob, err := os.ReadFile(importPath)
 	if err != nil {
 		return err
 	}
-	var doc exportDocument
+	var doc importDocument
 	dec := json.NewDecoder(bytes.NewReader(blob))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&doc); err != nil {
@@ -104,11 +111,17 @@ func runConfigCLI(doExport bool, importPath, out string, redact bool) error {
 }
 
 func run() error {
-	store, err := OpenSettings(dbPath(environMap(os.Environ())))
+	env := environMap(os.Environ())
+	store, err := OpenSettings(dbPath(env))
 	if err != nil {
 		return fmt.Errorf("settings database: %w", err)
 	}
 	defer store.Close()
+
+	if err := checkLegacyYAML(store, dbPath(env)); err != nil {
+		fmt.Fprintln(os.Stderr, "config error:", err)
+		os.Exit(1)
+	}
 
 	cfg, err := LoadConfig(os.Environ(), store)
 	if err != nil {

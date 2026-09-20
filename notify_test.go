@@ -285,7 +285,7 @@ func TestAuthHeaders(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testConfig(t)
-			cfg.Ntfy.Token, cfg.Ntfy.User, cfg.Ntfy.Password = tc.token, tc.user, tc.pass
+			cfg.Ntfy.Token, cfg.Ntfy.User, cfg.Ntfy.Password = &tc.token, tc.user, &tc.pass
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				tc.check(t, r)
 			}))

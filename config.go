@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -52,11 +55,14 @@ type Config struct {
 	} `yaml:"source" json:"source"`
 
 	Ntfy struct {
-		URL      string `yaml:"url" json:"url"`
-		Topic    string `yaml:"topic" json:"topic"`
-		Token    string `yaml:"token" json:"token"`
-		User     string `yaml:"user" json:"user"`
-		Password string `yaml:"password" json:"password"`
+		URL   string `yaml:"url" json:"url"`
+		Topic string `yaml:"topic" json:"topic"`
+		// Token and Password are pointers for the same three-way reason AI.Key is: GET
+		// /api/config never echoes them, so a PUT/import that omits one must mean "keep
+		// the stored value", not "clear it" — only an explicit empty string means that.
+		Token    *string `yaml:"token,omitempty" json:"token,omitempty"`
+		User     string  `yaml:"user" json:"user"`
+		Password *string `yaml:"password,omitempty" json:"password,omitempty"`
 	} `yaml:"ntfy" json:"ntfy"`
 
 	DB struct {
@@ -184,9 +190,9 @@ func envBindings() []envBinding {
 
 		{"SKY_NTFY_URL", "ntfy.url", func(c *Config, v string) error { c.Ntfy.URL = v; return nil }},
 		{"SKY_NTFY_TOPIC", "ntfy.topic", func(c *Config, v string) error { c.Ntfy.Topic = v; return nil }},
-		{"SKY_NTFY_TOKEN", "ntfy.token", func(c *Config, v string) error { c.Ntfy.Token = v; return nil }},
+		{"SKY_NTFY_TOKEN", "ntfy.token", func(c *Config, v string) error { c.Ntfy.Token = &v; return nil }},
 		{"SKY_NTFY_USER", "ntfy.user", func(c *Config, v string) error { c.Ntfy.User = v; return nil }},
-		{"SKY_NTFY_PASSWORD", "ntfy.password", func(c *Config, v string) error { c.Ntfy.Password = v; return nil }},
+		{"SKY_NTFY_PASSWORD", "ntfy.password", func(c *Config, v string) error { c.Ntfy.Password = &v; return nil }},
 
 		{"SKY_DB_FILES", "db.files", func(c *Config, v string) error { c.DB.Files = splitList(v); return nil }},
 		{"SKY_DB_BASE_URL", "db.base_url", func(c *Config, v string) error { c.DB.BaseURL = v; return nil }},
@@ -199,6 +205,66 @@ func envBindings() []envBinding {
 		{"SKY_ROUTE_API_URL", "route_api_url", func(c *Config, v string) error { c.RouteAPIURL = v; return nil }},
 		{"SKY_LISTEN", "listen", func(c *Config, v string) error { c.Listen = v; return nil }},
 	}
+}
+
+// The three variables the guard below reasons about by name, the config-side mirror of
+// aiKeyEnv/aiURLEnv.
+const (
+	ntfyURLEnv      = "SKY_NTFY_URL"
+	ntfyTokenEnv    = "SKY_NTFY_TOKEN"
+	ntfyPasswordEnv = "SKY_NTFY_PASSWORD"
+)
+
+// ntfyEndpoint is the endpoint a document's stored ntfy credential belongs to — the
+// environment's when it names one, since applyConfigEnv overwrites whatever the payload
+// sent. Mirrors aiKeyEndpoint.
+func ntfyEndpoint(c *Config, env map[string]string) string {
+	if v := env[ntfyURLEnv]; v != "" {
+		return v
+	}
+	return c.Ntfy.URL
+}
+
+// ntfyReach is every endpoint a document's ntfy credential can be sent to. Mirrors
+// aiKeyReach for the same reason: the run posts to ntfyEndpoint, and the document's own URL
+// is where the credential goes the moment SKY_NTFY_URL is taken away again.
+func ntfyReach(c *Config, env map[string]string) []string {
+	return []string{ntfyEndpoint(c, env), c.Ntfy.URL}
+}
+
+// checkNtfyCredsStayPut refuses a save that would send a stored ntfy token or password it
+// did not supply to an endpoint it did — the config-side mirror of checkAIKeyStaysPut. A
+// token and a password are mutually exclusive (validate() enforces it), so both are judged
+// as one credential here: either one being carried silently to a new endpoint is the same
+// disclosure.
+func checkNtfyCredsStayPut(onDisk, saved *Config, env map[string]string) error {
+	was := ntfyReach(onDisk, env)
+	for _, now := range ntfyReach(saved, env) {
+		if now == "" || slices.ContainsFunc(was, func(w string) bool {
+			return w != "" && aiOrigin(w) == aiOrigin(now)
+		}) {
+			continue
+		}
+		if err := refuseNtfyCredsMove(onDisk, saved, env, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// refuseNtfyCredsMove says why a credential cannot follow ntfy.url to now, or nil when
+// there is no credential at stake and the move costs nothing. Mirrors refuseAIKeyMove.
+func refuseNtfyCredsMove(onDisk, saved *Config, env map[string]string, now string) error {
+	if env[ntfyTokenEnv] != "" || env[ntfyPasswordEnv] != "" {
+		return fmt.Errorf("ntfy.url: %s or %s holds a credential, so the endpoint it is sent to is not editable here — set %s to the endpoint you want", ntfyTokenEnv, ntfyPasswordEnv, ntfyURLEnv)
+	}
+	if saved.Ntfy.Token != nil || saved.Ntfy.Password != nil {
+		return nil // the save brought (or cleared) a credential for wherever it is pointing
+	}
+	if onDisk.ntfyToken() == "" && onDisk.ntfyPassword() == "" {
+		return nil // nothing stored to carry anywhere
+	}
+	return fmt.Errorf("ntfy.url: the stored credential was issued for %s and is never sent to this page, so it cannot follow the endpoint to %s — enter the credential for the new endpoint, or clear it", aiOrigin(ntfyEndpoint(onDisk, env)), aiOrigin(now))
 }
 
 type alertEnvBinding struct {
@@ -470,6 +536,42 @@ func dbPath(env map[string]string) string {
 		return path
 	}
 	return defaultDBPath
+}
+
+// checkLegacyYAML refuses to start on an empty settings database when config.yaml or
+// alerts.yaml sit beside it: that combination means a deployment upgrading from a version
+// that read those files directly, not a fresh one, and loadJSON's "missing row" case would
+// otherwise start it on defaults — silently disabling every rule — without saying why.
+//
+// A store that already has either row is not this case, whatever files remain nearby: the
+// database is what gets read now, so a leftover YAML file changes nothing and is not worth
+// refusing to start over.
+func checkLegacyYAML(store *SettingsStore, dbFile string) error {
+	dir := filepath.Dir(dbFile)
+	var found []string
+	for _, name := range []string{"config.yaml", "alerts.yaml"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			found = append(found, filepath.Join(dir, name))
+		}
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	_, _, configOK, err := store.Get("config")
+	if err != nil {
+		return err
+	}
+	_, _, alertsOK, err := store.Get("alerts")
+	if err != nil {
+		return err
+	}
+	if configOK || alertsOK {
+		return nil
+	}
+	return fmt.Errorf(
+		"found %s from a version that read YAML config directly; sky-notify now reads %s and does not read these files — "+
+			"convert them to the config.example.json shape and load with `sky-notify -config-import <file>.json`, then remove them",
+		strings.Join(found, " and "), dbFile)
 }
 
 func environMap(environ []string) map[string]string {

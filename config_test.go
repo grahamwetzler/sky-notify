@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -43,7 +44,8 @@ func TestConfigJSONRoundTrip(t *testing.T) {
 	cfg := testConfig(t)
 	enabled := true
 	cfg.Map.Enabled = &enabled
-	cfg.Ntfy.Token = "tk_x"
+	token := "tk_x"
+	cfg.Ntfy.Token = &token
 	blob, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -1001,6 +1003,62 @@ func TestPartialAIBlockIsRefused(t *testing.T) {
 	}
 }
 
+// An empty database next to a config.yaml/alerts.yaml left over from an upgrade must not
+// start silently on defaults: that combination means the deployment's real settings were
+// never migrated, not that it has none.
+func TestLegacyYAMLBesideEmptyStoreRefusesToStart(t *testing.T) {
+	dir := t.TempDir()
+	dbFile := filepath.Join(dir, "config.db")
+	store, err := OpenSettings(dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if err := os.WriteFile(filepath.Join(dir, "alerts.yaml"), []byte("cooldown: 24h\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err = checkLegacyYAML(store, dbFile)
+	if err == nil {
+		t.Fatal("a leftover alerts.yaml beside an empty database started without complaint")
+	}
+	if !strings.Contains(err.Error(), "alerts.yaml") || !strings.Contains(err.Error(), "-config-import") {
+		t.Errorf("error should name the file and the way to migrate it: %v", err)
+	}
+}
+
+// Once either row is written, a leftover YAML file beside the database is not the upgrade
+// case any more, and must not block startup.
+func TestLegacyYAMLBesidePopulatedStoreIsFine(t *testing.T) {
+	dir := t.TempDir()
+	dbFile := filepath.Join(dir, "config.db")
+	store, err := OpenSettings(dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("listen: :8080\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put("alerts", `{"cooldown":"1h"}`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := checkLegacyYAML(store, dbFile); err != nil {
+		t.Fatalf("checkLegacyYAML with a populated store: %v", err)
+	}
+}
+
+// No YAML file, no complaint — the ordinary fresh-deployment case.
+func TestNoLegacyYAMLIsFine(t *testing.T) {
+	store := newTestStore(t)
+	if err := checkLegacyYAML(store, filepath.Join(t.TempDir(), "config.db")); err != nil {
+		t.Fatalf("checkLegacyYAML with no legacy files: %v", err)
+	}
+}
+
 // ---------- /api/config ----------
 
 func TestConfigUIRoundTrip(t *testing.T) {
@@ -1231,4 +1289,197 @@ func TestConfigExportRedactsOnRequest(t *testing.T) {
 	if doc.Alerts == nil || doc.Alerts.AI.Key != nil {
 		t.Errorf("redacted export still carried the key: %+v", doc.Alerts)
 	}
+}
+
+// The page never holds ntfy.token or ntfy.password, so a save that supplies neither and
+// moves ntfy.url is asking for the stored credential to be posted to a host the payload
+// chose — the config-side mirror of TestAIKeyDoesNotFollowTheEndpoint.
+func TestNtfyCredsDoNotFollowTheEndpoint(t *testing.T) {
+	stored := func(t *testing.T) *Config {
+		t.Helper()
+		c := testConfig(t)
+		c.Ntfy.URL = "https://ntfy.example.com"
+		token := "tk_secret"
+		c.Ntfy.Token = &token
+		return c
+	}
+	put := func(t *testing.T, h http.Handler, cfg *Config) *httptest.ResponseRecorder {
+		t.Helper()
+		blob, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewReader(blob)))
+		return w
+	}
+
+	t.Run("a move with no credential is refused", func(t *testing.T) {
+		store := newTestStore(t)
+		want := stored(t)
+		blob, _ := json.Marshal(want)
+		if _, err := store.Put("config", string(blob)); err != nil {
+			t.Fatal(err)
+		}
+		h := alertsHandler(t, store)
+		moved := stored(t)
+		moved.Ntfy.URL, moved.Ntfy.Token = "https://attacker.invalid", nil
+		w := put(t, h, moved)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+		}
+		saved, err := loadConfigFile(store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if saved.Ntfy.URL != "https://ntfy.example.com" || saved.ntfyToken() != "tk_secret" {
+			t.Fatalf("a refused save must not touch the row: %+v", saved.Ntfy)
+		}
+	})
+
+	t.Run("a move with a credential of its own is allowed", func(t *testing.T) {
+		store := newTestStore(t)
+		blob, _ := json.Marshal(stored(t))
+		if _, err := store.Put("config", string(blob)); err != nil {
+			t.Fatal(err)
+		}
+		h := alertsHandler(t, store)
+		moved := stored(t)
+		moved.Ntfy.URL = "https://ntfy.new.example.com"
+		newToken := "tk_new"
+		moved.Ntfy.Token = &newToken
+		w := put(t, h, moved)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		}
+		saved, _ := loadConfigFile(store)
+		if saved.ntfyToken() != "tk_new" {
+			t.Errorf("token = %q, want the one the save supplied", saved.ntfyToken())
+		}
+	})
+
+	t.Run("staying put keeps the credential", func(t *testing.T) {
+		store := newTestStore(t)
+		blob, _ := json.Marshal(stored(t))
+		if _, err := store.Put("config", string(blob)); err != nil {
+			t.Fatal(err)
+		}
+		h := alertsHandler(t, store)
+		unrelated := stored(t)
+		unrelated.CacheDir = t.TempDir()
+		unrelated.Ntfy.Token = nil // the page was never shown it
+		w := put(t, h, unrelated)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		}
+		saved, _ := loadConfigFile(store)
+		if saved.ntfyToken() != "tk_secret" {
+			t.Errorf("an omitted token wiped the stored one: %q", saved.ntfyToken())
+		}
+	})
+}
+
+// An empty string is the page saying "clear it", distinct from omitting the field, which
+// means "leave it alone" — the config-side mirror of the ai.key clear/keep distinction.
+func TestNtfyTokenClearVsKeep(t *testing.T) {
+	seed := testConfig(t)
+	token := "tk_secret"
+	seed.Ntfy.Token = &token
+	blob, err := json.Marshal(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := newTestStore(t)
+	if _, err := store.Put("config", string(blob)); err != nil {
+		t.Fatal(err)
+	}
+	h := alertsHandler(t, store)
+
+	// Omitted (nil): the stored token survives an unrelated edit.
+	kept := testConfig(t)
+	kept.Ntfy.Token = nil
+	keptBlob, _ := json.Marshal(kept)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewReader(keptBlob)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT status %d: %s", w.Code, w.Body.String())
+	}
+	if saved, _ := loadConfigFile(store); saved.ntfyToken() != "tk_secret" {
+		t.Errorf("token = %q, want it kept", saved.ntfyToken())
+	}
+
+	// Empty string: an explicit clear.
+	cleared := testConfig(t)
+	empty := ""
+	cleared.Ntfy.Token = &empty
+	clearedBlob, _ := json.Marshal(cleared)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/config", bytes.NewReader(clearedBlob)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT status %d: %s", w.Code, w.Body.String())
+	}
+	if saved, _ := loadConfigFile(store); saved.ntfyToken() != "" {
+		t.Errorf("token = %q, want it cleared", saved.ntfyToken())
+	}
+}
+
+// Import is another way to move ntfy.url or ai.url, and must be judged the same way PUT
+// is: a credential the payload does not carry must not follow either endpoint there.
+func TestImportCredsDoNotFollowTheEndpoint(t *testing.T) {
+	t.Run("ai.key via alerts import", func(t *testing.T) {
+		store := newTestStore(t)
+		if _, err := store.Put("alerts", `{"ai":{"url":"https://openrouter.ai/api/v1","key":"sk-or-v1-secret","model":"perplexity/sonar"}}`); err != nil {
+			t.Fatal(err)
+		}
+		h := alertsHandler(t, store)
+		body := `{"alerts":{"ai":{"url":"https://attacker.invalid/v1","model":"perplexity/sonar","timeout":"20s"},"rules":[]}}`
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/config/import", strings.NewReader(body)))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+		}
+		saved, err := LoadAlerts(nil, store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if saved.AI.URL != "https://openrouter.ai/api/v1" || saved.aiKey() != "sk-or-v1-secret" {
+			t.Fatalf("a refused import must not touch the row: %+v", saved.AI)
+		}
+	})
+
+	t.Run("ntfy credential via config import", func(t *testing.T) {
+		store := newTestStore(t)
+		seed := testConfig(t)
+		seed.Ntfy.URL = "https://ntfy.example.com"
+		token := "tk_secret"
+		seed.Ntfy.Token = &token
+		blob, err := json.Marshal(seed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Put("config", string(blob)); err != nil {
+			t.Fatal(err)
+		}
+		h := alertsHandler(t, store)
+
+		moved := testConfig(t)
+		moved.Ntfy.URL = "https://attacker.invalid"
+		movedBlob, err := json.Marshal(moved)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := fmt.Sprintf(`{"config":%s}`, movedBlob)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/config/import", strings.NewReader(body)))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+		}
+		saved, err := loadConfigFile(store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if saved.Ntfy.URL != "https://ntfy.example.com" || saved.ntfyToken() != "tk_secret" {
+			t.Fatalf("a refused import must not touch the row: %+v", saved.Ntfy)
+		}
+	})
 }

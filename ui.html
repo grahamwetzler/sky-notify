@@ -1918,7 +1918,7 @@ function renderSettings(pane) {
   foot.append(el('p', 'help',
     'Saved changes take effect within five seconds. The feeder address, ntfy account and cache settings are startup-only and not editable here.'));
   foot.append(el('p', 'help',
-    'Changes made outside this page — the API, or a direct edit to the settings database — are picked up too.'));
+    'Changes made outside this page — PUT /api/alerts, or -config-import — are picked up too. A direct edit to the database row is not: it must also bump that row\'s version column, which only those two paths do.'));
   foot.append(saveBtn);
   pane.append(foot);
 }

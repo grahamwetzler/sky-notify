@@ -243,8 +243,8 @@ func (s *server) mux(q *queue) http.Handler {
 			}
 			locked = append(locked, l)
 		}
-		tokenSet, passwordSet := cfg.Ntfy.Token != "", cfg.Ntfy.Password != ""
-		cfg.Ntfy.Token, cfg.Ntfy.Password = "", ""
+		tokenSet, passwordSet := cfg.ntfyToken() != "", cfg.ntfyPassword() != ""
+		cfg.Ntfy.Token, cfg.Ntfy.Password = nil, nil
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"config": cfg, "locked": locked,
@@ -261,6 +261,32 @@ func (s *server) mux(q *queue) http.Handler {
 			return
 		}
 		env := environMap(os.Environ())
+		// The stored document, needed twice below, the same reason PUT /api/alerts reads
+		// it: a row that cannot be read is a refusal rather than a silent fresh start.
+		onDisk, err := loadConfigFile(s.store)
+		if err != nil {
+			writeJSONError(w, http.StatusConflict, fmt.Errorf("config cannot be read, so saving over it would discard what it holds: %w", err))
+			return
+		}
+		// A token or password the page was never shown must not be redirected by it — the
+		// config-side mirror of the ai.key guard on PUT /api/alerts.
+		if err := checkNtfyCredsStayPut(onDisk, cfg, env); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err)
+			return
+		}
+		// No credential in the payload means "leave the stored one alone" — the page is
+		// never sent it, so PUT /api/config's own zero value here must not read as a
+		// clear. An empty string is the page saying clear it, which is honoured.
+		if cfg.Ntfy.Token == nil {
+			cfg.Ntfy.Token = onDisk.Ntfy.Token
+		} else if *cfg.Ntfy.Token == "" {
+			cfg.Ntfy.Token = nil
+		}
+		if cfg.Ntfy.Password == nil {
+			cfg.Ntfy.Password = onDisk.Ntfy.Password
+		} else if *cfg.Ntfy.Password == "" {
+			cfg.Ntfy.Password = nil
+		}
 		overlaid := *cfg
 		if err := applyConfigEnv(&overlaid, env); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err)
@@ -297,7 +323,7 @@ func (s *server) mux(q *queue) http.Handler {
 	})
 	mux.HandleFunc("POST /api/config/import", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-		var doc exportDocument
+		var doc importDocument
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&doc); err != nil {
@@ -311,13 +337,13 @@ func (s *server) mux(q *queue) http.Handler {
 		}
 		// The alerts document takes effect immediately rather than waiting for the
 		// next poll of the watcher, the same as any other write to that row.
-		if doc.Alerts != nil {
+		if len(doc.Alerts) > 0 {
 			if reloaded, err := LoadAlerts(os.Environ(), s.store); err == nil {
 				s.live.p.Store(reloaded)
 			}
 		}
 		resp := map[string]any{"ok": true}
-		if doc.Config != nil {
+		if len(doc.Config) > 0 {
 			resp["restart_required"] = true
 		}
 		w.Header().Set("Content-Type", "application/json")

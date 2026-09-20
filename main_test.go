@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestConfigCLIExportImportRoundTrip(t *testing.T) {
@@ -100,6 +101,67 @@ func TestConfigCLIExportRedactsOnRequest(t *testing.T) {
 	}
 	if got := string(blob); !strings.Contains(got, `"ai_key_set": true`) || strings.Contains(got, "sk-or-v1-secret") {
 		t.Fatalf("redacted export leaked the key or omitted the flag:\n%s", got)
+	}
+}
+
+// An export carries plaintext credentials by default, so the file it writes must be
+// owner-only — including when it overwrites a file that previously had broader
+// permissions, since WriteFile alone would leave those in place.
+func TestConfigCLIExportIsOwnerOnly(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "config.db")
+	t.Setenv("SKY_CONFIG_DB", dbPath)
+	store, err := OpenSettings(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put("alerts", `{"ai":{"key":"sk-or-v1-secret"}}`); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	out := filepath.Join(t.TempDir(), "export.json")
+	if err := os.WriteFile(out, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runConfigCLI(true, "", out, false); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("export file mode = %o, want 0600 (an existing 0644 file must be narrowed, not left as-is)", perm)
+	}
+}
+
+// An import that omits a field must get the same default a PUT would give it, not that
+// field's zero value: importSettings decodes each section onto defaultAlerts()/
+// defaultConfig(), exactly as its PUT handler decodes onto them.
+func TestConfigCLIImportAppliesDefaultsToOmittedFields(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "config.db")
+	t.Setenv("SKY_CONFIG_DB", dbPath)
+	seed := filepath.Join(t.TempDir(), "sparse.json")
+	if err := os.WriteFile(seed, []byte(`{"alerts":{"rules":[]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runConfigCLI(false, seed, "", false); err != nil {
+		t.Fatalf("sparse import: %v", err)
+	}
+	store, err := OpenSettings(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	alerts, err := LoadAlerts(nil, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alerts.Ntfy.Priority != 3 {
+		t.Errorf("ntfy.priority = %d, want the default 3, not the zero value", alerts.Ntfy.Priority)
+	}
+	if alerts.Cooldown.Std() != 24*time.Hour {
+		t.Errorf("cooldown = %s, want the default 24h", alerts.Cooldown.Std())
 	}
 }
 
