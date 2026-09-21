@@ -254,10 +254,20 @@ input[type=text],input[type=number],input[type=password],select,textarea{border:
   border-radius:var(--rs);padding:7px 9px;width:100%;min-width:0}
 input:disabled,select:disabled{background:var(--sunk);color:var(--fg3);cursor:not-allowed}
 input::placeholder,textarea::placeholder{color:var(--fg3)}
+
+/* A fixed, non-editable tail glued to a text box — e.g. the endpoint's
+   "/chat/completions", which the server appends and typing can't change. */
+.input-group{display:flex;min-width:0}
+.input-group input{border-top-right-radius:0;border-bottom-right-radius:0;flex:1;min-width:0}
+.input-group .suffix{flex:none;display:flex;align-items:center;padding:0 9px;
+  border:1px solid var(--line2);border-left:0;border-top-right-radius:var(--rs);
+  border-bottom-right-radius:var(--rs);background:var(--sunk);color:var(--fg3);
+  font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 textarea{resize:vertical;line-height:1.45}
 .numrow input.num{width:10ch;text-align:right}
 
 .fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px 18px}
+.fields.two{grid-template-columns:repeat(2,minmax(0,1fr))}
 .field{display:grid;gap:5px;align-content:start;min-width:0}
 .field.narrow{max-width:300px}
 .field.wide{grid-column:1/-1}
@@ -293,6 +303,7 @@ textarea{resize:vertical;line-height:1.45}
 @media (max-width:600px){
   .group-h{flex-direction:column;align-items:stretch}
   .group-h .mini{align-self:flex-start}
+  .fields.two{grid-template-columns:1fr}
 }
 @media (pointer:coarse){
   .chip button{width:24px;height:24px}
@@ -1972,7 +1983,7 @@ function renderSettings(pane) {
   head.append(back, el('h2', '', 'Settings'));
   pane.append(head);
 
-  const band = (title, help, fields) => {
+  const band = (title, help, fields, wide) => {
     const sec = el('div', 'group');
     const gh = el('div', 'group-h');
     const t = el('div', 'group-t');
@@ -1980,7 +1991,9 @@ function renderSettings(pane) {
     if (help) t.append(el('p', 'help', help));
     gh.append(t);
     sec.append(gh);
-    const grid = el('div', 'fields');
+    /* The AI research row's endpoint box needs more room for its "/chat/completions"
+       suffix than the usual auto-fit columns leave it — fixed at two per row instead. */
+    const grid = el('div', wide ? 'fields two' : 'fields');
     for (const f of fields) grid.append(settingField(f));
     sec.append(grid);
     pane.append(sec);
@@ -1992,8 +2005,7 @@ function renderSettings(pane) {
   ]);
   band('Notifications', null, [
     {key: 'ntfy.priority', label: 'Default priority',
-     options: PRIORITIES.filter(([v]) => v > 0).map(([v, t]) => [String(v), `${v} — ${t}`]),
-     help: 'Used by any rule that does not set its own.'},
+     options: PRIORITIES.filter(([v]) => v > 0).map(([v, t]) => [String(v), `${v} — ${t}`])},
     {key: 'cooldown', label: 'Cooldown', placeholder: '24h',
      help: 'Stay quiet this long after alerting about the same aircraft. Counted per rule.'},
   ]);
@@ -2005,25 +2017,16 @@ function renderSettings(pane) {
      options: ['debug', 'info', 'warn', 'error'].map(v => [v, v])},
   ]);
 
-  band('AI research', 'Answers rules that ask who an aircraft belongs to. Any OpenAI-compatible provider works — OpenRouter, Ollama, vLLM, OpenAI — and "/chat/completions" is added to the endpoint.', [
-    {key: 'ai.url', label: 'Endpoint', placeholder: 'https://openrouter.ai/api/v1',
-     help: 'Leave this and the model blank to turn research off. The stored key is removed with it.'},
-    {key: 'ai.model', label: 'Model', placeholder: 'perplexity/sonar',
-     help: 'Passed through as written. Searching the web is the model\'s job: pick one that does it.'},
+  band('AI research', null, [
+    {key: 'ai.url', label: 'Endpoint', placeholder: 'https://openrouter.ai/api/v1', suffix: '/chat/completions'},
+    {key: 'ai.model', label: 'Model', placeholder: 'perplexity/sonar'},
     {key: 'ai.key', label: 'API key', secret: true},
-    {key: 'ai.timeout', label: 'Give up after', placeholder: '20s',
-     help: 'A slow answer delays later alerts, since notifications are sent one at a time.'},
+    {key: 'ai.timeout', label: 'Give up after', placeholder: '20s'},
     {key: 'ai.research_prompt', label: 'Default research prompt', multiline: true, rows: 5,
-     fallback: builtinPrompt, resettable: true,
-     help: 'Asked about an aircraft when a rule turns Research on and sets no question of '
-       + 'its own. A rule can still write its own prompt to override this.'},
-  ]);
+     fallback: builtinPrompt, resettable: true},
+  ], true);
 
   const foot = el('div', 'group');
-  foot.append(el('p', 'help',
-    'The feeder address, ntfy account and cache settings are startup-only and not editable here.'));
-  foot.append(el('p', 'help',
-    'Changes made outside this page — PUT /api/alerts, or -config-import — are picked up too. A direct edit to the database row is not: it must also bump that row\'s version column, which only those two paths do.'));
   foot.append(saveBtn);
   pane.append(foot);
 }
@@ -2034,6 +2037,15 @@ function settingField(f) {
   const wrap = el('label', f.multiline ? 'field wide' : 'field');
   wrap.append(el('span', 'lbl', f.label));
   const input = f.multiline ? el('textarea') : f.options ? el('select') : el('input');
+  /* A fixed suffix (e.g. ai.url's "/chat/completions") rides along with the input
+     wherever it gets appended, so every path below — locked, pinned, editable —
+     shows it the same way instead of only the common case. */
+  const appendInput = () => {
+    if (!f.suffix) { wrap.append(input); return; }
+    const grp = el('div', 'input-group');
+    grp.append(input, el('span', 'suffix', f.suffix));
+    wrap.append(grp);
+  };
   if (f.multiline) {
     input.rows = f.rows || 3;
     if (f.placeholder) input.placeholder = f.placeholder;
@@ -2073,7 +2085,7 @@ function settingField(f) {
       input.add(new Option(lock.value, lock.value), input.firstChild);
       input.value = lock.value;
     }
-    wrap.append(input);
+    appendInput();
     const note = el('span', 'help lock');
     if (!f.secret) {
       note.append('Set by ' + lock.env + ' environment variable.');
@@ -2120,7 +2132,8 @@ function settingField(f) {
      lock still carries one (''), which is how this is told apart from a real key. */
   if (f.key === 'ai.url' && locks[AI_KEY] && locks[AI_KEY].value === undefined) {
     input.disabled = true;
-    wrap.append(input, el('span', 'help lock',
+    appendInput();
+    wrap.append(el('span', 'help lock',
       'Pinned by ' + locks[AI_KEY].env + ', which holds the API key. Set SKY_AI_URL to move it.'));
     return wrap;
   }
@@ -2164,7 +2177,7 @@ function settingField(f) {
       if (help) help.replaceWith(keyHelp());
     }
   };
-  wrap.append(input);
+  appendInput();
   if (f.secret) wrap.append(keyHelp());
   /* Resetting discards whatever is in the box, not just what was last saved — so it
      costs a confirmation, the same as any other action that throws editing away. */
@@ -2193,7 +2206,7 @@ function keyHelp() {
       + 'sent to this page, so it cannot follow — enter the key for the new endpoint, or '
       + 'clear this box to remove it.'
     : aiKeySet
-      ? 'Stored on the server and never sent to this page. Leave it blank to keep it; clear the box after typing to remove it.'
+      ? ''
       : 'Sent to the provider, not to this page. Some local providers need none.');
   line.id = 'ai-key-help';
   return line;
