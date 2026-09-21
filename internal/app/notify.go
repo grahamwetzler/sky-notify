@@ -208,21 +208,6 @@ func (n *Notifier) research(ctx context.Context, a *Alert) string {
 	if shutdown.Err() != nil {
 		return ""
 	}
-	// Asked twice, before and after the route lookup, because the answer can change while
-	// we wait. The first reading is what keeps an alert that is not going to be researched
-	// away from the lookup service — the route is gathered for the provider and for
-	// nothing else, so no provider is as good a reason not to ask as no rule. The second
-	// is the one that decides, because it is the one taken immediately before the aircraft
-	// is sent to a third party.
-	if !willResearch(n.live.Get(), a) {
-		return ""
-	}
-	// On ctx and its own budget, never the provider's: an unreachable lookup service must
-	// cost the model a line of context, not the answer itself. Publish has already spent
-	// up to the map budget by now, so what is left is the notify budget, which this shares
-	// with the call below rather than borrowing from it.
-	a.Route = n.route(ctx, a)
-
 	cfg := n.live.Get()
 	if !willResearch(cfg, a) {
 		return ""
@@ -241,8 +226,7 @@ func (n *Notifier) research(ctx context.Context, a *Alert) string {
 }
 
 // willResearch reports whether this alert is going to be put to a provider under these
-// rules: a rule that asks, and a provider to ask. Both are hot-reloaded, so it is asked
-// again after anything that waits.
+// rules: a rule that asks, and a provider to ask.
 func willResearch(cfg *Alerts, a *Alert) bool {
 	// Publish is past the queue's last gate and will deliver whatever it has prepared —
 	// an alert already in flight is not recalled — but a rule muted or excepted while the
@@ -259,28 +243,6 @@ func willResearch(cfg *Alerts, a *Alert) bool {
 		return false
 	}
 	return true
-}
-
-// route asks the lookup service where this callsign flies between, for the facts block and
-// nothing else. Called from research and only from research: the service is a third party,
-// and an alert nobody is asking a model about has no reason to reach one. A failure costs
-// the model one line of context, never the notification.
-func (n *Notifier) route(ctx context.Context, a *Alert) string {
-	callsign := strings.TrimSpace(a.AC.Flight)
-	if n.cfg.RouteAPIURL == "" || callsign == "" || a.AC.Lat == nil || a.AC.Lon == nil {
-		return ""
-	}
-	rctx, cancel := context.WithTimeout(ctx, routeBudget)
-	defer cancel()
-	if shutdown := n.shutdown; shutdown != nil {
-		defer context.AfterFunc(shutdown, cancel)()
-	}
-	r, err := lookupRoute(rctx, n.aiClient, n.cfg.RouteAPIURL, callsign, *a.AC.Lat, *a.AC.Lon)
-	if err != nil {
-		slog.Warn("route lookup failed, researching without it", "icao", a.Hex, "err", err)
-		return ""
-	}
-	return r
 }
 
 // send makes one delivery attempt: an attachment PUT when there is an image, and

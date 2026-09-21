@@ -87,9 +87,6 @@ type Config struct {
 	CacheDir   string `yaml:"cache_dir" json:"cache_dir"`
 	Tar1090URL string `yaml:"tar1090_url" json:"tar1090_url"`
 	Listen     string `yaml:"listen" json:"listen"`
-	// RouteAPIURL is the flight-route lookup asked about a callsign before a rule's
-	// research question goes to the model, and only then. Empty asks nobody.
-	RouteAPIURL string `yaml:"route_api_url" json:"route_api_url"`
 }
 
 type Alerts struct {
@@ -157,9 +154,6 @@ func defaultConfig() *Config {
 	// deployment: OpenFreeMap is a free public service with no key and no account, so a
 	// default here misconfigures nothing. Point it at a self-hosted planet to change that.
 	c.Map.TilesURL = "https://tiles.openfreemap.org/planet"
-	// Same reasoning, and the same service tar1090 defaults to: a public lookup with no
-	// key and no account. Nothing reaches it unless a rule asks for research.
-	c.RouteAPIURL = defaultRouteAPIURL
 	return c
 }
 
@@ -211,7 +205,6 @@ func envBindings() []envBinding {
 
 		{"SKY_CACHE_DIR", "cache_dir", func(c *Config, v string) error { c.CacheDir = v; return nil }},
 		{"SKY_TAR1090_URL", "tar1090_url", func(c *Config, v string) error { c.Tar1090URL = v; return nil }},
-		{"SKY_ROUTE_API_URL", "route_api_url", func(c *Config, v string) error { c.RouteAPIURL = v; return nil }},
 		{"SKY_LISTEN", "listen", func(c *Config, v string) error { c.Listen = v; return nil }},
 	}
 }

@@ -22,8 +22,7 @@
     },
     "cache_dir": "",
     "tar1090_url": "",
-    "listen": ":8080",
-    "route_api_url": "https://adsb.im/api/0/routeset"
+    "listen": ":8080"
   },
   "alerts": {
     "source": {

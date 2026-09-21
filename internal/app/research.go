@@ -258,7 +258,6 @@ func (a *Alert) facts() string {
 	writeLine(&b, "ICAO", a.Hex)
 	writeLine(&b, "Type", a.acType())
 	writeLine(&b, "Callsign", strings.TrimSpace(a.AC.Flight))
-	writeLine(&b, "Route", a.Route)
 	// What the feeder's own database says about the airframe, which is not always what
 	// the interesting-aircraft list says: both are worth having in front of the model.
 	writeLine(&b, "Description", a.AC.Desc)

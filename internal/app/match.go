@@ -54,9 +54,6 @@ type Alert struct {
 	// what to ask is read from the rules as they are at delivery, never as they were at
 	// the match, so a rule that stopped asking in between is not asked for.
 	Research string
-	// Route is where the callsign flies between, looked up on the notify path beside
-	// Research and for it: it is context for the model, not a line of the notification.
-	Route string
 	// AtClosest is set by a rule that notifies at the closest pass. Before delivery it
 	// is what tells the poll loop to hold the alert; after it, what puts the distance of
 	// the pass in the notification. Both are the same fact: this alert describes a pass,

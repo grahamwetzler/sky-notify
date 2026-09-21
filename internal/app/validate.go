@@ -72,11 +72,6 @@ func (c *Config) validate() error {
 			return err
 		}
 	}
-	if c.RouteAPIURL != "" {
-		if err := checkHTTPURL("route_api_url", c.RouteAPIURL); err != nil {
-			return err
-		}
-	}
 	if c.mapEnabled() {
 		if err := checkHTTPURL("map.tiles_url", c.Map.TilesURL); err != nil {
 			return err

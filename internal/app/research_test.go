@@ -192,9 +192,8 @@ func TestFactsCarryWhatIdentifiesTheAircraft(t *testing.T) {
 	lat, lon := 32.9126, -96.6389
 	a.AC.Lat, a.AC.Lon = &lat, &lon
 	a.HasDistance, a.DistanceNM, a.Circling = true, 3.2, true
-	// Everything else aircraft.json carries about the airframe, plus the looked-up route.
+	// Everything else aircraft.json carries about the airframe.
 	rate, track := -1088.0, 298.29
-	a.Route = "KMCO (Orlando) → KLAS (Las Vegas)"
 	a.AC.Desc, a.AC.OwnOp, a.AC.Year = "BOEING C-17A", "US AIR FORCE", "1998"
 	a.AC.BaroRate, a.AC.Track, a.AC.GS = &rate, &track, 459.9
 	a.AC.Squawk, a.AC.DBFlags = "4571", 1
@@ -203,7 +202,6 @@ func TestFactsCarryWhatIdentifiesTheAircraft(t *testing.T) {
 		"Registration: N12345", "ICAO: adeb2f", "Type: C-17", "Callsign: RCH123",
 		"Altitude: 31000 ft", "Position: 32.9126, -96.6389", "Distance from receiver: 3.2 NM",
 		"Circling: yes",
-		"Route: KMCO (Orlando) → KLAS (Las Vegas)",
 		"Description: BOEING C-17A", "Owner/operator: US AIR FORCE", "Year: 1998",
 		"Vertical rate: -1088 ft/min", "Ground speed: 460 kt", "Heading: 298°",
 		"Squawk: 4571", "Feeder flags: military",
@@ -237,7 +235,6 @@ func TestSampleFactsShowsEveryLine(t *testing.T) {
 	rate, track := -1088.0, 78.0
 	a.AC.Lat, a.AC.Lon = &lat, &lon
 	a.HasDistance, a.DistanceNM, a.Circling = true, 3.2, true
-	a.Route = "KCHS (Charleston) → EDDK (Cologne)"
 	a.AC.Desc, a.AC.OwnOp, a.AC.Year = "BOEING C-17A", "UNITED STATES AIR FORCE", "1998"
 	a.AC.BaroRate, a.AC.Track, a.AC.GS = &rate, &track, 412
 	a.AC.Squawk, a.AC.DBFlags = "4571", 1
@@ -298,74 +295,6 @@ func TestResearchKeepsTheEndpointQuery(t *testing.T) {
 	}
 	if gotQuery != "api-version=2024-02-01" {
 		t.Errorf("the endpoint query did not survive: %q", gotQuery)
-	}
-}
-
-// ---------- the route lookup ----------
-
-func TestLookupRoute(t *testing.T) {
-	const found = `[{"_airports":[{"icao":"KMCO","iata":"MCO","location":"Orlando"},
-		{"icao":"KLAS","iata":"LAS","location":"Las Vegas"}],"airport_codes":"KMCO-KLAS"}]`
-	// What the service answers for every callsign it has no schedule for, which is most
-	// of a military feed: an empty list, not an error.
-	const unknown = `[{"_airports":[],"airport_codes":"unknown"}]`
-
-	for _, tc := range []struct {
-		name, body, want string
-	}{
-		{"found", found, "KMCO (Orlando) → KLAS (Las Vegas)"},
-		{"unknown", unknown, ""},
-		{"no answer at all", `[]`, ""},
-		// No airport list, but codes: still a route, and still worth telling the model.
-		{"codes only", `[{"airport_codes":"EGLL-KJFK"}]`, "EGLL → KJFK"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var got map[string]any
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				json.NewDecoder(r.Body).Decode(&got)
-				w.Write([]byte(tc.body))
-			}))
-			defer srv.Close()
-			route, err := lookupRoute(context.Background(), srv.Client(), srv.URL, "JBU2821", 32.59, -99.32)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if route != tc.want {
-				t.Errorf("lookupRoute = %q, want %q", route, tc.want)
-			}
-			// The position goes with the callsign: without it the service cannot pick
-			// between the flights that share one.
-			planes, _ := got["planes"].([]any)
-			if len(planes) != 1 {
-				t.Fatalf("request sent %d planes, want 1: %v", len(planes), got)
-			}
-			p, _ := planes[0].(map[string]any)
-			if p["callsign"] != "JBU2821" || p["lat"] != 32.59 || p["lng"] != -99.32 {
-				t.Errorf("request asked about %v", p)
-			}
-		})
-	}
-}
-
-func TestLookupRouteRefusesABadAnswer(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		status int
-		body   string
-	}{
-		{"error status", http.StatusInternalServerError, `[]`},
-		{"not json", http.StatusOK, `<html>nope</html>`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(tc.status)
-				w.Write([]byte(tc.body))
-			}))
-			defer srv.Close()
-			if _, err := lookupRoute(context.Background(), srv.Client(), srv.URL, "JBU2821", 1, 2); err == nil {
-				t.Error("lookupRoute accepted an answer it should have refused")
-			}
-		})
 	}
 }
 
@@ -595,116 +524,6 @@ func TestResearchIsDecidedAfterTheMapRender(t *testing.T) {
 	}
 }
 
-// The route lookup widened the window the map render opened: the aircraft reaches the
-// lookup service, and then up to routeBudget later it reaches the provider. The reading
-// that decides is the one taken after the wait, not before it.
-func TestResearchIsDecidedAfterTheRouteLookup(t *testing.T) {
-	ai := &aiServer{answer: "should never be asked"}
-	n, nt, alerts := researchNotifier(t, ai)
-	on := true
-	alerts.Rules = []Rule{{Name: "listed", Research: &on}}
-
-	// A route service that answers only once the test says so, which holds the lookup
-	// open for the length of the edit.
-	asking, release := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	route := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		once.Do(func() { close(asking) })
-		<-release
-		w.Write([]byte(`[{"_airports":[],"airport_codes":"unknown"}]`))
-	}))
-	defer route.Close()
-	n.cfg.RouteAPIURL = route.URL
-
-	a := testAlert()
-	lat, lon := 32.59, -99.32
-	a.AC.Lat, a.AC.Lon = &lat, &lon
-	done := make(chan error, 1)
-	go func() { done <- n.Publish(context.Background(), a) }()
-
-	<-asking
-	off := *alerts
-	off.Rules = []Rule{{Name: "listed"}}
-	n.live.p.Store(&off)
-	close(release)
-
-	if err := <-done; err != nil {
-		t.Fatalf("Publish: %v", err)
-	}
-	if len(ai.reqs) != 0 {
-		t.Errorf("provider was asked %d times after research was switched off mid-lookup", len(ai.reqs))
-	}
-	if len(nt.bodies) != 1 || strings.Contains(nt.bodies[0].Message, researchMark) {
-		t.Errorf("the alert should have gone out without the line:\n%v", nt.bodies)
-	}
-}
-
-// The route is optional context. A lookup service that has stopped answering must cost
-// the model that line and nothing else — not the research call, which has its own
-// timeout and is entitled to all of it.
-func TestASlowRouteLookupDoesNotSpendTheAITimeout(t *testing.T) {
-	ai := &aiServer{answer: "A JetBlue scheduled passenger flight."}
-	n, nt, alerts := researchNotifier(t, ai)
-	alerts.AI.Timeout = Duration(100 * time.Millisecond)
-
-	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case <-time.After(500 * time.Millisecond): // well past the provider's whole budget
-		case <-r.Context().Done():
-			return
-		}
-		w.Write([]byte(`[{"_airports":[],"airport_codes":"unknown"}]`))
-	}))
-	defer slow.Close()
-	n.cfg.RouteAPIURL = slow.URL
-	n.aiClient = slow.Client()
-
-	a := testAlert()
-	lat, lon := 32.59, -99.32
-	a.AC.Lat, a.AC.Lon = &lat, &lon
-	researchRule(alerts, a.Trigger)
-	if err := n.Publish(context.Background(), a); err != nil {
-		t.Fatalf("Publish: %v", err)
-	}
-	if got, want := nt.bodies[0].Message, researchMark+ai.answer; got != want {
-		t.Errorf("a slow route lookup took the research line with it: got %q, want %q", got, want)
-	}
-}
-
-// The route is gathered for the provider and for nothing else. A rule left saying
-// research: true after the provider was cleared must not still send the callsign and
-// position to the lookup service — nor spend the lookup budget on the way to sending
-// nothing.
-func TestNoProviderMeansNoRouteLookupEither(t *testing.T) {
-	nt := &ntfyServer{}
-	n := nt.start(t, testConfig(t))
-	alerts := testAlerts() // no ai.url, no ai.model: research is off
-	on := true
-	alerts.Rules = []Rule{{Name: "listed", Research: &on}}
-	n.live = NewLive(alerts)
-
-	asked := 0
-	route := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		asked++
-		w.Write([]byte(`[{"_airports":[],"airport_codes":"unknown"}]`))
-	}))
-	defer route.Close()
-	n.cfg.RouteAPIURL = route.URL
-
-	a := testAlert()
-	lat, lon := 32.59, -99.32
-	a.AC.Lat, a.AC.Lon = &lat, &lon
-	if err := n.Publish(context.Background(), a); err != nil {
-		t.Fatalf("Publish: %v", err)
-	}
-	if asked != 0 {
-		t.Errorf("the route service was asked %d times with no provider to send the answer to", asked)
-	}
-	if len(nt.bodies) != 1 || strings.Contains(nt.bodies[0].Message, researchMark) {
-		t.Errorf("the alert should still have gone out, without the line:\n%v", nt.bodies)
-	}
-}
-
 // Publish is past the queue's last gate and will deliver what it has prepared — an alert
 // already in flight is not recalled. But a rule muted while the picture was drawing has
 // said not to alert on this aircraft, and paying a third party to research it anyway is
@@ -715,23 +534,27 @@ func TestAMuteMidRenderStopsTheProviderCall(t *testing.T) {
 	on := true
 	alerts.Rules = []Rule{{Name: "listed", Research: &on}}
 
-	asking, release := make(chan struct{}), make(chan struct{})
+	// A tile server that answers only once the test says so, which is how the render is
+	// held open for the length of the edit.
+	rendering, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	route := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		once.Do(func() { close(asking) })
+	tiles := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(rendering) })
 		<-release
-		w.Write([]byte(`[{"_airports":[],"airport_codes":"unknown"}]`))
+		w.WriteHeader(http.StatusNotFound)
 	}))
-	defer route.Close()
-	n.cfg.RouteAPIURL = route.URL
+	t.Cleanup(tiles.Close)
+	maps, err := newMapRenderer(newTileStore(tiles.Client(), tiles.URL, t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.maps = maps
 
-	a := testAlert()
-	lat, lon := 32.59, -99.32
-	a.AC.Lat, a.AC.Lon = &lat, &lon
+	a := testAlert() // Trigger "listed", and a receiver distance, so there is a map to draw
 	done := make(chan error, 1)
 	go func() { done <- n.Publish(context.Background(), a) }()
 
-	<-asking
+	<-rendering
 	muted := *alerts
 	muted.Rules = []Rule{{Name: "listed", Research: &on, Priority: intp(0)}}
 	n.live.p.Store(&muted)
