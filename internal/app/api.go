@@ -100,9 +100,7 @@ func (s *server) mux(q *queue) http.Handler {
 	mux.HandleFunc("POST /api/preview", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		var rule Rule
-		dec := json.NewDecoder(r.Body)
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&rule); err != nil {
+		if err := decodeStrict(r.Body, &rule); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -158,9 +156,7 @@ func (s *server) mux(q *queue) http.Handler {
 	mux.HandleFunc("PUT /api/alerts", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		alerts := defaultAlerts()
-		dec := json.NewDecoder(r.Body)
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(alerts); err != nil {
+		if err := decodeStrict(r.Body, alerts); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -200,14 +196,7 @@ func (s *server) mux(q *queue) http.Handler {
 		// and would refuse the honest re-enable with an error naming no origin at all.
 		// Off for the run is not off: a variable that blanks the endpoint leaves the
 		// file's own, and the key it was issued for, alone.
-		switch {
-		case aiKeyEndpoint(alerts, env) == "":
-			alerts.AI.Key = nil
-		case alerts.AI.Key == nil:
-			alerts.AI.Key = onDisk.AI.Key
-		case *alerts.AI.Key == "":
-			alerts.AI.Key = nil
-		}
+		mergeAIKey(alerts, onDisk, env)
 		overlaid := *alerts
 		if err := applyAlertEnv(&overlaid, env); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err)
@@ -263,9 +252,7 @@ func (s *server) mux(q *queue) http.Handler {
 	mux.HandleFunc("PUT /api/config", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		cfg := defaultConfig()
-		dec := json.NewDecoder(r.Body)
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(cfg); err != nil {
+		if err := decodeStrict(r.Body, cfg); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -285,26 +272,12 @@ func (s *server) mux(q *queue) http.Handler {
 		}
 		// No credential in the payload means "leave the stored one alone" — the page is
 		// never sent it, so PUT /api/config's own zero value here must not read as a
-		// clear. An empty string is the page saying clear it, which is honoured.
-		if cfg.Ntfy.Token == nil {
-			cfg.Ntfy.Token = onDisk.Ntfy.Token
-		} else if *cfg.Ntfy.Token == "" {
-			cfg.Ntfy.Token = nil
-		}
-		if cfg.Ntfy.Password == nil {
-			cfg.Ntfy.Password = onDisk.Ntfy.Password
-		} else if *cfg.Ntfy.Password == "" {
-			cfg.Ntfy.Password = nil
-		}
-		// Same three-way handling as the credentials above: the page is never sent the
-		// topic either, so an omitted field means "keep it" and an explicit empty string
-		// means "clear it" — which validate() below then rejects, since a topic is
-		// required.
-		if cfg.Ntfy.Topic == nil {
-			cfg.Ntfy.Topic = onDisk.Ntfy.Topic
-		} else if *cfg.Ntfy.Topic == "" {
-			cfg.Ntfy.Topic = nil
-		}
+		// clear. An empty string is the page saying clear it, which is honoured. Same
+		// three-way handling applies to the topic: validate() below rejects a cleared
+		// one, since a topic is required.
+		mergeWriteOnlyField(&cfg.Ntfy.Token, onDisk.Ntfy.Token)
+		mergeWriteOnlyField(&cfg.Ntfy.Password, onDisk.Ntfy.Password)
+		mergeWriteOnlyField(&cfg.Ntfy.Topic, onDisk.Ntfy.Topic)
 		overlaid := *cfg
 		if err := applyConfigEnv(&overlaid, env); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err)
@@ -342,9 +315,7 @@ func (s *server) mux(q *queue) http.Handler {
 	mux.HandleFunc("POST /api/config/import", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		var doc importDocument
-		dec := json.NewDecoder(r.Body)
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&doc); err != nil {
+		if err := decodeStrict(r.Body, &doc); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err)
 			return
 		}

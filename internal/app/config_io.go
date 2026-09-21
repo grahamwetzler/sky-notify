@@ -117,9 +117,7 @@ func importSettings(store *SettingsStore, doc *importDocument, env map[string]st
 
 	if len(doc.Config) > 0 && !isJSONNull(doc.Config) {
 		cfg := defaultConfig()
-		dec := json.NewDecoder(bytes.NewReader(doc.Config))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(cfg); err != nil {
+		if err := decodeStrict(bytes.NewReader(doc.Config), cfg); err != nil {
 			return fmt.Errorf("config: %w", err)
 		}
 		onDisk, err := loadConfigFile(store)
@@ -129,21 +127,9 @@ func importSettings(store *SettingsStore, doc *importDocument, env map[string]st
 		if err := checkNtfyCredsStayPut(onDisk, cfg, env); err != nil {
 			return err
 		}
-		if cfg.Ntfy.Token == nil {
-			cfg.Ntfy.Token = onDisk.Ntfy.Token
-		} else if *cfg.Ntfy.Token == "" {
-			cfg.Ntfy.Token = nil
-		}
-		if cfg.Ntfy.Password == nil {
-			cfg.Ntfy.Password = onDisk.Ntfy.Password
-		} else if *cfg.Ntfy.Password == "" {
-			cfg.Ntfy.Password = nil
-		}
-		if cfg.Ntfy.Topic == nil {
-			cfg.Ntfy.Topic = onDisk.Ntfy.Topic
-		} else if *cfg.Ntfy.Topic == "" {
-			cfg.Ntfy.Topic = nil
-		}
+		mergeWriteOnlyField(&cfg.Ntfy.Token, onDisk.Ntfy.Token)
+		mergeWriteOnlyField(&cfg.Ntfy.Password, onDisk.Ntfy.Password)
+		mergeWriteOnlyField(&cfg.Ntfy.Topic, onDisk.Ntfy.Topic)
 		overlaid := *cfg
 		if err := applyConfigEnv(&overlaid, env); err != nil {
 			return err
@@ -160,9 +146,7 @@ func importSettings(store *SettingsStore, doc *importDocument, env map[string]st
 
 	if len(doc.Alerts) > 0 && !isJSONNull(doc.Alerts) {
 		alerts := defaultAlerts()
-		dec := json.NewDecoder(bytes.NewReader(doc.Alerts))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(alerts); err != nil {
+		if err := decodeStrict(bytes.NewReader(doc.Alerts), alerts); err != nil {
 			return fmt.Errorf("alerts: %w", err)
 		}
 		onDisk, err := loadAlertsFile(store)
@@ -172,14 +156,7 @@ func importSettings(store *SettingsStore, doc *importDocument, env map[string]st
 		if err := checkAIKeyStaysPut(onDisk, alerts, env); err != nil {
 			return err
 		}
-		switch {
-		case aiKeyEndpoint(alerts, env) == "":
-			alerts.AI.Key = nil
-		case alerts.AI.Key == nil:
-			alerts.AI.Key = onDisk.AI.Key
-		case *alerts.AI.Key == "":
-			alerts.AI.Key = nil
-		}
+		mergeAIKey(alerts, onDisk, env)
 		overlaid := *alerts
 		if err := applyAlertEnv(&overlaid, env); err != nil {
 			return err

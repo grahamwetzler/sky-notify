@@ -225,6 +225,20 @@ const (
 	ntfyTopicEnv    = "SKY_NTFY_TOPIC"
 )
 
+// mergeWriteOnlyField resolves one write-only secret field for a save (PUT or import): a
+// nil incoming value means the payload never carried the field, so the value already on
+// disk is kept; a present empty string is the caller asking to clear it explicitly. Used
+// for ntfy.token, ntfy.password and ntfy.topic, which GET /api/config never echoes back.
+func mergeWriteOnlyField(incoming **string, onDisk *string) {
+	if *incoming == nil {
+		*incoming = onDisk
+		return
+	}
+	if **incoming == "" {
+		*incoming = nil
+	}
+}
+
 // ntfyEndpoint is the endpoint a document's stored ntfy credential belongs to — the
 // environment's when it names one, since applyConfigEnv overwrites whatever the payload
 // sent. Mirrors aiKeyEndpoint.

@@ -103,9 +103,7 @@ func runConfigCLI(doExport bool, importPath, out string, redact bool) error {
 		return err
 	}
 	var doc importDocument
-	dec := json.NewDecoder(bytes.NewReader(blob))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&doc); err != nil {
+	if err := decodeStrict(bytes.NewReader(blob), &doc); err != nil {
 		return fmt.Errorf("%s: %w", importPath, err)
 	}
 	return importSettings(store, &doc, environMap(os.Environ()))

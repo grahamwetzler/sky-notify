@@ -1,11 +1,22 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 )
+
+// decodeStrict decodes r as JSON onto v, rejecting any field v does not define. Shared by
+// every entry point that accepts a document from outside the process — the HTTP handlers,
+// CLI import, and the import document's own config/alerts sections — so all of them reject
+// an unknown field the same way rather than each redeclaring the decoder.
+func decodeStrict(r io.Reader, v any) error {
+	dec := json.NewDecoder(r)
+	dec.DisallowUnknownFields()
+	return dec.Decode(v)
+}
 
 // readLimited reads at most limit bytes and reports an error if the source had more,
 // so a truncated document is never mistaken for a complete short one.

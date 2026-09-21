@@ -109,6 +109,21 @@ func refuseAIKeyMove(onDisk, saved *Alerts, env map[string]string, now string) e
 	return fmt.Errorf("ai.url: the stored API key was issued for %s and is never sent to this page, so it cannot follow the endpoint to %s — enter the key for the new endpoint, or clear it", aiOrigin(aiKeyEndpoint(onDisk, env)), aiOrigin(now))
 }
 
+// mergeAIKey resolves alerts.AI.Key for a save (PUT or import): an endpoint blanked for
+// this run keeps the file's key unused but intact; an omitted key keeps the one already
+// on disk; an explicit empty string clears it. Only reached once checkAIKeyStaysPut has
+// already refused any save that would carry the stored key to a new, unearned endpoint.
+func mergeAIKey(alerts, onDisk *Alerts, env map[string]string) {
+	switch {
+	case aiKeyEndpoint(alerts, env) == "":
+		alerts.AI.Key = nil
+	case alerts.AI.Key == nil:
+		alerts.AI.Key = onDisk.AI.Key
+	case *alerts.AI.Key == "":
+		alerts.AI.Key = nil
+	}
+}
+
 // researchMark opens the research line, in place of the "Key: value" every other line of
 // a notification body is: the model's sentence is the one line worth reading first, and a
 // label would spend the front of it saying so.

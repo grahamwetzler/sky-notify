@@ -55,6 +55,15 @@ func (s *SettingsStore) Get(section string) (data string, version int64, ok bool
 	return data, version, true, nil
 }
 
+// upsertSectionSQL inserts a section's document or, if the section already has a row,
+// updates it in place and bumps its version. RETURNING hands back the version in the same
+// statement so a caller never needs a second query to learn what it now is.
+const upsertSectionSQL = `
+	INSERT INTO settings (section, data, version, updated_at) VALUES (?, ?, 1, ?)
+	ON CONFLICT (section) DO UPDATE SET data = excluded.data, version = version + 1, updated_at = excluded.updated_at
+	RETURNING version
+`
+
 // Put upserts a section's document and returns the version it now has, so a caller that
 // needs to report what changed (the API handlers) does not have to read it back.
 //
@@ -62,11 +71,7 @@ func (s *SettingsStore) Get(section string) (data string, version int64, ok bool
 // followed by a separate QueryRow: two statements would let a concurrent Put on the same
 // section commit in between them, so both callers could read back the same version.
 func (s *SettingsStore) Put(section, data string) (version int64, err error) {
-	err = s.db.QueryRow(`
-		INSERT INTO settings (section, data, version, updated_at) VALUES (?, ?, 1, ?)
-		ON CONFLICT (section) DO UPDATE SET data = excluded.data, version = version + 1, updated_at = excluded.updated_at
-		RETURNING version
-	`, section, data, time.Now().UnixMilli()).Scan(&version)
+	err = s.db.QueryRow(upsertSectionSQL, section, data, time.Now().UnixMilli()).Scan(&version)
 	if err != nil {
 		return 0, err
 	}
@@ -112,14 +117,8 @@ func (s *SettingsStore) PutMany(docs map[string]string) (versions map[string]int
 	now := time.Now().UnixMilli()
 	versions = make(map[string]int64, len(docs))
 	for section, data := range docs {
-		if _, err := tx.Exec(`
-			INSERT INTO settings (section, data, version, updated_at) VALUES (?, ?, 1, ?)
-			ON CONFLICT (section) DO UPDATE SET data = excluded.data, version = version + 1, updated_at = excluded.updated_at
-		`, section, data, now); err != nil {
-			return nil, err
-		}
 		var v int64
-		if err := tx.QueryRow(`SELECT version FROM settings WHERE section = ?`, section).Scan(&v); err != nil {
+		if err := tx.QueryRow(upsertSectionSQL, section, data, now).Scan(&v); err != nil {
 			return nil, err
 		}
 		versions[section] = v
