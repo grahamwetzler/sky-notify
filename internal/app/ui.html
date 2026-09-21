@@ -2082,6 +2082,31 @@ function exportAlerts() {
   URL.revokeObjectURL(a.href);
 }
 
+/* The same flood guard save() applies to doc.rules, run instead against the rules a
+   file would install: import posts straight to the live document, so an unmuted
+   catch-all sitting in it must not go live with no warning just because it never
+   passed through this page's own preview cache. Asks /api/preview directly rather
+   than reusing immediate(), which reads meta(r) — a cache these rules were never
+   given a chance to populate. A rule the check cannot get an answer for is treated as
+   unbounded, the same as one with no current answer is in immediate(): unknown is the
+   risky case, not the safe one. */
+async function floodyImportRules(rules) {
+  const loud = [];
+  await Promise.all(rules.filter(r => r && r.priority !== 0).map(async r => {
+    let total = Infinity;
+    try {
+      const res = await fetch('/api/preview?' + new URLSearchParams({offset: 0, ...receiver()}), {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(r),
+      });
+      const body = await res.json();
+      if (res.ok) total = body.live?.total ?? Infinity;
+    } catch { /* stays Infinity */ }
+    if (total > FLOOD) loud.push({r, total});
+  }));
+  return loud;
+}
+
 /* Imports through the same endpoint -config-import uses, so the same guards apply: a
    key already on disk stays put unless the file carries one, and moving ai.url or
    ntfy.url away from a stored credential's origin is refused rather than silently
@@ -2095,6 +2120,16 @@ async function importAlerts(file) {
     return;
   }
   const alerts = parsed && typeof parsed === 'object' && 'alerts' in parsed ? parsed.alerts : parsed;
+  const loud = await floodyImportRules(Array.isArray(alerts?.rules) ? alerts.rules : []);
+  if (loud.length && !confirm(
+      loud.map(({r, total}) => ruleLabel(r) + ': ' + (Number.isFinite(total)
+          ? total.toLocaleString() + ' aircraft overhead right now'
+          : 'every aircraft the receiver hears')).join('\n')
+      + (loud.length > 1
+          ? '\n\nThese rules would send that many notifications the moment this import goes live. '
+          : '\n\nThis rule would send that many notifications the moment this import goes live. ')
+      + 'Edit the file to add a condition, or mute it, to stop that.\n\nImport anyway?'))
+    return;
   if (dirty && !confirm('Importing replaces every rule and setting below with the ones in ' +
       file.name + '. Unsaved changes on this page will be lost. Continue?'))
     return;
