@@ -2179,6 +2179,22 @@ function settingField(f) {
   };
   appendInput();
   if (f.secret) wrap.append(keyHelp());
+  /* The box starts empty even when a key is stored (the key is never sent to this
+     page), so there is nothing to select and delete — typing a character is what
+     arms the save, and only then does clearing the box send an empty key. This
+     button does that in one click instead. */
+  if (f.secret && aiKeySet) {
+    const clear = el('button', 'mini', 'Clear stored key');
+    clear.type = 'button';
+    clear.onclick = () => {
+      put(doc, f.key, '');
+      keyEdited = true;
+      aiKeySet = false;
+      markDirty();
+      renderPane();
+    };
+    wrap.append(clear);
+  }
   /* Resetting discards whatever is in the box, not just what was last saved — so it
      costs a confirmation, the same as any other action that throws editing away. */
   if (f.resettable) {
