@@ -174,6 +174,7 @@ svg{display:block;fill:none;stroke:currentColor;stroke-width:1.6;
 .group-h{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
 .group-h .help{margin-top:3px}
 .group-t{min-width:0}
+.btn-row{display:flex;gap:10px;flex-wrap:wrap}
 
 .hits{border:1px solid var(--line);border-radius:var(--rs);overflow:auto;
   max-height:260px;background:var(--panel);overscroll-behavior-x:contain}
@@ -268,6 +269,11 @@ textarea{resize:vertical;line-height:1.45}
 
 .fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px 18px}
 .fields.two{grid-template-columns:repeat(2,minmax(0,1fr))}
+/* A field's label sits in its own local grid row, so one label wrapping to two lines
+   (e.g. the database-refresh field) shifts only its own input down, out of line with
+   its neighbors'. align-lbl reserves two lines for every label in the row so the
+   inputs stay level regardless of which label wraps. */
+.fields.align-lbl .field .lbl{min-height:2.8em}
 .field{display:grid;gap:5px;align-content:start;min-width:0}
 .field.narrow{max-width:300px}
 .field.wide{grid-column:1/-1}
@@ -1983,7 +1989,7 @@ function renderSettings(pane) {
   head.append(back, el('h2', '', 'Settings'));
   pane.append(head);
 
-  const band = (title, help, fields, wide) => {
+  const band = (title, help, fields, extra) => {
     const sec = el('div', 'group');
     const gh = el('div', 'group-h');
     const t = el('div', 'group-t');
@@ -1992,8 +1998,9 @@ function renderSettings(pane) {
     gh.append(t);
     sec.append(gh);
     /* The AI research row's endpoint box needs more room for its "/chat/completions"
-       suffix than the usual auto-fit columns leave it — fixed at two per row instead. */
-    const grid = el('div', wide ? 'fields two' : 'fields');
+       suffix than the usual auto-fit columns leave it — fixed at two per row instead.
+       Other bands can instead pass an extra class name, e.g. 'align-lbl'. */
+    const grid = el('div', extra === true ? 'fields two' : extra ? `fields ${extra}` : 'fields');
     for (const f of fields) grid.append(settingField(f));
     sec.append(grid);
     pane.append(sec);
@@ -2015,7 +2022,7 @@ function renderSettings(pane) {
     {key: 'db.refresh_interval', label: 'Update the interesting aircraft database every', placeholder: '24h'},
     {key: 'log_level', label: 'Log level',
      options: ['debug', 'info', 'warn', 'error'].map(v => [v, v])},
-  ]);
+  ], 'align-lbl');
 
   band('AI research', null, [
     {key: 'ai.url', label: 'Endpoint', placeholder: 'https://openrouter.ai/api/v1', suffix: '/chat/completions'},
@@ -2026,9 +2033,84 @@ function renderSettings(pane) {
      fallback: builtinPrompt, resettable: true},
   ], true);
 
+  const backup = el('div', 'group');
+  const bh = el('div', 'group-h');
+  const bt = el('div', 'group-t');
+  bt.append(el('h3', 'lbl', 'Backup'));
+  bt.append(el('p', 'help',
+    'Save every rule and setting below to a file, or load them from one. The AI API key is never included — import keeps whatever key is already configured.'));
+  bh.append(bt);
+  backup.append(bh);
+  const brow = el('div', 'btn-row');
+  const exportBtn = el('button', 'btn', 'Export…');
+  exportBtn.type = 'button';
+  exportBtn.onclick = exportAlerts;
+  const importBtn = el('button', 'btn', 'Import…');
+  importBtn.type = 'button';
+  const fileInput = el('input');
+  fileInput.type = 'file';
+  fileInput.accept = 'application/json,.json';
+  fileInput.hidden = true;
+  importBtn.onclick = () => fileInput.click();
+  fileInput.onchange = () => {
+    const file = fileInput.files[0];
+    fileInput.value = '';
+    if (file) importAlerts(file);
+  };
+  brow.append(exportBtn, importBtn, fileInput);
+  backup.append(brow);
+  pane.append(backup);
+
   const foot = el('div', 'group');
   foot.append(saveBtn);
   pane.append(foot);
+}
+
+/* Everything payload() would save, minus the AI key: an export must never carry it,
+   whether or not the key box was just edited (payload() only omits it when untouched). */
+function exportAlerts() {
+  const out = payload();
+  if (out.ai) delete out.ai.key;
+  const wrapped = {exported_at: new Date().toISOString(), alerts: out};
+  const blob = new Blob([JSON.stringify(wrapped, null, 2)], {type: 'application/json'});
+  const a = el('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `sky-notify-settings-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(a.href);
+}
+
+/* Imports through the same endpoint -config-import uses, so the same guards apply: a
+   key already on disk stays put unless the file carries one, and moving ai.url or
+   ntfy.url away from a stored credential's origin is refused rather than silently
+   dropping it. */
+async function importAlerts(file) {
+  let parsed;
+  try {
+    parsed = JSON.parse(await file.text());
+  } catch {
+    message(`${file.name} is not valid JSON.`, 'bad');
+    return;
+  }
+  const alerts = parsed && typeof parsed === 'object' && 'alerts' in parsed ? parsed.alerts : parsed;
+  if (dirty && !confirm('Importing replaces every rule and setting below with the ones in ' +
+      file.name + '. Unsaved changes on this page will be lost. Continue?'))
+    return;
+  try {
+    const res = await fetch('/api/config/import', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({alerts}),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw Error(body.error || `Import failed (HTTP ${res.status}).`);
+    dirty = false;
+    await load();
+    message('Imported. The change takes effect within five seconds.', 'good');
+  } catch (err) {
+    message(err.message, 'bad');
+  }
 }
 
 function settingField(f) {
