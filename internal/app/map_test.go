@@ -850,3 +850,43 @@ func TestTheIconFollowsTheTypeThenTheCategory(t *testing.T) {
 		}
 	}
 }
+
+// A circling alert is about the circle, so the whole orbit has to be in the picture —
+// but only the orbit: the leg the aircraft flew to get there still runs off the edge.
+func TestACirclingAircraftsOrbitIsFramed(t *testing.T) {
+	a := mapAlert(false)
+	a.HasDistance = false
+	a.Circling = true
+	base := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	// A long approach from the far west, well outside circleWindow of the latest sample.
+	a.Path = []sample{{base, 32.93, -97.5, 90}, {base.Add(30 * time.Second), 32.93, -97.4, 90}}
+	// Then a 1.5 NM orbit whose centre is east of where the aircraft is now, sampled
+	// every 20 s for one lap starting 15 minutes later.
+	cLat, cLon, r := 32.93, -96.60+1.5/60/math.Cos(32.93*math.Pi/180), 1.5/60.0
+	start := base.Add(15 * time.Minute)
+	for i := 0; i <= 24; i++ {
+		ang := math.Pi + float64(i)*2*math.Pi/24
+		lat := cLat + r*math.Sin(ang)
+		lon := cLon + r*math.Cos(ang)/math.Cos(cLat*math.Pi/180)
+		a.Path = append(a.Path, sample{start.Add(time.Duration(i) * 20 * time.Second), lat, lon, 0})
+	}
+	last := a.Path[len(a.Path)-1]
+	*a.AC.Lat, *a.AC.Lon = last.lat, last.lon
+
+	v := fitView(framePoints(a))
+	for _, s := range a.Path[2:] {
+		if p := v.pixel(s.lat, s.lon); p.x < 0 || p.y < 0 || p.x > float64(v.w) || p.y > float64(v.h) {
+			t.Fatalf("orbit sample %v falls outside the %dx%d frame at %v", s, v.w, v.h, p)
+		}
+	}
+	if p := v.pixel(a.Path[0].lat, a.Path[0].lon); p.x >= 0 {
+		t.Errorf("the approach leg was framed too (x = %.0f); it should run off the edge", p.x)
+	}
+
+	a.Circling = false
+	v = fitView(framePoints(a))
+	far := a.Path[2+12] // the opposite side of the orbit from the aircraft
+	if p := v.pixel(far.lat, far.lon); p.x >= 0 && p.x <= float64(v.w) {
+		t.Errorf("without Circling the orbit should not drive the frame (x = %.0f of %d)", p.x, v.w)
+	}
+}

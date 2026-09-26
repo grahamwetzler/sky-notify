@@ -104,6 +104,12 @@ func (m *mapRenderer) snapshot(ctx context.Context, a *Alert) (b []byte) {
 // when one is configured. Reading recvLat/recvLon unconditionally would plant a receiver
 // at (0, 0) and drag the frame into the Atlantic. The path is deliberately not framed —
 // a long tail would shrink the two things the alert is about; it just runs off the edge.
+//
+// The exception is an orbit. For a circling aircraft the circle is the thing the alert
+// is about, so the samples that make it up are framed too. They are the ones Circling
+// was judged from — the last circleWindow since the last dropout — and all lie within
+// circleMaxRadiusNM of each other's centre, so framing them costs a few miles at most,
+// never the approach leg that led there.
 func framePoints(a *Alert) []latlon {
 	var pts []latlon
 	if a.AC.Lat != nil && a.AC.Lon != nil {
@@ -112,7 +118,26 @@ func framePoints(a *Alert) []latlon {
 	if a.HasDistance {
 		pts = append(pts, latlon{a.recvLat, a.recvLon})
 	}
+	if a.Circling {
+		for _, s := range orbitSamples(a.Path) {
+			pts = append(pts, latlon{s.lat, s.lon})
+		}
+	}
 	return pts
+}
+
+// orbitSamples is the tail of the path that track.turns(circleWindow) measures: the
+// samples within circleWindow of the latest one, cut back to the last dropout.
+func orbitSamples(path []sample) []sample {
+	if len(path) == 0 {
+		return nil
+	}
+	cutoff := path[len(path)-1].t.Add(-circleWindow)
+	i := len(path) - 1
+	for i > 0 && !path[i-1].t.Before(cutoff) && path[i].t.Sub(path[i-1].t) <= maxSampleGap {
+		i--
+	}
+	return path[i:]
 }
 
 func (m *mapRenderer) draw(ctx context.Context, v view, tiles []placedTile, a *Alert) ([]byte, error) {
