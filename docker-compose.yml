@@ -20,12 +20,13 @@ services:
       SKY_DB_FILES: plane-alert-db.csv
       # Where the cached list and cooldown ledger live. Matches the volume below.
       SKY_CACHE_DIR: /data
+      # Password for the web UI. sky-notify itself runs without one, but then anyone
+      # who can reach the port can edit your rules and read your credentials, so this
+      # file requires it: put your own in a .env file beside this one
+      # (SKY_UI_PASSWORD=...) and Compose refuses to start until you do.
+      SKY_UI_PASSWORD: ${SKY_UI_PASSWORD:?set a password for the web UI in .env}
 
       # --- optional ---
-      # Password for the web UI. Without it, anyone who can reach the port can edit
-      # your rules and read your credentials. Put your own in a .env file beside this
-      # one (SKY_UI_PASSWORD=...); Compose refuses to start if it is missing.
-      # SKY_UI_PASSWORD: ${SKY_UI_PASSWORD:?set a password for the web UI in .env}
       # SKY_SOURCE_POLL_INTERVAL: 15s
       # SKY_NTFY_TOKEN: tk_...                   # or SKY_NTFY_USER + SKY_NTFY_PASSWORD
       # SKY_NTFY_PRIORITY: "3"

@@ -142,7 +142,7 @@ func guessAtOnce(a *auth, n int, client func(int) string) int {
 	var wg sync.WaitGroup
 	for i := range n {
 		wg.Add(1)
-		go func() { defer wg.Done(); results <- a.checkPassword(client(i), fmt.Sprint("guess", i)) }()
+		go func() { defer wg.Done(); results <- a.checkPassword(client(i), false, fmt.Sprint("guess", i)) }()
 	}
 	wg.Wait()
 	close(results)
@@ -179,6 +179,64 @@ func TestOneClientsFailuresDoNotLockOutAnother(t *testing.T) {
 	}
 	if code := attempt("[2001:db8:1:2::b]:4000", "wrong"); code != http.StatusTooManyRequests {
 		t.Fatalf("guess from the same /64 = %d, want 429", code)
+	}
+}
+
+// A browser that has signed in before can sign in again while strangers keep the
+// shared address locked out (everyone behind one reverse proxy) and the overall cap
+// spent (many addresses at once).
+func TestKnownDeviceSignsInDuringAnAttack(t *testing.T) {
+	dir := t.TempDir()
+	a, err := newAuth("hunter2", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := (&server{live: NewLive(defaultAlerts()), auth: a}).mux(newQueue(1))
+	var device *http.Cookie
+	for _, c := range login(t, h, "hunter2").Result().Cookies() {
+		if c.Name == deviceCookie {
+			device = c
+		}
+	}
+	if device == nil {
+		t.Fatal("no device cookie set on sign-in")
+	}
+	attempt := func(pw string, cookies ...*http.Cookie) int {
+		req := httptest.NewRequest(http.MethodPost, "/login",
+			strings.NewReader(url.Values{"password": {pw}}.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = "10.0.0.2:4000" // the proxy
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w.Code
+	}
+	if code := attempt("wrong"); code != http.StatusUnauthorized {
+		t.Fatalf("stranger's guess = %d, want 401", code)
+	}
+	guessAtOnce(a, 2*loginFailsPerSecond, func(i int) string { return fmt.Sprintf("198.51.100.%d", i) })
+	if code := attempt("hunter2"); code != http.StatusTooManyRequests {
+		t.Fatalf("new browser during the attack = %d, want 429", code)
+	}
+	forged := &http.Cookie{Name: deviceCookie, Value: "99999999999.AAAA"}
+	if code := attempt("hunter2", forged); code != http.StatusTooManyRequests {
+		t.Fatalf("forged device cookie = %d, want 429", code)
+	}
+	session := &http.Cookie{Name: deviceCookie, Value: a.token(time.Now().Add(time.Hour))}
+	if code := attempt("hunter2", session); code != http.StatusTooManyRequests {
+		t.Fatalf("session token as device cookie = %d, want 429", code)
+	}
+	if code := attempt("hunter2", device); code != http.StatusSeeOther {
+		t.Fatalf("known device during the attack = %d, want 303", code)
+	}
+	// It is still held to one guess a second itself.
+	if code := attempt("wrong", device); code != http.StatusUnauthorized {
+		t.Fatalf("known device's wrong guess = %d, want 401", code)
+	}
+	if code := attempt("hunter2", device); code != http.StatusTooManyRequests {
+		t.Fatalf("known device inside its own lockout = %d, want 429", code)
 	}
 }
 

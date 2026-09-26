@@ -24,13 +24,20 @@ const (
 	uiPasswordEnv = "SKY_UI_PASSWORD"
 	sessionCookie = "sky_session"
 	sessionTTL    = 30 * 24 * time.Hour
+	// deviceCookie marks a browser that has signed in before. It outlives the session
+	// and logout, and gives that browser its own login throttle, exempt from the
+	// overall cap: without it, strangers guessing through the same reverse proxy, or
+	// from enough addresses at once, could keep the operator from signing back in.
+	deviceCookie = "sky_device"
+	deviceTTL    = 365 * 24 * time.Hour
 	// After a wrong password, that client's guesses are refused unchecked for this
 	// long, so it cannot guess faster than once per interval however many requests it
 	// sends at once. The lockout is per client so that one stranger guessing cannot
 	// keep the operator signed out.
 	loginFailDelay = time.Second
-	// Across all clients, at most this many wrong guesses are checked per second: the
-	// per-client limit alone would let many addresses guess in parallel.
+	// Across all clients without a device cookie, at most this many wrong guesses are
+	// checked per second: the per-client limit alone would let many addresses guess in
+	// parallel.
 	loginFailsPerSecond = 20
 	// Past this many clients locked out at once, expired entries are swept.
 	lockoutSweepAt = 1024
@@ -48,7 +55,7 @@ type auth struct {
 	// outside it, a burst of concurrent guesses would all be tested before the first
 	// failure could shut the door.
 	mu          sync.Mutex
-	lockedUntil map[string]time.Time // by loginClient
+	lockedUntil map[string]time.Time // by loginClient, or by device
 	windowStart time.Time
 	windowFails int
 }
@@ -90,6 +97,13 @@ func (a *auth) token(exp time.Time) string {
 	return e + "." + a.sign(e)
 }
 
+// deviceToken is a token signed under its own prefix, so a session cookie cannot be
+// passed off as a device cookie or the other way round.
+func (a *auth) deviceToken(exp time.Time) string {
+	e := strconv.FormatInt(exp.Unix(), 10)
+	return e + "." + a.sign("device "+e)
+}
+
 func (a *auth) sign(s string) string {
 	mac := hmac.New(sha256.New, a.key)
 	mac.Write([]byte(s))
@@ -97,16 +111,29 @@ func (a *auth) sign(s string) string {
 }
 
 func (a *auth) valid(r *http.Request) bool {
-	c, err := r.Cookie(sessionCookie)
+	_, ok := a.cookie(r, sessionCookie, "")
+	return ok
+}
+
+// device returns the signature of the request's device cookie, which identifies the
+// browser for throttling, if it has a valid one.
+func (a *auth) device(r *http.Request) (string, bool) {
+	return a.cookie(r, deviceCookie, "device ")
+}
+
+// cookie checks the named cookie's token, signed with prefix before its expiry, and
+// returns its signature.
+func (a *auth) cookie(r *http.Request, name, prefix string) (string, bool) {
+	c, err := r.Cookie(name)
 	if err != nil {
-		return false
+		return "", false
 	}
 	e, sig, ok := strings.Cut(c.Value, ".")
-	if !ok || !hmac.Equal([]byte(sig), []byte(a.sign(e))) {
-		return false
+	if !ok || !hmac.Equal([]byte(sig), []byte(a.sign(prefix+e))) {
+		return "", false
 	}
 	exp, err := strconv.ParseInt(e, 10, 64)
-	return err == nil && time.Now().Unix() < exp
+	return sig, err == nil && time.Now().Unix() < exp
 }
 
 type loginResult int
@@ -121,8 +148,9 @@ const (
 
 // loginClient is who a login attempt is throttled as: its source address, with IPv6
 // taken as its /64, since one host commonly holds a whole /64 to rotate through.
-// Behind a reverse proxy every attempt shares the proxy's address and the limit is
-// effectively global again; X-Forwarded-For is not trusted, as any client can set it.
+// Behind a reverse proxy every attempt shares the proxy's address, so a stranger can
+// hold off a first sign-in there; X-Forwarded-For is not trusted, as any client can
+// set it. A browser that has signed in before is throttled by its device cookie instead.
 func loginClient(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -138,18 +166,22 @@ func loginClient(r *http.Request) string {
 	return ip.String()
 }
 
-func (a *auth) checkPassword(client, pw string) loginResult {
+// checkPassword throttles by client. A known device, one with a valid device cookie,
+// is left out of the overall cap: it has proved the password once already.
+func (a *auth) checkPassword(client string, known bool, pw string) loginResult {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := time.Now()
 	if now.Before(a.lockedUntil[client]) {
 		return loginThrottled
 	}
-	if now.Sub(a.windowStart) >= time.Second {
-		a.windowStart, a.windowFails = now, 0
-	}
-	if a.windowFails >= loginFailsPerSecond {
-		return loginThrottled
+	if !known {
+		if now.Sub(a.windowStart) >= time.Second {
+			a.windowStart, a.windowFails = now, 0
+		}
+		if a.windowFails >= loginFailsPerSecond {
+			return loginThrottled
+		}
 	}
 	// Hash both sides so the comparison does not leak the password's length.
 	got, want := sha256.Sum256([]byte(pw)), sha256.Sum256(a.password)
@@ -157,7 +189,9 @@ func (a *auth) checkPassword(client, pw string) loginResult {
 		delete(a.lockedUntil, client)
 		return loginOK
 	}
-	a.windowFails++
+	if !known {
+		a.windowFails++
+	}
 	if len(a.lockedUntil) >= lockoutSweepAt {
 		for c, until := range a.lockedUntil {
 			if !now.Before(until) {
@@ -170,8 +204,12 @@ func (a *auth) checkPassword(client, pw string) loginResult {
 }
 
 func setSession(w http.ResponseWriter, r *http.Request, value string, maxAge int) {
+	setCookie(w, r, sessionCookie, "/", value, maxAge)
+}
+
+func setCookie(w http.ResponseWriter, r *http.Request, name, path, value string, maxAge int) {
 	http.SetCookie(w, &http.Cookie{
-		Name: sessionCookie, Value: value, Path: "/", MaxAge: maxAge,
+		Name: name, Value: value, Path: path, MaxAge: maxAge,
 		HttpOnly: true, SameSite: http.SameSiteLaxMode,
 		// Behind a TLS-terminating proxy the request itself is plain HTTP.
 		Secure: r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
@@ -201,7 +239,11 @@ func (a *auth) routes(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
-		switch a.checkPassword(loginClient(r), r.PostFormValue("password")) {
+		client, known := loginClient(r), false
+		if d, ok := a.device(r); ok {
+			client, known = "device "+d, true
+		}
+		switch a.checkPassword(client, known, r.PostFormValue("password")) {
 		case loginWrong:
 			serveLogin(w, http.StatusUnauthorized, "That password is not right.")
 			return
@@ -210,6 +252,7 @@ func (a *auth) routes(mux *http.ServeMux) {
 			return
 		}
 		setSession(w, r, a.token(time.Now().Add(sessionTTL)), int(sessionTTL.Seconds()))
+		setCookie(w, r, deviceCookie, "/login", a.deviceToken(time.Now().Add(deviceTTL)), int(deviceTTL.Seconds()))
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	})
 	mux.HandleFunc("POST /logout", func(w http.ResponseWriter, r *http.Request) {
