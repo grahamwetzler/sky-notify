@@ -111,6 +111,7 @@ svg{display:block;fill:none;stroke:currentColor;stroke-width:1.6;
   border:1px solid}
 .msg.bad{background:var(--bad-soft);color:var(--bad);border-color:var(--bad-line)}
 .msg.good{background:var(--good-soft);color:var(--good);border-color:var(--good)}
+.msg.warn{background:var(--warn-soft);color:var(--warn);border-color:var(--warn-line)}
 
 /* ── Rule list ────────────────────────────────────────────────────────── */
 .list{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
@@ -353,10 +354,17 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   <div class="acts">
     <button class="btn icon" id="settings" aria-pressed="false" aria-label="Settings"></button>
     <button class="btn icon" id="theme" aria-label="Switch between light and dark"></button>
+    <form method="post" action="/logout" id="logout" hidden>
+      <button class="btn icon" aria-label="Sign out" title="Sign out"></button>
+    </form>
   </div>
 </div>
 
 <div class="shell">
+  <div class="msg warn" id="open-warn" hidden>
+    <strong>This page has no password.</strong> Anyone who can reach it can change your rules
+    and read your ntfy and AI credentials. Set <code>SKY_UI_PASSWORD</code> to require a sign-in.
+  </div>
   <div class="msg bad" id="msg" hidden role="alert"></div>
 
   <nav class="list" aria-label="Rules">
@@ -404,6 +412,7 @@ const I = {
   moon: '<path d="M13.2 9.8A5.8 5.8 0 0 1 6.2 2.8a5.8 5.8 0 1 0 7 7z"/>',
   sliders: '<path d="M2 5h3.2M8.8 5H14M2 11h6.2M11.8 11H14"/><circle cx="7" cy="5" r="1.8"/><circle cx="10" cy="11" r="1.8"/>',
   grip: '<path d="M2.5 5h11M2.5 8h11M2.5 11h11"/>',
+  exit: '<path d="M6 2.5H3.5v11H6M10 5l3 3-3 3M13 8H6"/>',
 };
 
 /* Every scalar setting, by the dotted path the API and the document both use. */
@@ -2603,6 +2612,8 @@ async function load() {
     throw Error(detail || `Could not load your settings (HTTP ${res.status}).`);
   }
   const body = await res.json();
+  $('#logout').hidden = !body.auth;
+  $('#open-warn').hidden = body.auth;
   doc = body.alerts;
   doc.rules = doc.rules || [];
   vocab = body.vocabulary || {};
@@ -2628,6 +2639,17 @@ async function load() {
 }
 
 $('#settings').innerHTML = svg(I.sliders, 15);
+$('#logout button').innerHTML = svg(I.exit, 15);
+/* A session that expires while the page is open turns every API call into a 401; the
+   only useful answer to any of them is the sign-in page. */
+{
+  const f = window.fetch;
+  window.fetch = async (...a) => {
+    const res = await f(...a);
+    if (res.status === 401) location.href = '/login';
+    return res;
+  };
+}
 $('#settings').onclick = () => select('settings');
 $('#brand').onclick = () => { if (isSettings()) closeSettings(); else document.body.dataset.view = 'list'; };
 addEventListener('popstate', () => {

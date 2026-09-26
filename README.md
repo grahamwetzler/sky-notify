@@ -34,6 +34,7 @@ aircraft is and, if you want it, a one-line AI summary of who it is and what it'
 - **Alert history.** See every notification a rule has sent.
 - **Cooldowns, priorities, and emergency squawks.** Get one alert per aircraft rather than
   repeats, and set ntfy priority per rule.
+- **Password-protected web UI.** Set `SKY_UI_PASSWORD` and the UI asks you to sign in.
 - **Backup and restore.** Export all your rules and settings to a file and import them later.
 - **Lightweight.** A single small Go binary in one container, for amd64 and arm64.
 
@@ -67,6 +68,7 @@ services:
       SKY_CACHE_DIR: /data
       SKY_LAT: "38.8895"     # your receiver's location
       SKY_LON: "-77.0100"
+      SKY_UI_PASSWORD: change-me   # password for the web UI
     volumes:
       - sky-notify-data:/data
       - sky-notify-config:/config
@@ -81,8 +83,9 @@ Then:
 1. Run `docker compose up -d`.
 2. Subscribe to your topic in the [ntfy app](https://ntfy.sh). On public ntfy.sh anyone who
    knows the topic name can read it, so pick something hard to guess.
-3. Open `http://<your-server>:8080` and add some rules. **Nothing alerts until a rule
-   matches.** Try "In the interesting aircraft database" to start.
+3. Open `http://<your-server>:8080`, sign in with your `SKY_UI_PASSWORD`, and add some
+   rules. **Nothing alerts until a rule matches.** Try "In the interesting aircraft
+   database" to start.
 
 See [`docker-compose.yml`](docker-compose.yml) for a fuller example and
 [`config.example.json`](config.example.json) for a starter set of rules.
@@ -99,6 +102,7 @@ Most settings live in the web UI. These environment variables cover the rest:
 | `SKY_DB_BASE_URL` | required | where to download plane-alert-db from |
 | `SKY_DB_FILES` | required | which database files to use, comma-separated |
 | `SKY_CACHE_DIR` | required | where to keep the cached database and alert history |
+| `SKY_UI_PASSWORD` | | password for the web UI; without it the UI is open to anyone who can reach it |
 | `SKY_LAT` / `SKY_LON` | | your receiver's location, needed for distance and flyover rules |
 | `SKY_NTFY_TOKEN` | | ntfy access token (or `SKY_NTFY_USER` + `SKY_NTFY_PASSWORD`) |
 | `SKY_TAR1090_URL` | | makes notifications link to the aircraft on your tar1090 map |
@@ -108,6 +112,10 @@ Most settings live in the web UI. These environment variables cover the rest:
 | `SKY_LISTEN` | `:8080` | address for the web UI and `/healthz` |
 
 A setting made through an environment variable is locked in the web UI.
+
+sky-notify serves plain HTTP, so the password is sent unencrypted. That's fine on a home
+network you trust; anywhere else, put it behind a reverse proxy that serves HTTPS (Caddy,
+Traefik, nginx) and don't expose port 8080 directly.
 
 ## Development
 

@@ -530,7 +530,7 @@ func loadJSON(section string, dst any, misplaced []string, belongs, label string
 }
 
 func checkEnv(env map[string]string) error {
-	known := map[string]bool{envDBPathVar: true}
+	known := map[string]bool{envDBPathVar: true, uiPasswordEnv: true}
 	for _, b := range envBindings() {
 		known[b.name] = true
 	}

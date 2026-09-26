@@ -94,7 +94,7 @@ func (s *server) mux(q *queue) http.Handler {
 			"alerts": alerts, "locked": locked,
 			"rule_keys": keys, "vocabulary": s.db.Vocabulary(), "feed_types": s.feedTypes(),
 			"ai_key_set": keySet, "research_prompt_default": alerts.effectiveResearchPrompt(),
-			"research_prompt_builtin": defaultResearchPrompt,
+			"research_prompt_builtin": defaultResearchPrompt, "auth": s.auth != nil,
 		})
 	})
 	mux.HandleFunc("POST /api/preview", func(w http.ResponseWriter, r *http.Request) {
@@ -390,7 +390,15 @@ func (s *server) mux(q *queue) http.Handler {
 		w.WriteHeader(status)
 		json.NewEncoder(w).Encode(body)
 	})
-	return mux
+	var h http.Handler = mux
+	if s.auth != nil {
+		s.auth.routes(mux)
+		h = s.auth.guard(mux)
+	}
+	// Refuse state-changing requests another site's page makes on the viewer's
+	// behalf. Signed in, that is CSRF; signed out on an open server, it is any web
+	// page the operator visits reaching the UI on their LAN.
+	return http.NewCrossOriginProtection().Handler(h)
 }
 
 func writeJSONError(w http.ResponseWriter, status int, err error) {

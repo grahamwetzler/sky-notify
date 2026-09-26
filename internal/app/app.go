@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-//go:embed ui.html public-sans.woff2
+//go:embed ui.html login.html public-sans.woff2
 var uiFS embed.FS
 
 const (
@@ -221,6 +221,12 @@ func run() error {
 	}
 	source := NewSource(cfg, httpClient)
 	h := &server{live: live, db: db, state: state, notifier: notifier, history: hist, store: store}
+	if h.auth, err = newAuth(os.Getenv(uiPasswordEnv), cfg.CacheDir); err != nil {
+		return err
+	}
+	if h.auth == nil {
+		slog.Warn("the web UI has no password; set " + uiPasswordEnv + " to require one")
+	}
 
 	// Cold start needs a complete list. Running with a partial or empty one would look
 	// healthy while silently matching nothing.

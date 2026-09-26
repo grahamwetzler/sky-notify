@@ -17,6 +17,7 @@ type server struct {
 	notifier *Notifier
 	history  *History
 	store    *SettingsStore
+	auth     *auth // nil when the UI has no password
 
 	mu            sync.Mutex
 	lastFreshPoll time.Time

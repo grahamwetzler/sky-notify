@@ -22,6 +22,9 @@ services:
       SKY_CACHE_DIR: /data
 
       # --- optional ---
+      # Password for the web UI. Without it, anyone who can reach the port can edit
+      # your rules and read your credentials.
+      # SKY_UI_PASSWORD: change-me
       # SKY_SOURCE_POLL_INTERVAL: 15s
       # SKY_NTFY_TOKEN: tk_...                   # or SKY_NTFY_USER + SKY_NTFY_PASSWORD
       # SKY_NTFY_PRIORITY: "3"
