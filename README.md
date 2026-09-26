@@ -84,12 +84,6 @@ Then:
 3. Open `http://<your-server>:8080` and add some rules. **Nothing alerts until a rule
    matches.** Try "In the interesting aircraft database" to start.
 
-> [!WARNING]
-> The web UI has **no login**. Anyone who can reach port 8080 can change your rules and
-> download your settings, including your ntfy and AI credentials. Only expose it on a
-> network you trust, or put it behind a reverse proxy that requires a login. Don't
-> forward it to the internet.
-
 See [`docker-compose.yml`](docker-compose.yml) for a fuller example and
 [`config.example.json`](config.example.json) for a starter set of rules.
 
