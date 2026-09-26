@@ -112,19 +112,37 @@ func TestWrongPasswordIsRefused(t *testing.T) {
 	}
 }
 
-// A burst of simultaneous guesses must not all be tested: the lockout is taken
-// before a guess is checked, so only one of them can be.
+// A burst of simultaneous guesses from one client must not all be tested: the lockout
+// is taken before a guess is checked, so only one of them can be.
 func TestConcurrentGuessesAreCheckedOneAtATime(t *testing.T) {
 	a, err := newAuth("hunter2", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	const n = 50
+	if checked := guessAtOnce(a, 50, func(int) string { return "192.0.2.9" }); checked != 1 {
+		t.Fatalf("%d of 50 concurrent guesses were checked, want 1", checked)
+	}
+}
+
+// Many addresses guessing together are held to the overall cap.
+func TestGuessesFromManyClientsAreCapped(t *testing.T) {
+	a, err := newAuth("hunter2", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := guessAtOnce(a, 100, func(i int) string { return fmt.Sprintf("198.51.100.%d", i) })
+	if checked != loginFailsPerSecond {
+		t.Fatalf("%d of 100 guesses from distinct clients were checked, want %d", checked, loginFailsPerSecond)
+	}
+}
+
+// guessAtOnce fires n wrong guesses concurrently and reports how many were checked.
+func guessAtOnce(a *auth, n int, client func(int) string) int {
 	results := make(chan loginResult, n)
 	var wg sync.WaitGroup
 	for i := range n {
 		wg.Add(1)
-		go func() { defer wg.Done(); results <- a.checkPassword(fmt.Sprint("guess", i)) }()
+		go func() { defer wg.Done(); results <- a.checkPassword(client(i), fmt.Sprint("guess", i)) }()
 	}
 	wg.Wait()
 	close(results)
@@ -134,8 +152,33 @@ func TestConcurrentGuessesAreCheckedOneAtATime(t *testing.T) {
 			checked++
 		}
 	}
-	if checked != 1 {
-		t.Fatalf("%d of %d concurrent guesses were checked, want 1", checked, n)
+	return checked
+}
+
+// A stranger guessing wrong must not lock the operator out.
+func TestOneClientsFailuresDoNotLockOutAnother(t *testing.T) {
+	h := authServer(t, "hunter2", t.TempDir())
+	attempt := func(addr, pw string) int {
+		req := httptest.NewRequest(http.MethodPost, "/login",
+			strings.NewReader(url.Values{"password": {pw}}.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = addr
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w.Code
+	}
+	if code := attempt("203.0.113.5:4000", "wrong"); code != http.StatusUnauthorized {
+		t.Fatalf("attacker's guess = %d, want 401", code)
+	}
+	if code := attempt("192.168.1.20:5000", "hunter2"); code != http.StatusSeeOther {
+		t.Fatalf("operator's login during the attacker's lockout = %d, want 303", code)
+	}
+	// IPv6 is throttled per /64, so rotating the interface ID does not reset it.
+	if code := attempt("[2001:db8:1:2::a]:4000", "wrong"); code != http.StatusUnauthorized {
+		t.Fatalf("first IPv6 guess = %d, want 401", code)
+	}
+	if code := attempt("[2001:db8:1:2::b]:4000", "wrong"); code != http.StatusTooManyRequests {
+		t.Fatalf("guess from the same /64 = %d, want 429", code)
 	}
 }
 

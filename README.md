@@ -68,7 +68,7 @@ services:
       SKY_CACHE_DIR: /data
       SKY_LAT: "38.8895"     # your receiver's location
       SKY_LON: "-77.0100"
-      SKY_UI_PASSWORD: change-me   # password for the web UI
+      SKY_UI_PASSWORD: ${SKY_UI_PASSWORD:?set a password for the web UI in .env}
     volumes:
       - sky-notify-data:/data
       - sky-notify-config:/config
@@ -80,10 +80,12 @@ volumes:
 
 Then:
 
-1. Run `docker compose up -d`.
-2. Subscribe to your topic in the [ntfy app](https://ntfy.sh). On public ntfy.sh anyone who
+1. Choose a password for the web UI and put it in a `.env` file next to the compose file:
+   `SKY_UI_PASSWORD=<your own password>`. Docker Compose won't start sky-notify without it.
+2. Run `docker compose up -d`.
+3. Subscribe to your topic in the [ntfy app](https://ntfy.sh). On public ntfy.sh anyone who
    knows the topic name can read it, so pick something hard to guess.
-3. Open `http://<your-server>:8080`, sign in with your `SKY_UI_PASSWORD`, and add some
+4. Open `http://<your-server>:8080`, sign in with your password, and add some
    rules. **Nothing alerts until a rule matches.** Try "In the interesting aircraft
    database" to start.
 

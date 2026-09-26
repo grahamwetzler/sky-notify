@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,10 +24,16 @@ const (
 	uiPasswordEnv = "SKY_UI_PASSWORD"
 	sessionCookie = "sky_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	// After a wrong password, every guess is refused unchecked for this long, so the
-	// page cannot be brute-forced faster than one guess per this interval — however
-	// many requests arrive at once.
+	// After a wrong password, that client's guesses are refused unchecked for this
+	// long, so it cannot guess faster than once per interval however many requests it
+	// sends at once. The lockout is per client so that one stranger guessing cannot
+	// keep the operator signed out.
 	loginFailDelay = time.Second
+	// Across all clients, at most this many wrong guesses are checked per second: the
+	// per-client limit alone would let many addresses guess in parallel.
+	loginFailsPerSecond = 20
+	// Past this many clients locked out at once, expired entries are swept.
+	lockoutSweepAt = 1024
 )
 
 // auth guards the web UI and its API behind one shared password. A nil *auth is an
@@ -37,11 +44,13 @@ type auth struct {
 	// the password together: the secret keeps sessions valid across a restart, and the
 	// password in it means changing the password signs everyone out.
 	key []byte
-	// mu guards lockedUntil, and is held across the comparison itself: checked
+	// mu guards the throttle state, and is held across the comparison itself: checked
 	// outside it, a burst of concurrent guesses would all be tested before the first
 	// failure could shut the door.
 	mu          sync.Mutex
-	lockedUntil time.Time
+	lockedUntil map[string]time.Time // by loginClient
+	windowStart time.Time
+	windowFails int
 }
 
 // newAuth returns nil when password is empty. secretDir holds the signing secret,
@@ -56,7 +65,7 @@ func newAuth(password, secretDir string) (*auth, error) {
 	}
 	mac := hmac.New(sha256.New, secret)
 	mac.Write([]byte(password))
-	return &auth{password: []byte(password), key: mac.Sum(nil)}, nil
+	return &auth{password: []byte(password), key: mac.Sum(nil), lockedUntil: map[string]time.Time{}}, nil
 }
 
 func sessionSecret(path string) ([]byte, error) {
@@ -110,19 +119,53 @@ const (
 	loginThrottled
 )
 
-func (a *auth) checkPassword(pw string) loginResult {
+// loginClient is who a login attempt is throttled as: its source address, with IPv6
+// taken as its /64, since one host commonly holds a whole /64 to rotate through.
+// Behind a reverse proxy every attempt shares the proxy's address and the limit is
+// effectively global again; X-Forwarded-For is not trusted, as any client can set it.
+func loginClient(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return host
+	}
+	if ip.To4() == nil {
+		return ip.Mask(net.CIDRMask(64, 128)).String()
+	}
+	return ip.String()
+}
+
+func (a *auth) checkPassword(client, pw string) loginResult {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := time.Now()
-	if now.Before(a.lockedUntil) {
+	if now.Before(a.lockedUntil[client]) {
+		return loginThrottled
+	}
+	if now.Sub(a.windowStart) >= time.Second {
+		a.windowStart, a.windowFails = now, 0
+	}
+	if a.windowFails >= loginFailsPerSecond {
 		return loginThrottled
 	}
 	// Hash both sides so the comparison does not leak the password's length.
 	got, want := sha256.Sum256([]byte(pw)), sha256.Sum256(a.password)
 	if subtle.ConstantTimeCompare(got[:], want[:]) == 1 {
+		delete(a.lockedUntil, client)
 		return loginOK
 	}
-	a.lockedUntil = now.Add(loginFailDelay)
+	a.windowFails++
+	if len(a.lockedUntil) >= lockoutSweepAt {
+		for c, until := range a.lockedUntil {
+			if !now.Before(until) {
+				delete(a.lockedUntil, c)
+			}
+		}
+	}
+	a.lockedUntil[client] = now.Add(loginFailDelay)
 	return loginWrong
 }
 
@@ -158,7 +201,7 @@ func (a *auth) routes(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
-		switch a.checkPassword(r.PostFormValue("password")) {
+		switch a.checkPassword(loginClient(r), r.PostFormValue("password")) {
 		case loginWrong:
 			serveLogin(w, http.StatusUnauthorized, "That password is not right.")
 			return
