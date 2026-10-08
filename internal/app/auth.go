@@ -228,11 +228,13 @@ func (a *auth) token(exp time.Time) string {
 	return e + "." + a.sign(e)
 }
 
-// deviceToken is a token signed under its own prefix, so a session cookie cannot be
-// passed off as a device cookie or the other way round.
+// deviceToken is "<expiry unix>.<random id>.<signature>", signed under its own prefix
+// so a session cookie cannot be passed off as a device cookie or the other way round.
+// The id makes each browser's token its own: without it, two browsers signing in within
+// the same second would share a token, and so a throttle.
 func (a *auth) deviceToken(exp time.Time) string {
-	e := strconv.FormatInt(exp.Unix(), 10)
-	return e + "." + a.sign("device "+e)
+	p := strconv.FormatInt(exp.Unix(), 10) + "." + rand.Text()
+	return p + "." + a.sign("device "+p)
 }
 
 func (a *auth) sign(s string) string {
@@ -255,17 +257,22 @@ func (a *auth) device(r *http.Request) (string, bool) {
 	return a.cookie(r, deviceCookie, "device ")
 }
 
-// cookie checks the named cookie's token, signed with prefix before its expiry, and
-// returns its signature.
+// cookie checks the named cookie's token — a payload starting with its expiry, then its
+// signature under prefix — and returns the signature.
 func (a *auth) cookie(r *http.Request, name, prefix string) (string, bool) {
 	c, err := r.Cookie(name)
 	if err != nil {
 		return "", false
 	}
-	e, sig, ok := strings.Cut(c.Value, ".")
-	if !ok || !hmac.Equal([]byte(sig), []byte(a.sign(prefix+e))) {
+	i := strings.LastIndexByte(c.Value, '.')
+	if i < 0 {
 		return "", false
 	}
+	payload, sig := c.Value[:i], c.Value[i+1:]
+	if !hmac.Equal([]byte(sig), []byte(a.sign(prefix+payload))) {
+		return "", false
+	}
+	e, _, _ := strings.Cut(payload, ".")
 	exp, err := strconv.ParseInt(e, 10, 64)
 	return sig, err == nil && time.Now().Unix() < exp
 }

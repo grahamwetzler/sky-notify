@@ -484,3 +484,32 @@ func TestResetPasswordReturnsToSetup(t *testing.T) {
 		t.Fatalf("/ after a reset = %d to %q, want /setup", w.Code, w.Header().Get("Location"))
 	}
 }
+
+// Two browsers signing in within the same second are still two devices: one's wrong
+// guess must not lock out the other.
+func TestDevicesSigningInTogetherAreThrottledApart(t *testing.T) {
+	a, err := newAuth("hunter2", newTestStore(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp := time.Now().Add(time.Hour)
+	key := func(tok string) string {
+		req := httptest.NewRequest(http.MethodPost, "/login", nil)
+		req.AddCookie(&http.Cookie{Name: deviceCookie, Value: tok})
+		k, known := a.throttleKey(req)
+		if !known {
+			t.Fatalf("device token %q was not recognised", tok)
+		}
+		return k
+	}
+	first, second := key(a.deviceToken(exp)), key(a.deviceToken(exp))
+	if first == second {
+		t.Fatal("two devices signed in at the same moment share a throttle key")
+	}
+	if a.checkPassword(first, true, "wrong") != loginWrong {
+		t.Fatal("first device's guess was not checked")
+	}
+	if got := a.checkPassword(second, true, "hunter2"); got != loginOK {
+		t.Fatalf("second device during the first's lockout = %v, want loginOK", got)
+	}
+}
