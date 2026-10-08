@@ -2382,12 +2382,45 @@ function paintAuth() {
   $('#open-warn').hidden = signIn;
 }
 
+function paintSetup() {
+  const warn = $('#setup-warn');
+  warn.hidden = !setupError;
+  warn.textContent = setupError
+    ? 'sky-notify is not running yet: ' + setupError + '. Fill in the service settings and save.' : '';
+}
+
+/* While the service is not running — a database download retrying, say — what it is
+   waiting on changes without the page doing anything, so it is asked again. Only the
+   status is taken from the answer: the settings on screen may be half edited. Once it
+   is running the page reloads, unless that would throw edits away. */
+let setupTimer = null;
+function watchSetup() {
+  clearTimeout(setupTimer);
+  if (!setupError) return;
+  setupTimer = setTimeout(async () => {
+    try {
+      const res = await fetch('/api/config');
+      if (res.ok) {
+        const now = (await res.json()).setup_error || '';
+        if (!now && !dirty) return load();
+        if (now !== setupError) {
+          setupError = now;
+          paintSetup();
+          if (isSettings()) renderPane();
+          if (!now) return;
+        }
+      }
+    } catch { /* restarting; asked again below */ }
+    watchSetup();
+  }, 5000);
+}
+
 /* After a config save the service rebuilds itself. The old run keeps answering while it
    drains its queued notifications, so only an answer from a different generation means
    the new one is up. The new one serves the page before anything slow starts. */
-async function waitForRestart(oldGeneration) {
+async function waitForRestart(oldGeneration, seconds = 180) {
   await new Promise(r => setTimeout(r, 1000));
-  for (let i = 0; i < 180; i++) {
+  for (let i = 0; i < seconds; i++) {
     try {
       const res = await fetch('/api/config');
       if (res.ok && (await res.json()).generation !== oldGeneration) return true;
@@ -2845,14 +2878,16 @@ async function save() {
       if (!cres.ok) throw Error(cbody.error || `Saving the service settings failed (HTTP ${cres.status}).`);
       cfgDirty = false;
       dirty = false;
-      if (moved) {
+      message('Saved. Restarting sky-notify with the new settings…', 'warn');
+      b.textContent = 'Restarting…';
+      /* A new address answers here only if it could not be bound and the service fell
+         back to this one, which load() then shows. Otherwise the page has moved. */
+      if (!await waitForRestart(cbody.generation, moved ? 20 : 180)) {
+        if (!moved) throw Error('sky-notify has not come back after the restart. Check its log.');
         message('Saved. sky-notify is restarting on ' + cfgDoc.listen + ' — open this page again there.', 'good');
         b.textContent = 'Saved';
         return;
       }
-      message('Saved. Restarting sky-notify with the new settings…', 'warn');
-      b.textContent = 'Restarting…';
-      if (!await waitForRestart(cbody.generation)) throw Error('sky-notify has not come back after the restart. Check its log.');
     }
     message('Saved. The change takes effect within five seconds.', 'good');
     dirty = false;
@@ -2885,10 +2920,8 @@ async function load() {
   cfgSaved = cbody.saved === true;
   cfgListen = cfgDoc.listen;
   setupError = cbody.setup_error || '';
-  const warn = $('#setup-warn');
-  warn.hidden = !setupError;
-  warn.textContent = setupError
-    ? 'sky-notify is not running yet: ' + setupError + '. Fill in the service settings and save.' : '';
+  paintSetup();
+  watchSetup();
   /* A first run starts from the usual public services rather than from blank boxes;
      nothing is kept until it is saved. */
   if (setupError && !cfgSaved) {

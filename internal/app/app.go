@@ -192,9 +192,15 @@ func run() error {
 
 	// Saving the startup config from the web UI restarts the service in place: every
 	// long-lived object below is built from it once, so the only way to apply a new one
-	// is to build them again. served is the address the last run listened on, kept so a
-	// new address that will not bind can fall back to the one the operator is using.
-	served := ""
+	// is to build them again. served is the address to fall back to when a saved one
+	// will not bind: the one the last run listened on, or on a fresh start the default,
+	// so a bad address saved from the UI cannot leave a container with no page to fix
+	// it from across a restart. An address set by SKY_LISTEN has no fallback: the
+	// operator chose it outside the UI and can change it there.
+	served := defaultConfig().Listen
+	if _, ok := env["SKY_LISTEN"]; ok {
+		served = ""
+	}
 	for {
 		restart, addr, err := serve(ctx, store, a, served)
 		if err != nil || !restart {
