@@ -2382,14 +2382,15 @@ function paintAuth() {
   $('#open-warn').hidden = signIn;
 }
 
-/* After a config save the service rebuilds itself, which takes from a moment to the
-   length of a database download. Asked until it answers again. */
-async function waitForRestart() {
+/* After a config save the service rebuilds itself. The old run keeps answering while it
+   drains its queued notifications, so only an answer from a different generation means
+   the new one is up. The new one serves the page before anything slow starts. */
+async function waitForRestart(oldGeneration) {
   await new Promise(r => setTimeout(r, 1000));
   for (let i = 0; i < 180; i++) {
     try {
       const res = await fetch('/api/config');
-      if (res.ok) return true;
+      if (res.ok && (await res.json()).generation !== oldGeneration) return true;
     } catch { /* still restarting */ }
     await new Promise(r => setTimeout(r, 1000));
   }
@@ -2851,7 +2852,7 @@ async function save() {
       }
       message('Saved. Restarting sky-notify with the new settings…', 'warn');
       b.textContent = 'Restarting…';
-      if (!await waitForRestart()) throw Error('sky-notify has not come back after the restart. Check its log.');
+      if (!await waitForRestart(cbody.generation)) throw Error('sky-notify has not come back after the restart. Check its log.');
     }
     message('Saved. The change takes effect within five seconds.', 'good');
     dirty = false;

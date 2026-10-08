@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -511,5 +512,45 @@ func TestDevicesSigningInTogetherAreThrottledApart(t *testing.T) {
 	}
 	if got := a.checkPassword(second, true, "hunter2"); got != loginOK {
 		t.Fatalf("second device during the first's lockout = %v, want loginOK", got)
+	}
+}
+
+// A first-run request checked before the operator chose, and finished after, must not
+// undo the choice: a stalled stranger's "skip" would otherwise remove the new password.
+func TestStalledSetupDoesNotUndoAPasswordChosenMeanwhile(t *testing.T) {
+	a, err := newAuth("", newTestStore(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode, was := a.snapshot() // the stalled request's check
+	if err := a.setPassword("hunter2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.setPasswordFrom(mode, was, ""); !errors.Is(err, errPasswordMoved) {
+		t.Fatalf("stale skip = %v, want errPasswordMoved", err)
+	}
+	if a.state() != authStored {
+		t.Fatalf("mode = %v after a stale skip, want the password kept", a.state())
+	}
+}
+
+// A reload must not put back what the database held before a password was set.
+func TestReloadKeepsAPasswordJustSet(t *testing.T) {
+	store := newTestStore(t)
+	a, err := newAuth("", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() { defer wg.Done(); a.reload() }()
+	}
+	if err := a.setPassword("hunter2"); err != nil {
+		t.Fatal(err)
+	}
+	wg.Wait()
+	if a.state() != authStored {
+		t.Fatalf("mode = %v after concurrent reloads, want the new password", a.state())
 	}
 }

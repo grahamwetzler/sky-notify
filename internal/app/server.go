@@ -18,13 +18,17 @@ type server struct {
 	history  *History
 	store    *SettingsStore
 	auth     *auth
-	// setupErr is why the service is not running, when it is serving the web UI alone
-	// for its config to be finished. db, state and notifier are nil then.
-	setupErr error
 	// restart applies a saved config by building the service again from it.
 	restart func()
+	// generation names this run of the service, so a page waiting out a restart can
+	// tell the new run's answers from the old one's, which keeps serving while it drains.
+	generation string
 
-	mu            sync.Mutex
+	mu sync.Mutex
+	// setupErr is why the service is not running, while it serves the web UI alone: a
+	// config still to be finished, or the database still downloading. state and
+	// notifier are nil while the config is unfinished.
+	setupErr      error
 	lastFreshPoll time.Time
 	lastPollErr   error
 	aircraft      int
@@ -154,4 +158,16 @@ func (s *server) setPollErr(err error) {
 	s.mu.Lock()
 	s.lastPollErr = err
 	s.mu.Unlock()
+}
+
+func (s *server) setSetupErr(err error) {
+	s.mu.Lock()
+	s.setupErr = err
+	s.mu.Unlock()
+}
+
+func (s *server) getSetupErr() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.setupErr
 }

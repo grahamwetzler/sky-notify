@@ -6,7 +6,9 @@ import (
 	"time"
 )
 
-func seedDB(ctx context.Context, db *DB) error {
+// seedDB fetches the list until it has one, giving up after coldStartLimit. Each failure
+// that will be retried is passed to retrying, for the web UI to show while it waits.
+func seedDB(ctx context.Context, db *DB, retrying func(error)) error {
 	deadline := time.Now().Add(coldStartLimit)
 	backoff := 2 * time.Second
 	for {
@@ -21,6 +23,7 @@ func seedDB(ctx context.Context, db *DB) error {
 			return err
 		}
 		slog.Warn("cold start: db fetch failed, retrying", "err", err, "in", backoff)
+		retrying(err)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

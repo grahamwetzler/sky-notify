@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -253,8 +254,11 @@ func (s *server) mux(q *queue) http.Handler {
 			"config": cfg, "locked": locked, "saved": saved,
 			"ntfy_token_set": tokenSet, "ntfy_password_set": passwordSet, "ntfy_topic_set": topicSet,
 		}
-		if s.setupErr != nil {
-			body["setup_error"] = s.setupErr.Error()
+		if err := s.getSetupErr(); err != nil {
+			body["setup_error"] = err.Error()
+		}
+		if s.generation != "" {
+			body["generation"] = s.generation
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(body)
@@ -311,7 +315,8 @@ func (s *server) mux(q *queue) http.Handler {
 		// once at startup from the config, so applying this one means building them
 		// again. The restart waits for this response to be written before it closes the
 		// server.
-		json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": version, "restarting": s.restart != nil})
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": version,
+			"restarting": s.restart != nil, "generation": s.generation})
 		if s.restart != nil {
 			s.restart()
 		}
@@ -357,11 +362,14 @@ func (s *server) mux(q *queue) http.Handler {
 		}
 	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		if s.setupErr != nil {
+		if err := s.getSetupErr(); err != nil || s.notifier == nil {
+			if err == nil {
+				err = errors.New("starting")
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			json.NewEncoder(w).Encode(map[string]any{"status": "setup",
-				"reasons": []string{"not set up yet: " + s.setupErr.Error()}})
+				"reasons": []string{"not running: " + err.Error()}})
 			return
 		}
 		s.mu.Lock()

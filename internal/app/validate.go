@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"strconv"
 )
 
 var dbFileRe = regexp.MustCompile(`^[A-Za-z0-9._-]+\.csv$`)
@@ -111,8 +112,8 @@ func (c *Config) validate() error {
 
 	// Checked here because the web UI can save it: an address that does not parse would
 	// leave the restarted service unable to serve the page that could put it right.
-	if _, port, err := net.SplitHostPort(c.Listen); err != nil || port == "" {
-		return fmt.Errorf("listen: %q must be host:port or :port, such as :8080", c.Listen)
+	if _, port, err := net.SplitHostPort(c.Listen); err != nil || !validPort(port) {
+		return fmt.Errorf("listen: %q must be host:port or :port with a port from 1 to 65535, such as :8080", c.Listen)
 	}
 
 	if c.Source.MaxAge.Std() <= 0 {
@@ -254,4 +255,9 @@ func checkHTTPURL(name, raw string) error {
 		return fmt.Errorf("%s must be an absolute http(s) URL, got %q", name, raw)
 	}
 	return nil
+}
+
+func validPort(p string) bool {
+	n, err := strconv.Atoi(p)
+	return err == nil && n >= 1 && n <= 65535
 }

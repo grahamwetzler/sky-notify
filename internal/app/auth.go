@@ -104,7 +104,16 @@ func newAuth(envPassword string, store *SettingsStore) (*auth, error) {
 
 // reload picks up a password changed outside this process — `sky-notify
 // -reset-password` run through docker exec. A no-op under SKY_UI_PASSWORD.
+//
+// The read is made under a.mu, which setPassword holds while it writes: read outside it,
+// a password set between the read and the update would be overwritten by the state
+// before it, reopening the UI.
 func (a *auth) reload() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.mode == authEnv {
+		return nil
+	}
 	hash, chosen, err := a.store.UIPassword()
 	if err != nil {
 		return fmt.Errorf("ui password: %w", err)
@@ -116,9 +125,7 @@ func (a *auth) reload() error {
 	case hash == "":
 		mode = authOff
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.mode != authEnv && (a.mode != mode || a.password != hash) {
+	if a.mode != mode || a.password != hash {
 		a.setLocked(mode, hash)
 	}
 	return nil
@@ -150,10 +157,21 @@ func (a *auth) setLocked(mode authMode, password string) {
 }
 
 func (a *auth) state() authMode {
+	mode, _ := a.snapshot()
+	return mode
+}
+
+// snapshot is the mode and password as they stand, for a change to be made against with
+// setPasswordFrom.
+func (a *auth) snapshot() (authMode, string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.mode
+	return a.mode, a.password
 }
+
+// errPasswordMoved is a change refused because the password changed after the request
+// making it was checked.
+var errPasswordMoved = errors.New("the password was changed meanwhile; reload and try again")
 
 // required reports whether a request needs a session.
 func (a *auth) required() bool {
@@ -161,9 +179,20 @@ func (a *auth) required() bool {
 	return m == authStored || m == authEnv
 }
 
-// setPassword stores a new password, or none when password is empty. It refuses while
-// SKY_UI_PASSWORD is set, which would win over whatever is stored here.
+// setPassword stores a new password, or none when password is empty, whatever stands
+// now. It refuses while SKY_UI_PASSWORD is set, which would win over whatever is stored
+// here.
 func (a *auth) setPassword(password string) error {
+	mode, was := a.snapshot()
+	return a.setPasswordFrom(mode, was, password)
+}
+
+// setPasswordFrom is setPassword only if the password still stands as fromMode and
+// fromPassword — what the request was checked against. A request is checked, then its
+// body read, then it writes; a slow one would otherwise land on a password chosen in
+// between, so a stranger's stalled first-run "skip" could remove the operator's new
+// password.
+func (a *auth) setPasswordFrom(fromMode authMode, fromPassword, password string) error {
 	hash := ""
 	if password != "" {
 		var err error
@@ -175,6 +204,9 @@ func (a *auth) setPassword(password string) error {
 	defer a.mu.Unlock()
 	if a.mode == authEnv {
 		return fmt.Errorf("the password is set by %s; change or remove it there", uiPasswordEnv)
+	}
+	if a.mode != fromMode || a.password != fromPassword {
+		return errPasswordMoved
 	}
 	if err := a.store.SetUIPassword(hash); err != nil {
 		return err
@@ -449,7 +481,11 @@ func (a *auth) routes(mux *http.ServeMux) {
 				return
 			}
 		}
-		if err := a.setPassword(pw); err != nil {
+		// Only if nobody chose while this request was being read.
+		if err := a.setPasswordFrom(authUnset, "", pw); errors.Is(err, errPasswordMoved) {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		} else if err != nil {
 			serveLogin(w, http.StatusInternalServerError, loginView{Setup: true, Error: err.Error()})
 			return
 		}
@@ -471,7 +507,8 @@ func (a *auth) routes(mux *http.ServeMux) {
 			writeJSONError(w, http.StatusBadRequest, err)
 			return
 		}
-		switch a.state() {
+		mode, was := a.snapshot()
+		switch mode {
 		case authEnv:
 			writeJSONError(w, http.StatusConflict, fmt.Errorf("the password is set by %s; change or remove it there", uiPasswordEnv))
 			return
@@ -486,7 +523,11 @@ func (a *auth) routes(mux *http.ServeMux) {
 				return
 			}
 		}
-		if err := a.setPassword(body.Password); err != nil {
+		// Only if the password is still the one the request was checked against.
+		if err := a.setPasswordFrom(mode, was, body.Password); errors.Is(err, errPasswordMoved) {
+			writeJSONError(w, http.StatusConflict, err)
+			return
+		} else if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, err)
 			return
 		}

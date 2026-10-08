@@ -1832,7 +1832,7 @@ func TestSetupModeServesTheUIAndSaysWhy(t *testing.T) {
 		t.Fatal("an empty config validated")
 	}
 	h := (&server{live: NewLive(defaultAlerts()), db: &DB{}, store: store, setupErr: why}).mux(newQueue(1))
-	if w := get(h, "/healthz"); w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "not set up yet") {
+	if w := get(h, "/healthz"); w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "not running") {
 		t.Errorf("/healthz = %d %s, want 503 naming setup", w.Code, w.Body.String())
 	}
 	if w := get(h, "/api/alerts"); w.Code != http.StatusOK {
@@ -1853,7 +1853,7 @@ func TestSetupModeServesTheUIAndSaysWhy(t *testing.T) {
 
 func TestListenMustBeAnAddress(t *testing.T) {
 	c := testConfig(t)
-	for _, bad := range []string{"8080", "", "localhost"} {
+	for _, bad := range []string{"8080", "", "localhost", ":99999", ":0", ":http"} {
 		c.Listen = bad
 		if err := c.validate(); err == nil || !strings.Contains(err.Error(), "listen") {
 			t.Errorf("listen %q: err = %v, want refused", bad, err)
