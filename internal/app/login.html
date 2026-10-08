@@ -3,7 +3,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>Sign in · Sky Notify</title>
+<title>{{if .Setup}}Set up{{else}}Sign in{{end}} · Sky Notify</title>
 <style>
 /* The same font and tokens as ui.html, cut down to what this page uses. */
 @font-face{font-family:'Public Sans';font-style:normal;font-weight:400 700;font-display:swap;
@@ -43,6 +43,8 @@ input:focus-visible,button:focus-visible{outline:2px solid var(--acc);outline-of
 button{font:inherit;font-weight:600;cursor:pointer;padding:9px 13px;border:0;
   border-radius:var(--r);background:var(--acc);color:var(--acc-fg)}
 button:hover{filter:brightness(1.1)}
+button.quiet{background:none;color:var(--acc);border:1px solid var(--line2)}
+p{margin:0;font-size:13.5px;color:var(--fg2)}
 .err{margin:0;font-size:13px;color:var(--bad);background:var(--bad-soft);
   border:1px solid var(--bad-line);border-radius:6px;padding:8px 10px}
 </style>
@@ -50,11 +52,29 @@ button:hover{filter:brightness(1.1)}
 /* Follow the theme the main page remembered. */
 try { const t = localStorage.getItem('sky-notify-theme'); if (t) document.documentElement.dataset.theme = t; } catch {}
 </script>
+{{if .Setup}}
+<form method="post" action="/setup">
+  <h1>Welcome to Sky Notify</h1>
+  <p>Choose a password for this page. Without one, anyone who can reach it can change
+    your rules and read your ntfy and AI credentials.</p>
+  {{with .Error}}<p class="err" role="alert">{{.}}</p>{{end}}
+  <label>Password
+    <input type="password" name="password" autocomplete="new-password" autofocus>
+  </label>
+  <label>Confirm password
+    <input type="password" name="confirm" autocomplete="new-password">
+  </label>
+  <button type="submit">Set password</button>
+  <button type="submit" name="skip" value="1" class="quiet">Continue without a password</button>
+  <p>You can change this later in Settings.</p>
+</form>
+{{else}}
 <form method="post" action="/login">
   <h1>Sky Notify</h1>
-  <!--error-->
+  {{with .Error}}<p class="err" role="alert">{{.}}</p>{{end}}
   <label>Password
     <input type="password" name="password" autocomplete="current-password" required autofocus>
   </label>
   <button type="submit">Sign in</button>
 </form>
+{{end}}

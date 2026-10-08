@@ -1097,7 +1097,9 @@ func TestNoLegacyYAMLIsFine(t *testing.T) {
 
 func TestConfigUIRoundTrip(t *testing.T) {
 	store := newTestStore(t)
-	h := alertsHandler(t, store)
+	restarted := 0
+	h := (&server{live: NewLive(defaultAlerts()), db: &DB{}, store: store,
+		restart: func() { restarted++ }}).mux(newQueue(1))
 	want := testConfig(t)
 	body, err := json.Marshal(want)
 	if err != nil {
@@ -1109,14 +1111,15 @@ func TestConfigUIRoundTrip(t *testing.T) {
 		t.Fatalf("PUT status %d: %s", w.Code, w.Body.String())
 	}
 	var putResp struct {
-		OK              bool `json:"ok"`
-		RestartRequired bool `json:"restart_required"`
+		OK         bool `json:"ok"`
+		Restarting bool `json:"restarting"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&putResp); err != nil {
 		t.Fatal(err)
 	}
-	if !putResp.OK || !putResp.RestartRequired {
-		t.Fatalf("PUT response = %+v", putResp)
+	// A saved config applies itself: the service is rebuilt from it in place.
+	if !putResp.OK || !putResp.Restarting || restarted != 1 {
+		t.Fatalf("PUT response = %+v, restarted %d times, want once", putResp, restarted)
 	}
 
 	got, err := loadConfigFile(store)
@@ -1817,5 +1820,47 @@ func TestImportNullSectionIsTreatedAsAbsent(t *testing.T) {
 	}
 	if len(savedAlerts.Rules) != 1 || savedAlerts.Rules[0].Name != "watch" {
 		t.Fatalf("a null alerts section wiped the stored rules: %+v", savedAlerts.Rules)
+	}
+}
+
+// With a config that cannot run yet, the web UI is served alone and says why, so the
+// config can be finished there; health is honest that nothing is being watched.
+func TestSetupModeServesTheUIAndSaysWhy(t *testing.T) {
+	store := newTestStore(t)
+	why := defaultConfig().validate()
+	if why == nil {
+		t.Fatal("an empty config validated")
+	}
+	h := (&server{live: NewLive(defaultAlerts()), db: &DB{}, store: store, setupErr: why}).mux(newQueue(1))
+	if w := get(h, "/healthz"); w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "not set up yet") {
+		t.Errorf("/healthz = %d %s, want 503 naming setup", w.Code, w.Body.String())
+	}
+	if w := get(h, "/api/alerts"); w.Code != http.StatusOK {
+		t.Errorf("/api/alerts = %d, want the editor to load", w.Code)
+	}
+	w := get(h, "/api/config")
+	var body struct {
+		SetupError string `json:"setup_error"`
+		Saved      bool   `json:"saved"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.SetupError != why.Error() || body.Saved {
+		t.Errorf("/api/config = %+v, want setup_error %q and nothing saved", body, why)
+	}
+}
+
+func TestListenMustBeAnAddress(t *testing.T) {
+	c := testConfig(t)
+	for _, bad := range []string{"8080", "", "localhost"} {
+		c.Listen = bad
+		if err := c.validate(); err == nil || !strings.Contains(err.Error(), "listen") {
+			t.Errorf("listen %q: err = %v, want refused", bad, err)
+		}
+	}
+	c.Listen = "127.0.0.1:9000"
+	if err := c.validate(); err != nil {
+		t.Errorf("listen 127.0.0.1:9000: %v", err)
 	}
 }

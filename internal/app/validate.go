@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"math"
+	"net"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -50,11 +51,11 @@ func (c *Config) validate() error {
 		{"cache_dir", "SKY_CACHE_DIR", c.CacheDir},
 	} {
 		if r.val == "" {
-			return fmt.Errorf("%s is required (set %s)", r.name, r.env)
+			return fmt.Errorf("%s is required (set it in Settings, or with %s)", r.name, r.env)
 		}
 	}
 	if len(c.DB.Files) == 0 {
-		return fmt.Errorf("db.files is required (set SKY_DB_FILES)")
+		return fmt.Errorf("db.files is required (set it in Settings, or with SKY_DB_FILES)")
 	}
 	if len(c.ntfyTopic()) > 64 || !regexp.MustCompile(`^[A-Za-z0-9_-]+$`).MatchString(c.ntfyTopic()) {
 		return fmt.Errorf("ntfy.topic must be 1-64 chars of [A-Za-z0-9_-]")
@@ -106,6 +107,12 @@ func (c *Config) validate() error {
 			return fmt.Errorf("db.files: duplicate entry %q", f)
 		}
 		seen[f] = true
+	}
+
+	// Checked here because the web UI can save it: an address that does not parse would
+	// leave the restarted service unable to serve the page that could put it right.
+	if _, port, err := net.SplitHostPort(c.Listen); err != nil || port == "" {
+		return fmt.Errorf("listen: %q must be host:port or :port, such as :8080", c.Listen)
 	}
 
 	if c.Source.MaxAge.Std() <= 0 {

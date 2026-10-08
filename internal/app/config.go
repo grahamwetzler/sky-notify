@@ -367,6 +367,20 @@ func splitList(v string) []string {
 // LoadConfig applies defaults, then the stored document (if present), then the
 // environment. environ is passed in rather than read from os so tests can drive it.
 func LoadConfig(environ []string, store *SettingsStore) (*Config, error) {
+	cfg, err := loadConfigOverlaid(environ, store)
+	if err != nil {
+		return nil, err
+	}
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// loadConfigOverlaid is LoadConfig short of validating: the config the service would
+// run, which may not be complete yet. Startup serves the web UI alone on one that is not,
+// so it can be finished there.
+func loadConfigOverlaid(environ []string, store *SettingsStore) (*Config, error) {
 	env := environMap(environ)
 	cfg, err := loadConfigFile(store)
 	if err != nil {
@@ -376,9 +390,6 @@ func LoadConfig(environ []string, store *SettingsStore) (*Config, error) {
 		return nil, err
 	}
 	if err := applyConfigEnv(cfg, env); err != nil {
-		return nil, err
-	}
-	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
 	return cfg, nil

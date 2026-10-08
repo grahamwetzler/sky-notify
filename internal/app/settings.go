@@ -1,6 +1,7 @@
 package app
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"time"
@@ -27,6 +28,19 @@ func OpenSettings(path string) (*SettingsStore, error) {
 			data       TEXT NOT NULL,
 			version    INTEGER NOT NULL DEFAULT 1,
 			updated_at INTEGER NOT NULL
+		);
+		-- The web UI's password, one row once the operator has chosen. No row means
+		-- nobody has been asked yet; an empty hash means they chose to go without.
+		CREATE TABLE IF NOT EXISTS ui_auth (
+			id            INTEGER PRIMARY KEY CHECK (id = 1),
+			password_hash TEXT NOT NULL,
+			updated_at    INTEGER NOT NULL
+		);
+		-- The key session cookies are signed under, made once and kept so a restart
+		-- does not sign everyone out.
+		CREATE TABLE IF NOT EXISTS session_secret (
+			id     INTEGER PRIMARY KEY CHECK (id = 1),
+			secret BLOB NOT NULL
 		);
 	`); err != nil {
 		db.Close()
@@ -127,4 +141,47 @@ func (s *SettingsStore) PutMany(docs map[string]string) (versions map[string]int
 		return nil, err
 	}
 	return versions, nil
+}
+
+// UIPassword returns the stored password hash, and whether the operator has made a choice
+// at all: chosen with an empty hash is "no password", which is a different thing from
+// never having been asked.
+func (s *SettingsStore) UIPassword() (hash string, chosen bool, err error) {
+	err = s.db.QueryRow(`SELECT password_hash FROM ui_auth WHERE id = 1`).Scan(&hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return hash, true, nil
+}
+
+// SetUIPassword records the operator's choice; an empty hash means no password.
+func (s *SettingsStore) SetUIPassword(hash string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO ui_auth (id, password_hash, updated_at) VALUES (1, ?, ?)
+		ON CONFLICT (id) DO UPDATE SET password_hash = excluded.password_hash, updated_at = excluded.updated_at
+	`, hash, time.Now().UnixMilli())
+	return err
+}
+
+// ClearUIPassword forgets the operator's choice, so the web UI asks again as it did on
+// first run.
+func (s *SettingsStore) ClearUIPassword() error {
+	_, err := s.db.Exec(`DELETE FROM ui_auth`)
+	return err
+}
+
+// SessionSecret returns the cookie-signing secret, creating it on first use. INSERT OR
+// IGNORE then a read, so two first callers agree on one secret.
+func (s *SettingsStore) SessionSecret() ([]byte, error) {
+	if _, err := s.db.Exec(`INSERT OR IGNORE INTO session_secret (id, secret) VALUES (1, ?)`, rand.Text()); err != nil {
+		return nil, err
+	}
+	var secret []byte
+	if err := s.db.QueryRow(`SELECT secret FROM session_secret WHERE id = 1`).Scan(&secret); err != nil {
+		return nil, err
+	}
+	return secret, nil
 }

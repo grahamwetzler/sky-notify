@@ -5,33 +5,31 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
+    # Every setting can be made in the web UI instead; the first visit also asks you to
+    # choose a password for it. Anything set here wins and is locked in the UI.
     environment:
-      # --- required: nothing here has a default, the service refuses to start without it ---
       # Where to read aircraft from. An http(s) URL, or an absolute path if you
       # bind-mount the feeder's data directory. Point this at the feeder itself: if your
       # map sits behind a reverse proxy with auth, sky-notify sends no credentials.
-      SKY_SOURCE_URL: http://feeder.lan/data/aircraft.json
+      # SKY_SOURCE_URL: http://feeder.lan/data/aircraft.json
       # Which ntfy server, and the topic on it. On public ntfy.sh the topic name is
       # the only secret.
-      SKY_NTFY_URL: https://ntfy.sh
-      SKY_NTFY_TOPIC: your-secret-topic-name
+      # SKY_NTFY_URL: https://ntfy.sh
+      # SKY_NTFY_TOPIC: your-secret-topic-name
       # Which interesting-aircraft database to mirror, and which files from it.
-      SKY_DB_BASE_URL: https://raw.githubusercontent.com/sdr-enthusiasts/plane-alert-db/main
-      SKY_DB_FILES: plane-alert-db.csv
+      # SKY_DB_BASE_URL: https://raw.githubusercontent.com/sdr-enthusiasts/plane-alert-db/main
+      # SKY_DB_FILES: plane-alert-db.csv
       # Where the cached list and cooldown ledger live. Matches the volume below.
       SKY_CACHE_DIR: /data
-      # Password for the web UI. sky-notify itself runs without one, but then anyone
-      # who can reach the port can edit your rules and read your credentials, so this
-      # file requires it: put your own in a .env file beside this one
-      # (SKY_UI_PASSWORD=...) and Compose refuses to start until you do.
-      SKY_UI_PASSWORD: ${SKY_UI_PASSWORD:?set a password for the web UI in .env}
+      # Password for the web UI, instead of choosing one there. Keep it in a .env file
+      # beside this one (SKY_UI_PASSWORD=...) rather than in this file.
+      # SKY_UI_PASSWORD: ${SKY_UI_PASSWORD}
 
-      # --- optional ---
       # SKY_SOURCE_POLL_INTERVAL: 15s
       # SKY_NTFY_TOKEN: tk_...                   # or SKY_NTFY_USER + SKY_NTFY_PASSWORD
       # SKY_NTFY_PRIORITY: "3"
       # Makes each notification click through to your own map.
-      SKY_TAR1090_URL: https://adsb.example.com/
+      # SKY_TAR1090_URL: https://adsb.example.com/
       # SKY_COOLDOWN: 24h
       # SKY_LOG_LEVEL: info
 

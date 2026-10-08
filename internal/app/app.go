@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -41,11 +43,20 @@ func Main() {
 	configImport := flag.String("config-import", "", "load a JSON document exported by -config-export into the settings database and exit")
 	out := flag.String("out", "", "file to write -config-export to (default: stdout)")
 	redact := flag.Bool("redact", false, "with -config-export, blank ntfy and ai credentials")
+	resetPassword := flag.Bool("reset-password", false, "remove the web UI's password, so the next visit asks for a new one, and exit")
 	flag.Parse()
 
 	if *healthcheck {
 		if err := probeSelf(); err != nil {
 			fmt.Fprintln(os.Stderr, "unhealthy:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *resetPassword {
+		if err := runResetPassword(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
 		return
@@ -109,6 +120,27 @@ func runConfigCLI(doExport bool, importPath, out string, redact bool) error {
 	return importSettings(store, &doc, environMap(os.Environ()))
 }
 
+// runResetPassword is the way back in for an operator who has forgotten the password:
+// `docker exec <container> /sky-notify -reset-password`. It forgets the stored password
+// rather than setting a new one, so no password has to pass through a shell history; the
+// running service notices within a few seconds and the next visit to the page asks for a
+// new one, exactly as the first visit did.
+func runResetPassword(out io.Writer) error {
+	if os.Getenv(uiPasswordEnv) != "" {
+		return fmt.Errorf("the password is set by %s; change or remove it there and recreate the container", uiPasswordEnv)
+	}
+	store, err := OpenSettings(dbPath(environMap(os.Environ())))
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if err := store.ClearUIPassword(); err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "The web UI password is removed. Open the web UI within a few seconds to choose a new one.")
+	return nil
+}
+
 // writeFileAtomic writes data to a fresh, perm-moded file in path's directory and renames
 // it over path, so a reader never observes a partially written file nor one that briefly
 // carries path's old (possibly looser) permissions.
@@ -146,10 +178,37 @@ func run() error {
 		fmt.Fprintln(os.Stderr, "config error:", err)
 		os.Exit(1)
 	}
-
-	cfg, err := LoadConfig(os.Environ(), store)
+	// Built once, outside the restart loop below, so a restart neither forgets a
+	// password set a moment ago nor resets the login throttle.
+	a, err := newAuth(os.Getenv(uiPasswordEnv), store)
 	if err != nil {
-		// slog is not configured yet; this must still be legible.
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go a.watch(ctx.Done(), configPollInterval)
+
+	// Saving the startup config from the web UI restarts the service in place: every
+	// long-lived object below is built from it once, so the only way to apply a new one
+	// is to build them again.
+	for {
+		restart, err := serve(ctx, store, a)
+		if err != nil || !restart {
+			return err
+		}
+		slog.Info("restarting with the saved settings")
+	}
+}
+
+// serve runs the service until ctx is done, or until a config save asks for a restart,
+// which it reports. A config that is incomplete or does not work is not fatal: the web UI
+// is served on its own, saying what is wrong, so it can be put right from there.
+func serve(ctx context.Context, store *SettingsStore, a *auth) (restart bool, err error) {
+	cfg, err := loadConfigOverlaid(os.Environ(), store)
+	if err != nil {
+		// Only a malformed stored document or environment variable lands here; the
+		// web UI can fix neither.
 		fmt.Fprintln(os.Stderr, "config error:", err)
 		os.Exit(1)
 	}
@@ -165,15 +224,26 @@ func run() error {
 	var logLevel slog.LevelVar
 	logLevel.Set(parseLevel(alerts.LogLevel))
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: &logLevel})))
-	if cfg.Tar1090URL == "" {
-		slog.Warn("tar1090_url unset: notifications will carry no link to your map (set SKY_TAR1090_URL)")
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var restarting atomic.Bool
+	h := &server{live: live, store: store, auth: a, restart: func() {
+		restarting.Store(true)
+		cancel()
+	}}
+	if a.state() == authOff {
+		slog.Warn("the web UI has no password; set one in Settings")
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
+	if err := cfg.validate(); err != nil {
+		return serveSetup(runCtx, cfg, h, err, &restarting)
+	}
+	if cfg.Tar1090URL == "" {
+		slog.Warn("tar1090_url unset: notifications will carry no link to your map (set it in Settings)")
+	}
 	if err := os.MkdirAll(cfg.CacheDir, 0o755); err != nil {
-		return fmt.Errorf("cache dir %s: %w", cfg.CacheDir, err)
+		return serveSetup(runCtx, cfg, h, fmt.Errorf("cache dir %s: %w", cfg.CacheDir, err), &restarting)
 	}
 
 	httpClient := &http.Client{Timeout: 60 * time.Second}
@@ -183,12 +253,12 @@ func run() error {
 
 	notifier, err := NewNotifier(cfg)
 	if err != nil {
-		return err
+		return serveSetup(runCtx, cfg, h, err, &restarting)
 	}
 	// The signal context, not notifyCtx: the notifier needs to know when Ctrl-C was
 	// pressed so it can stop drawing maps, while still delivering on notifyCtx for the
 	// whole drain window below.
-	notifier.shutdown = ctx
+	notifier.shutdown = runCtx
 	if cfg.mapEnabled() {
 		tiles := newTileStore(httpClient, cfg.Map.TilesURL, cfg.CacheDir)
 		go tiles.prune()
@@ -205,7 +275,7 @@ func run() error {
 	notifier.live, notifier.aiClient = live, httpClient
 	if !alerts.aiEnabled() {
 		if asked := researchRules(alerts); len(asked) > 0 {
-			slog.Warn("rules ask for AI research but no provider is configured (set ai.url and ai.model in alerts.yaml, or SKY_AI_URL and SKY_AI_MODEL)",
+			slog.Warn("rules ask for AI research but no provider is configured (set it in Settings, or SKY_AI_URL and SKY_AI_MODEL)",
 				"rules", strings.Join(asked, ", "))
 		}
 	}
@@ -220,20 +290,17 @@ func run() error {
 		notifier.history = hist
 	}
 	source := NewSource(cfg, httpClient)
-	h := &server{live: live, db: db, state: state, notifier: notifier, history: hist, store: store}
-	if h.auth, err = newAuth(os.Getenv(uiPasswordEnv), cfg.CacheDir); err != nil {
-		return err
-	}
-	if h.auth == nil {
-		slog.Warn("the web UI has no password; set " + uiPasswordEnv + " to require one")
-	}
+	h.db, h.state, h.notifier, h.history = db, state, notifier, hist
 
 	// Cold start needs a complete list. Running with a partial or empty one would look
 	// healthy while silently matching nothing.
 	loadedFromCache := db.Load()
 	if !loadedFromCache {
-		if err := seedDB(ctx, db); err != nil {
-			return fmt.Errorf("no usable interesting-aircraft list: %w", err)
+		if err := seedDB(runCtx, db); err != nil {
+			if ctx.Err() != nil {
+				return false, nil
+			}
+			return serveSetup(runCtx, cfg, h, fmt.Errorf("no usable interesting-aircraft list: %w", err), &restarting)
 		}
 	}
 	// Whether the list came from cache or a cold-start fetch, refreshLoop owns every
@@ -242,7 +309,10 @@ func run() error {
 	refreshAtStart := loadedFromCache
 
 	q := newQueue(maxPending)
-	srv := &http.Server{Addr: cfg.Listen, Handler: h.mux(q)}
+	srv, err := listen(cfg.Listen, h.mux(q))
+	if err != nil {
+		return false, err
+	}
 
 	// The notifier gets its own cancellation so shutdown can stop producing and still
 	// drain what is already queued, rather than abandoning an in-flight emergency.
@@ -259,25 +329,18 @@ func run() error {
 	go func() {
 		defer wg.Done()
 		defer close(pollDone)
-		pollLoop(ctx, live, source, db, state, q, h)
+		pollLoop(runCtx, live, source, db, state, q, h)
 	}()
 	go func() { defer wg.Done(); notifyLoop(notifyCtx, live, notifier, state, q) }()
-	go func() { defer wg.Done(); refreshLoop(ctx, live, db, state, refreshAtStart) }()
+	go func() { defer wg.Done(); refreshLoop(runCtx, live, db, state, refreshAtStart) }()
 	go func() {
 		defer wg.Done()
-		watcher.run(ctx, live, os.Environ(), configPollInterval, func(c *Alerts) {
+		watcher.run(runCtx, live, os.Environ(), configPollInterval, func(c *Alerts) {
 			logLevel.Set(parseLevel(c.LogLevel))
 		})
 	}()
 
-	go func() {
-		slog.Info("listening", "addr", cfg.Listen)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("http server", "err", err)
-		}
-	}()
-
-	<-ctx.Done()
+	<-runCtx.Done()
 	slog.Info("shutting down")
 
 	// Wait for the producer to actually exit before sampling the queue, then give the
@@ -292,12 +355,54 @@ func run() error {
 	}
 	stopNotify()
 
-	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	srv.Shutdown(shutCtx)
+	shutdown(srv)
 	wg.Wait()
 	state.Flush(live.Get().Cooldown.Std())
-	return nil
+	return restarting.Load(), nil
+}
+
+// serveSetup serves the web UI alone, for a config that cannot run yet, until it is saved
+// (a restart) or the process is stopped.
+func serveSetup(ctx context.Context, cfg *Config, h *server, why error, restarting *atomic.Bool) (bool, error) {
+	slog.Warn("not running yet: open the web UI to finish setting up", "reason", why)
+	h.setupErr = why
+	// An empty list, so the rule editor still loads; nothing is matched against it.
+	if h.db == nil {
+		h.db = &DB{}
+	}
+	srv, err := listen(cfg.Listen, h.mux(newQueue(1)))
+	if err != nil {
+		return false, err
+	}
+	<-ctx.Done()
+	shutdown(srv)
+	return restarting.Load(), nil
+}
+
+// listen binds before returning, so an address already in use is an error here rather
+// than a log line from a goroutine while the process carries on serving nothing.
+func listen(addr string, handler http.Handler) (*http.Server, error) {
+	if addr == "" {
+		addr = defaultConfig().Listen
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("listen %s: %w", addr, err)
+	}
+	srv := &http.Server{Addr: addr, Handler: handler}
+	slog.Info("listening", "addr", addr)
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("http server", "err", err)
+		}
+	}()
+	return srv, nil
+}
+
+func shutdown(srv *http.Server) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	srv.Shutdown(ctx)
 }
 
 // probeSelf backs the container HEALTHCHECK: the distroless image has no shell, curl or
@@ -309,7 +414,7 @@ func probeSelf() error {
 	listen, loaded := defaultConfig().Listen, false
 	if store, err := OpenSettings(dbPath(environMap(os.Environ()))); err == nil {
 		defer store.Close()
-		if cfg, err := LoadConfig(os.Environ(), store); err == nil {
+		if cfg, err := loadConfigOverlaid(os.Environ(), store); err == nil && cfg.Listen != "" {
 			listen, loaded = cfg.Listen, true
 		}
 	}

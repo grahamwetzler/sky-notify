@@ -2,18 +2,21 @@ package app
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
-func authServer(t *testing.T, password, dir string) http.Handler {
+// authServer serves the UI behind password, given as SKY_UI_PASSWORD would give it.
+func authServer(t *testing.T, password string, store *SettingsStore) http.Handler {
 	t.Helper()
-	a, err := newAuth(password, dir)
+	a, err := newAuth(password, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,20 +54,23 @@ func sessionFrom(t *testing.T, w *httptest.ResponseRecorder) *http.Cookie {
 	return nil
 }
 
-// Without a password the server is exactly as open as it always was.
+// Choosing to go without a password leaves the server exactly as open as it always was.
 func TestNoPasswordLeavesTheUIOpen(t *testing.T) {
-	a, err := newAuth("", t.TempDir())
-	if a != nil || err != nil {
-		t.Fatalf("newAuth(\"\") = %v, %v; want nil, nil", a, err)
+	store := newTestStore(t)
+	if err := store.SetUIPassword(""); err != nil {
+		t.Fatal(err)
 	}
-	h := (&server{live: NewLive(defaultAlerts())}).mux(newQueue(1))
+	h := authServer(t, "", store)
 	if w := get(h, "/"); w.Code != http.StatusOK {
 		t.Fatalf("/ = %d, want 200", w.Code)
+	}
+	if w := get(h, "/login"); w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" {
+		t.Fatalf("/login = %d to %q, want a redirect to the app", w.Code, w.Header().Get("Location"))
 	}
 }
 
 func TestSignedOutVisitorsReachOnlyTheLoginPage(t *testing.T) {
-	h := authServer(t, "hunter2", t.TempDir())
+	h := authServer(t, "hunter2", newTestStore(t))
 	for _, path := range []string{"/", "/settings"} {
 		if w := get(h, path); w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/login" {
 			t.Errorf("%s = %d to %q, want a redirect to /login", path, w.Code, w.Header().Get("Location"))
@@ -87,7 +93,7 @@ func TestSignedOutVisitorsReachOnlyTheLoginPage(t *testing.T) {
 // The container HEALTHCHECK probes /healthz with no cookie; it must not be sent to
 // the login page.
 func TestHealthzNeedsNoSession(t *testing.T) {
-	a, err := newAuth("hunter2", t.TempDir())
+	a, err := newAuth("hunter2", newTestStore(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +104,7 @@ func TestHealthzNeedsNoSession(t *testing.T) {
 }
 
 func TestWrongPasswordIsRefused(t *testing.T) {
-	h := authServer(t, "hunter2", t.TempDir())
+	h := authServer(t, "hunter2", newTestStore(t))
 	w := login(t, h, "hunter3")
 	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), "not right") {
 		t.Fatalf("wrong password = %d, want 401 with the error shown", w.Code)
@@ -115,7 +121,7 @@ func TestWrongPasswordIsRefused(t *testing.T) {
 // A burst of simultaneous guesses from one client must not all be tested: the lockout
 // is taken before a guess is checked, so only one of them can be.
 func TestConcurrentGuessesAreCheckedOneAtATime(t *testing.T) {
-	a, err := newAuth("hunter2", t.TempDir())
+	a, err := newAuth("hunter2", newTestStore(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +132,7 @@ func TestConcurrentGuessesAreCheckedOneAtATime(t *testing.T) {
 
 // Many addresses guessing together are held to the overall cap.
 func TestGuessesFromManyClientsAreCapped(t *testing.T) {
-	a, err := newAuth("hunter2", t.TempDir())
+	a, err := newAuth("hunter2", newTestStore(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +163,7 @@ func guessAtOnce(a *auth, n int, client func(int) string) int {
 
 // A stranger guessing wrong must not lock the operator out.
 func TestOneClientsFailuresDoNotLockOutAnother(t *testing.T) {
-	h := authServer(t, "hunter2", t.TempDir())
+	h := authServer(t, "hunter2", newTestStore(t))
 	attempt := func(addr, pw string) int {
 		req := httptest.NewRequest(http.MethodPost, "/login",
 			strings.NewReader(url.Values{"password": {pw}}.Encode()))
@@ -186,8 +192,8 @@ func TestOneClientsFailuresDoNotLockOutAnother(t *testing.T) {
 // shared address locked out (everyone behind one reverse proxy) and the overall cap
 // spent (many addresses at once).
 func TestKnownDeviceSignsInDuringAnAttack(t *testing.T) {
-	dir := t.TempDir()
-	a, err := newAuth("hunter2", dir)
+	store := newTestStore(t)
+	a, err := newAuth("hunter2", store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,10 +249,10 @@ func TestKnownDeviceSignsInDuringAnAttack(t *testing.T) {
 // Another site's page must not be able to change settings through the viewer's
 // browser, whether or not the UI has a password.
 func TestCrossSiteWritesAreRefused(t *testing.T) {
-	dir := t.TempDir()
-	c := sessionFrom(t, login(t, authServer(t, "hunter2", dir), "hunter2"))
+	store := newTestStore(t)
+	c := sessionFrom(t, login(t, authServer(t, "hunter2", store), "hunter2"))
 	for name, h := range map[string]http.Handler{
-		"signed in": authServer(t, "hunter2", dir),
+		"signed in": authServer(t, "hunter2", store),
 		"open":      (&server{live: NewLive(defaultAlerts())}).mux(newQueue(1)),
 	} {
 		req := httptest.NewRequest(http.MethodPost, "/api/config/import", strings.NewReader(`{}`))
@@ -261,7 +267,7 @@ func TestCrossSiteWritesAreRefused(t *testing.T) {
 }
 
 func TestLoginOpensTheUIAndLogoutClosesIt(t *testing.T) {
-	h := authServer(t, "hunter2", t.TempDir())
+	h := authServer(t, "hunter2", newTestStore(t))
 	w := login(t, h, "hunter2")
 	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" {
 		t.Fatalf("login = %d to %q, want a redirect to /", w.Code, w.Header().Get("Location"))
@@ -287,9 +293,9 @@ func TestLoginOpensTheUIAndLogoutClosesIt(t *testing.T) {
 }
 
 func TestForgedAndExpiredSessionsAreRefused(t *testing.T) {
-	dir := t.TempDir()
-	h := authServer(t, "hunter2", dir)
-	a, _ := newAuth("hunter2", dir)
+	store := newTestStore(t)
+	h := authServer(t, "hunter2", store)
+	a, _ := newAuth("hunter2", store)
 
 	expired := &http.Cookie{Name: sessionCookie, Value: a.token(time.Now().Add(-time.Minute))}
 	forged := &http.Cookie{Name: sessionCookie, Value: "99999999999.AAAA"}
@@ -303,13 +309,13 @@ func TestForgedAndExpiredSessionsAreRefused(t *testing.T) {
 // The signing secret is kept on disk, so a restart keeps people signed in; the
 // password is part of the key, so changing it signs everyone out.
 func TestSessionsSurviveARestartButNotAPasswordChange(t *testing.T) {
-	dir := t.TempDir()
-	c := sessionFrom(t, login(t, authServer(t, "hunter2", dir), "hunter2"))
+	store := newTestStore(t)
+	c := sessionFrom(t, login(t, authServer(t, "hunter2", store), "hunter2"))
 
-	if w := get(authServer(t, "hunter2", dir), "/", c); w.Code != http.StatusOK {
+	if w := get(authServer(t, "hunter2", store), "/", c); w.Code != http.StatusOK {
 		t.Errorf("after restart = %d, want still signed in", w.Code)
 	}
-	if w := get(authServer(t, "correct horse", dir), "/", c); w.Code != http.StatusSeeOther {
+	if w := get(authServer(t, "correct horse", store), "/", c); w.Code != http.StatusSeeOther {
 		t.Errorf("after password change = %d, want signed out", w.Code)
 	}
 }
@@ -318,5 +324,163 @@ func TestSessionsSurviveARestartButNotAPasswordChange(t *testing.T) {
 func TestUIPasswordIsAKnownVariable(t *testing.T) {
 	if err := checkEnv(map[string]string{uiPasswordEnv: "hunter2"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// postForm posts a form to h, with cookies.
+func postForm(h http.Handler, path string, form url.Values, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	return w
+}
+
+func putPassword(h http.Handler, body string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPut, "/api/password", strings.NewReader(body))
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	return w
+}
+
+// The first visit, before anyone has chosen, is asked to choose; once a password is
+// set, it is what signs in, and it survives a restart.
+func TestFirstVisitSetsAPassword(t *testing.T) {
+	store := newTestStore(t)
+	h := authServer(t, "", store)
+	for _, path := range []string{"/", "/settings", "/login"} {
+		if w := get(h, path); w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/setup" && path != "/login" {
+			t.Errorf("%s before setup = %d to %q, want a redirect to /setup", path, w.Code, w.Header().Get("Location"))
+		}
+	}
+	if w := get(h, "/setup"); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `name="confirm"`) {
+		t.Fatalf("/setup = %d, want the form", w.Code)
+	}
+	if w := postForm(h, "/setup", url.Values{"password": {"hunter2"}, "confirm": {"hunter3"}}); w.Code != http.StatusBadRequest {
+		t.Fatalf("mismatched confirmation = %d, want 400", w.Code)
+	}
+	w := postForm(h, "/setup", url.Values{"password": {"hunter2"}, "confirm": {"hunter2"}})
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("setup = %d, want a redirect", w.Code)
+	}
+	c := sessionFrom(t, w)
+	if w := get(h, "/", c); w.Code != http.StatusOK {
+		t.Fatalf("/ with the session setup gave = %d, want 200", w.Code)
+	}
+	if w := get(h, "/setup"); w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" {
+		t.Fatalf("/setup once chosen = %d, want it gone", w.Code)
+	}
+	if w := postForm(h, "/setup", url.Values{"skip": {"1"}}); w.Code != http.StatusSeeOther {
+		t.Fatalf("second setup = %d", w.Code)
+	}
+	if w := get(h, "/"); w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/login" {
+		t.Fatalf("a second /setup must not undo the first: / = %d to %q", w.Code, w.Header().Get("Location"))
+	}
+
+	hash, _, _ := store.UIPassword()
+	if strings.Contains(hash, "hunter2") || !strings.HasPrefix(hash, "pbkdf2-sha256$") {
+		t.Fatalf("stored password = %q, want a hash", hash)
+	}
+	restarted := authServer(t, "", store)
+	if w := get(restarted, "/", c); w.Code != http.StatusOK {
+		t.Errorf("after restart = %d, want still signed in", w.Code)
+	}
+	if w := login(t, restarted, "hunter2"); w.Code != http.StatusSeeOther {
+		t.Errorf("login with the stored password = %d, want 303", w.Code)
+	}
+}
+
+func TestFirstVisitCanGoWithoutAPassword(t *testing.T) {
+	store := newTestStore(t)
+	h := authServer(t, "", store)
+	if w := postForm(h, "/setup", url.Values{"skip": {"1"}}); w.Code != http.StatusSeeOther {
+		t.Fatalf("skip = %d, want a redirect", w.Code)
+	}
+	if w := get(h, "/"); w.Code != http.StatusOK {
+		t.Fatalf("/ after skipping = %d, want the app", w.Code)
+	}
+	if w := get(authServer(t, "", store), "/"); w.Code != http.StatusOK {
+		t.Fatalf("/ after a restart = %d, want the choice remembered", w.Code)
+	}
+}
+
+// Settings changes the password, but only for someone who knows the current one, and
+// the change signs every other browser out.
+func TestPasswordIsChangedAndRemovedFromSettings(t *testing.T) {
+	store := newTestStore(t)
+	h := authServer(t, "", store)
+	if w := putPassword(h, `{"password":"hunter2"}`); w.Code != http.StatusOK {
+		t.Fatalf("set before anyone chose = %d: %s", w.Code, w.Body.String())
+	}
+	old := sessionFrom(t, login(t, h, "hunter2"))
+	if w := putPassword(h, `{"current":"wrong","password":"x"}`, old); w.Code != http.StatusForbidden {
+		t.Fatalf("change with the wrong current password = %d, want 403", w.Code)
+	}
+	time.Sleep(loginFailDelay)
+	w := putPassword(h, `{"current":"hunter2","password":"correct horse"}`, old)
+	if w.Code != http.StatusOK {
+		t.Fatalf("change = %d: %s", w.Code, w.Body.String())
+	}
+	fresh := sessionFrom(t, w)
+	if w := get(h, "/api/alerts", old); w.Code != http.StatusUnauthorized {
+		t.Errorf("old session after a change = %d, want 401", w.Code)
+	}
+	if w := get(h, "/", fresh); w.Code != http.StatusOK {
+		t.Errorf("the changing browser = %d, want still signed in", w.Code)
+	}
+	if w := putPassword(h, `{"current":"correct horse","password":""}`, fresh); w.Code != http.StatusOK {
+		t.Fatalf("remove = %d: %s", w.Code, w.Body.String())
+	}
+	if w := get(h, "/"); w.Code != http.StatusOK {
+		t.Fatalf("/ after removing = %d, want open", w.Code)
+	}
+}
+
+func TestEnvPasswordIsNotEditable(t *testing.T) {
+	store := newTestStore(t)
+	h := authServer(t, "hunter2", store)
+	c := sessionFrom(t, login(t, h, "hunter2"))
+	if w := putPassword(h, `{"current":"hunter2","password":"x"}`, c); w.Code != http.StatusConflict {
+		t.Fatalf("change under %s = %d, want 409", uiPasswordEnv, w.Code)
+	}
+	t.Setenv(uiPasswordEnv, "hunter2")
+	if err := runResetPassword(io.Discard); err == nil {
+		t.Fatal("-reset-password under the environment variable succeeded, want an error")
+	}
+}
+
+// -reset-password, run through docker exec, clears the password from beside the running
+// service, which notices and asks again as on the first visit.
+func TestResetPasswordReturnsToSetup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.db")
+	t.Setenv(envDBPathVar, path)
+	t.Setenv(uiPasswordEnv, "")
+	store, err := OpenSettings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	a, err := newAuth("", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.setPassword("forgotten"); err != nil {
+		t.Fatal(err)
+	}
+	h := (&server{live: NewLive(defaultAlerts()), auth: a}).mux(newQueue(1))
+	if err := runResetPassword(io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.reload(); err != nil {
+		t.Fatal(err)
+	}
+	if w := get(h, "/"); w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/setup" {
+		t.Fatalf("/ after a reset = %d to %q, want /setup", w.Code, w.Header().Get("Location"))
 	}
 }

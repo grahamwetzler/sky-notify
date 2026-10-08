@@ -17,7 +17,12 @@ type server struct {
 	notifier *Notifier
 	history  *History
 	store    *SettingsStore
-	auth     *auth // nil when the UI has no password
+	auth     *auth
+	// setupErr is why the service is not running, when it is serving the web UI alone
+	// for its config to be finished. db, state and notifier are nil then.
+	setupErr error
+	// restart applies a saved config by building the service again from it.
+	restart func()
 
 	mu            sync.Mutex
 	lastFreshPoll time.Time

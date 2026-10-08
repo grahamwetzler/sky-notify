@@ -34,7 +34,10 @@ aircraft is and, if you want it, a one-line AI summary of who it is and what it'
 - **Alert history.** See every notification a rule has sent.
 - **Cooldowns, priorities, and emergency squawks.** Get one alert per aircraft rather than
   repeats, and set ntfy priority per rule.
-- **Password-protected web UI.** Set `SKY_UI_PASSWORD` and the UI asks you to sign in.
+- **Configured from the web UI.** Every setting, from your feeder's URL to the ntfy
+  server, can be set in the browser. Environment variables are optional.
+- **Password-protected web UI.** The first visit asks you to choose a password (or go
+  without one), and you can change it later in Settings.
 - **Backup and restore.** Export all your rules and settings to a file and import them later.
 - **Lightweight.** A single small Go binary in one container, for amd64 and arm64.
 
@@ -59,16 +62,6 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
-    environment:
-      SKY_SOURCE_URL: http://ultrafeeder/data/aircraft.json
-      SKY_NTFY_URL: https://ntfy.sh
-      SKY_NTFY_TOPIC: your-secret-topic-name
-      SKY_DB_BASE_URL: https://raw.githubusercontent.com/sdr-enthusiasts/plane-alert-db/main
-      SKY_DB_FILES: plane-alert-db.csv
-      SKY_CACHE_DIR: /data
-      SKY_LAT: "38.8895"     # your receiver's location
-      SKY_LON: "-77.0100"
-      SKY_UI_PASSWORD: ${SKY_UI_PASSWORD:?set a password for the web UI in .env}
     volumes:
       - sky-notify-data:/data
       - sky-notify-config:/config
@@ -80,40 +73,59 @@ volumes:
 
 Then:
 
-1. Choose a password for the web UI and put it in a `.env` file next to the compose file:
-   `SKY_UI_PASSWORD=<your own password>`. Docker Compose won't start sky-notify without it.
-2. Run `docker compose up -d`.
-3. Subscribe to your topic in the [ntfy app](https://ntfy.sh). On public ntfy.sh anyone who
+1. Run `docker compose up -d`.
+2. Open `http://<your-server>:8080`. The first visit asks you to choose a password for
+   the web UI. You can also continue without one.
+3. In Settings, fill in your feeder's `aircraft.json` URL and an ntfy topic, then save.
+   The other fields start with sensible defaults. sky-notify restarts itself with the new
+   settings.
+4. Subscribe to your topic in the [ntfy app](https://ntfy.sh). On public ntfy.sh anyone who
    knows the topic name can read it, so pick something hard to guess.
-4. Open `http://<your-server>:8080`, sign in with your password, and add some
-   rules. **Nothing alerts until a rule matches.** Try "In the interesting aircraft
-   database" to start.
+5. Add some rules. **Nothing alerts until a rule matches.** Try "In the interesting
+   aircraft database" to start.
 
-See [`docker-compose.yml`](docker-compose.yml) for a fuller example and
+If you'd rather configure it in the compose file, see
+[`docker-compose.yml`](docker-compose.yml) for every environment variable, and
 [`config.example.json`](config.example.json) for a starter set of rules.
+
+### Forgot the password?
+
+```sh
+docker exec sky-notify /sky-notify -reset-password
+```
+
+This removes the stored password. Within a few seconds, the next visit to the web UI asks
+you to choose a new one, just like the first visit. Until someone does, the UI is open, so
+do it straight away.
 
 ## Configuration
 
-Most settings live in the web UI. These environment variables cover the rest:
+Everything can be set in the web UI's Settings page. Each setting can also be given as an
+environment variable, which then wins and locks that field in the UI. Settings marked *
+must be set one way or the other; until they are, sky-notify serves only the web UI so you
+can fill them in.
 
 | Variable | Default | |
 |---|---|---|
-| `SKY_SOURCE_URL` | required | URL or file path of your feeder's `aircraft.json` |
-| `SKY_NTFY_URL` | required | `https://ntfy.sh` or your own ntfy server |
-| `SKY_NTFY_TOPIC` | required | the topic to publish to |
-| `SKY_DB_BASE_URL` | required | where to download plane-alert-db from |
-| `SKY_DB_FILES` | required | which database files to use, comma-separated |
-| `SKY_CACHE_DIR` | required | where to keep the cached database and alert history |
-| `SKY_UI_PASSWORD` | | password for the web UI; without it the UI is open to anyone who can reach it |
+| `SKY_SOURCE_URL` * | | URL or file path of your feeder's `aircraft.json` |
+| `SKY_NTFY_URL` * | | `https://ntfy.sh` or your own ntfy server |
+| `SKY_NTFY_TOPIC` * | | the topic to publish to |
+| `SKY_DB_BASE_URL` * | | where to download plane-alert-db from |
+| `SKY_DB_FILES` * | | which database files to use, comma-separated |
+| `SKY_CACHE_DIR` * | | where to keep the cached database and alert history |
+| `SKY_UI_PASSWORD` | | password for the web UI, instead of the one chosen in the UI |
 | `SKY_LAT` / `SKY_LON` | | your receiver's location, needed for distance and flyover rules |
 | `SKY_NTFY_TOKEN` | | ntfy access token (or `SKY_NTFY_USER` + `SKY_NTFY_PASSWORD`) |
 | `SKY_TAR1090_URL` | | makes notifications link to the aircraft on your tar1090 map |
 | `SKY_COOLDOWN` | `24h` | how long to wait before alerting on the same aircraft again |
 | `SKY_MAP_ENABLED` | `true` | attach a map to each notification |
-| `SKY_AI_URL` / `SKY_AI_MODEL` / `SKY_AI_KEY` | | AI research provider (can also be set in the UI) |
+| `SKY_AI_URL` / `SKY_AI_MODEL` / `SKY_AI_KEY` | | AI research provider |
 | `SKY_LISTEN` | `:8080` | address for the web UI and `/healthz` |
+| `SKY_CONFIG_DB` | `/config/config.db` | where the settings are stored (environment only) |
 
-A setting made through an environment variable is locked in the web UI.
+Saving the service settings (feed, ntfy, database, map, storage and network) restarts
+sky-notify in place to apply them. Rules and the other settings take effect within a few
+seconds without a restart.
 
 sky-notify serves plain HTTP, so the password is sent unencrypted. That's fine on a home
 network you trust; anywhere else, put it behind a reverse proxy that serves HTTPS (Caddy,

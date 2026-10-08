@@ -363,8 +363,9 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 <div class="shell">
   <div class="msg warn" id="open-warn" hidden>
     <strong>This page has no password.</strong> Anyone who can reach it can change your rules
-    and read your ntfy and AI credentials. Set <code>SKY_UI_PASSWORD</code> to require a sign-in.
+    and read your ntfy and AI credentials. Set one in Settings to require a sign-in.
   </div>
+  <div class="msg warn" id="setup-warn" hidden role="status"></div>
   <div class="msg bad" id="msg" hidden role="alert"></div>
 
   <nav class="list" aria-label="Rules">
@@ -533,6 +534,14 @@ const saveBtn = el('button', 'btn primary', 'Save');
 saveBtn.id = 'save';
 saveBtn.type = 'button';
 saveBtn.disabled = true;
+/* The startup config — where aircraft come from, where notifications go — edited beside
+   the alerts document but saved on its own, since saving it restarts the service.
+   Secrets (the ntfy topic, token and password) are never sent here, only whether each
+   is stored; cfgEdited names the ones typed into, which are the only ones a save sends. */
+let cfgDoc = null, cfgLocks = {}, cfgSet = {}, cfgEdited = new Set(), cfgDirty = false;
+let cfgSaved = false, setupError = '', authMode = 'none', cfgListen = '';
+/* What was typed in the password boxes, kept off the DOM so a repaint cannot lose it. */
+const pwDraft = {current: '', next: '', confirm: ''};
 let sel = 0;            // rule index, or 'settings'
 let prevSel = 0;        // rule index to return to when settings is closed
 let dirty = false;
@@ -2014,6 +2023,9 @@ function renderSettings(pane) {
     pane.append(sec);
   };
 
+  /* While setup is unfinished, what it is missing comes first. */
+  if (setupError) serviceBands(pane);
+
   band('Receiver', 'Needed for distance and predicted-pass conditions. Leave blank if no rule uses one.', [
     {key: 'lat', label: 'Latitude', type: 'number', step: 'any', min: -90, max: 90},
     {key: 'lon', label: 'Longitude', type: 'number', step: 'any', min: -180, max: 180},
@@ -2041,12 +2053,15 @@ function renderSettings(pane) {
      fallback: builtinPrompt, resettable: true},
   ], true);
 
+  if (!setupError) serviceBands(pane);
+  pane.append(passwordBand());
+
   const backup = el('div', 'group');
   const bh = el('div', 'group-h');
   const bt = el('div', 'group-t');
   bt.append(el('h3', 'lbl', 'Backup'));
   bt.append(el('p', 'help',
-    'Save every rule and setting below to a file, or load them from one. The AI API key is never included — import keeps whatever key is already configured.'));
+    'Save every rule and alert setting to a file, or load them from one. The AI API key, the service settings and the password are not included — import keeps what is already configured.'));
   bh.append(bt);
   backup.append(bh);
   const brow = el('div', 'btn-row');
@@ -2154,6 +2169,231 @@ async function importAlerts(file) {
   } catch (err) {
     message(err.message, 'bad');
   }
+}
+
+/* ── Service settings ─────────────────────────────────────────────────────
+   The startup config. Each band is the same shape as the alert settings above, but its
+   fields edit cfgDoc, and saving them restarts sky-notify to apply them. */
+const SUGGESTED = {
+  'ntfy.url': 'https://ntfy.sh',
+  'db.base_url': 'https://raw.githubusercontent.com/sdr-enthusiasts/plane-alert-db/main',
+  'db.files': ['plane-alert-db.csv'],
+  'cache_dir': '/data',
+};
+function serviceBands(pane) {
+  const band = (title, help, fields) => {
+    const sec = el('div', 'group');
+    const gh = el('div', 'group-h'), t = el('div', 'group-t');
+    t.append(el('h3', 'lbl', title));
+    if (help) t.append(el('p', 'help', help));
+    gh.append(t);
+    sec.append(gh);
+    const grid = el('div', 'fields');
+    for (const f of fields) grid.append(configField(f));
+    sec.append(grid);
+    pane.append(sec);
+  };
+  const restarts = 'Saving a change here restarts sky-notify.';
+  band('Aircraft feed', restarts, [
+    {key: 'source.url', label: 'aircraft.json URL or path', placeholder: 'http://ultrafeeder/data/aircraft.json',
+     help: "Your feeder's aircraft.json: an http(s) URL, or an absolute path to the file."},
+    {key: 'source.max_age', label: 'Treat as stale after', placeholder: '1m'},
+  ]);
+  band('ntfy', 'Where notifications are published. ' + restarts, [
+    {key: 'ntfy.url', label: 'Server', placeholder: 'https://ntfy.sh'},
+    {key: 'ntfy.topic', label: 'Topic', secret: true, required: true,
+     help: 'On public ntfy.sh anyone who knows the topic can read it, so pick something hard to guess.'},
+    {key: 'ntfy.token', label: 'Access token', secret: true, help: 'Or a user and password, not both.'},
+    {key: 'ntfy.user', label: 'User'},
+    {key: 'ntfy.password', label: 'Password', secret: true},
+  ]);
+  band('Interesting aircraft database', restarts, [
+    {key: 'db.base_url', label: 'Download from', placeholder: SUGGESTED['db.base_url']},
+    {key: 'db.files', label: 'Files', placeholder: 'plane-alert-db.csv',
+     help: 'Comma-separated.',
+     get: d => (d.db?.files || []).join(', '),
+     set: (d, v) => { d.db.files = v.split(',').map(x => x.trim()).filter(Boolean); }},
+  ]);
+  band('Map and links', restarts, [
+    {key: 'map.enabled', label: 'Map in each notification', options: [['true', 'On'], ['false', 'Off']],
+     get: d => d.map?.enabled === false ? 'false' : 'true',
+     set: (d, v) => { d.map.enabled = v === 'true'; }},
+    {key: 'map.tiles_url', label: 'Map tiles', placeholder: 'https://tiles.openfreemap.org/planet'},
+    {key: 'tar1090_url', label: 'tar1090 map', placeholder: 'https://adsb.example.com/',
+     help: 'Makes each notification link to the aircraft on your map.'},
+  ]);
+  band('Storage and network', restarts, [
+    {key: 'cache_dir', label: 'Cache directory', placeholder: '/data',
+     help: 'Where the aircraft database, cooldowns and alert history are kept.'},
+    {key: 'listen', label: 'Listen address', placeholder: ':8080',
+     help: 'Changing the port moves this page: open it again at the new address.'},
+  ]);
+}
+
+function configField(f) {
+  const wrap = el('label', 'field');
+  wrap.append(el('span', 'lbl', f.label));
+  const input = f.options ? el('select') : el('input');
+  if (f.options) for (const [v, t] of f.options) input.append(new Option(t, v));
+  else {
+    input.type = f.secret ? 'password' : 'text';
+    if (f.secret) input.autocomplete = 'off';
+    if (f.placeholder) input.placeholder = f.placeholder;
+  }
+  input.id = 'cfg-' + f.key;
+  const read = f.get || (d => at(d, f.key));
+  const value = read(cfgDoc);
+  input.value = value === null || value === undefined ? '' : String(value);
+  /* A secret is never sent to this page, so the box starts empty whether or not one is
+     stored; the placeholder says which. */
+  if (f.secret && !cfgEdited.has(f.key))
+    input.placeholder = cfgSet[f.key] ? '•••••••• stored — type to replace' : 'Not set';
+
+  const lock = cfgLocks[f.key];
+  if (lock) {
+    input.disabled = true;
+    input.value = lock.value ?? '';
+    if (lock.value === undefined) input.placeholder = '••••••••';
+    if (f.options && !f.options.some(([v]) => v === input.value)) {
+      input.add(new Option(lock.value, lock.value), input.firstChild);
+      input.value = lock.value;
+    }
+    wrap.append(input, el('span', 'help lock', 'Set by ' + lock.env + ' environment variable.'));
+    return wrap;
+  }
+  input.oninput = () => {
+    if (f.secret) cfgEdited.add(f.key);
+    if (f.set) f.set(cfgDoc, input.value); else put(cfgDoc, f.key, input.value);
+    markConfigDirty();
+  };
+  wrap.append(input);
+  /* Typing is what arms a secret for the save, so clearing a stored one — which the empty
+     box cannot say on its own — is a button. A topic is required, so it has none. */
+  if (f.secret && !f.required && cfgSet[f.key] && !cfgEdited.has(f.key)) {
+    const clear = el('button', 'mini', 'Clear stored ' + f.label.toLowerCase());
+    clear.type = 'button';
+    clear.onclick = e => {
+      e.preventDefault();
+      put(cfgDoc, f.key, '');
+      cfgEdited.add(f.key);
+      cfgSet[f.key] = false;
+      markConfigDirty();
+      renderPane();
+    };
+    wrap.append(clear);
+  }
+  if (f.help) wrap.append(el('span', 'help', f.help));
+  return wrap;
+}
+
+function markConfigDirty() {
+  cfgDirty = true;
+  markDirty();
+}
+
+/* The config as it will be PUT: a secret nobody typed into is left out, which is the
+   server's cue to keep the stored one. */
+function payloadConfig() {
+  const out = structuredClone(cfgDoc);
+  for (const k of ['ntfy.topic', 'ntfy.token', 'ntfy.password'])
+    if (!cfgEdited.has(k)) delete at(out, k.split('.')[0])[k.split('.')[1]];
+  return out;
+}
+
+/* ── The web UI's password ────────────────────────────────────────────────
+   Applied at once rather than with Save: it is not part of either document, and a
+   password that waited for an unrelated save would be easy to think was set. */
+function passwordBand() {
+  const sec = el('div', 'group');
+  const gh = el('div', 'group-h'), t = el('div', 'group-t');
+  t.append(el('h3', 'lbl', 'Web UI password'));
+  const has = authMode === 'password';
+  t.append(el('p', 'help', authMode === 'env'
+    ? 'Set by the SKY_UI_PASSWORD environment variable. Change or remove it there.'
+    : has
+      ? 'Signing in is required. Changing the password signs out every other browser. '
+        + 'Forgotten it? Run docker exec <container> /sky-notify -reset-password.'
+      : 'This page is open to anyone who can reach it. Set a password to require a sign-in.'));
+  gh.append(t);
+  sec.append(gh);
+  if (authMode === 'env') return sec;
+
+  const grid = el('div', 'fields');
+  const box = (key, label, auto) => {
+    const wrap = el('label', 'field');
+    wrap.append(el('span', 'lbl', label));
+    const input = el('input');
+    input.type = 'password';
+    input.id = 'pw-' + key;
+    input.autocomplete = auto;
+    input.value = pwDraft[key];
+    input.oninput = () => { pwDraft[key] = input.value; };
+    wrap.append(input);
+    grid.append(wrap);
+  };
+  if (has) box('current', 'Current password', 'current-password');
+  box('next', has ? 'New password' : 'Password', 'new-password');
+  box('confirm', 'Confirm', 'new-password');
+  sec.append(grid);
+
+  const row = el('div', 'btn-row');
+  const setBtn = el('button', 'btn', has ? 'Change password' : 'Set password');
+  setBtn.type = 'button';
+  setBtn.onclick = () => {
+    if (!pwDraft.next) return message('Enter the new password.', 'bad');
+    if (pwDraft.next !== pwDraft.confirm) return message('The two passwords do not match.', 'bad');
+    changePassword(pwDraft.next);
+  };
+  row.append(setBtn);
+  if (has) {
+    const rm = el('button', 'btn danger', 'Remove password');
+    rm.type = 'button';
+    rm.onclick = () => {
+      if (!confirm('Remove the password? Anyone who can reach this page will be able to use it.')) return;
+      changePassword('');
+    };
+    row.append(rm);
+  }
+  sec.append(row);
+  return sec;
+}
+
+async function changePassword(password) {
+  try {
+    const res = await fetch('/api/password', {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({current: pwDraft.current, password}),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw Error(body.error || `Could not change the password (HTTP ${res.status}).`);
+    pwDraft.current = pwDraft.next = pwDraft.confirm = '';
+    authMode = body.auth ? 'password' : 'none';
+    paintAuth();
+    renderPane();
+    message(body.auth ? 'Password saved. Other browsers will need to sign in with it.' : 'Password removed.', 'good');
+  } catch (err) {
+    message(err.message, 'bad');
+  }
+}
+
+function paintAuth() {
+  const signIn = authMode === 'password' || authMode === 'env';
+  $('#logout').hidden = !signIn;
+  $('#open-warn').hidden = signIn;
+}
+
+/* After a config save the service rebuilds itself, which takes from a moment to the
+   length of a database download. Asked until it answers again. */
+async function waitForRestart() {
+  await new Promise(r => setTimeout(r, 1000));
+  for (let i = 0; i < 180; i++) {
+    try {
+      const res = await fetch('/api/config');
+      if (res.ok) return true;
+    } catch { /* still restarting */ }
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  return false;
 }
 
 function settingField(f) {
@@ -2592,6 +2832,27 @@ async function save() {
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw Error(body.error || `Save failed (HTTP ${res.status}).`);
+    /* Alerts first: the config save restarts the server, and a request sent after it
+       would land on one shutting down. */
+    if (cfgDirty) {
+      const moved = cfgDoc.listen !== cfgListen;
+      const cres = await fetch('/api/config', {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payloadConfig()),
+      });
+      const cbody = await cres.json().catch(() => ({}));
+      if (!cres.ok) throw Error(cbody.error || `Saving the service settings failed (HTTP ${cres.status}).`);
+      cfgDirty = false;
+      dirty = false;
+      if (moved) {
+        message('Saved. sky-notify is restarting on ' + cfgDoc.listen + ' — open this page again there.', 'good');
+        b.textContent = 'Saved';
+        return;
+      }
+      message('Saved. Restarting sky-notify with the new settings…', 'warn');
+      b.textContent = 'Restarting…';
+      if (!await waitForRestart()) throw Error('sky-notify has not come back after the restart. Check its log.');
+    }
     message('Saved. The change takes effect within five seconds.', 'good');
     dirty = false;
     b.classList.add('done');
@@ -2605,15 +2866,40 @@ async function save() {
 }
 
 async function load() {
-  const res = await fetch('/api/alerts');
-  if (!res.ok) {
+  const [res, cres] = await Promise.all([fetch('/api/alerts'), fetch('/api/config')]);
+  for (const r of [res, cres]) if (!r.ok) {
     let detail;
-    try { detail = (await res.json()).error; } catch {}
-    throw Error(detail || `Could not load your settings (HTTP ${res.status}).`);
+    try { detail = (await r.json()).error; } catch {}
+    throw Error(detail || `Could not load your settings (HTTP ${r.status}).`);
   }
-  const body = await res.json();
-  $('#logout').hidden = !body.auth;
-  $('#open-warn').hidden = body.auth;
+  const body = await res.json(), cbody = await cres.json();
+  authMode = body.auth_mode || (body.auth ? 'password' : 'none');
+  paintAuth();
+  cfgDoc = cbody.config;
+  cfgLocks = Object.fromEntries((cbody.locked || []).map(l => [l.key, l]));
+  cfgSet = {'ntfy.topic': cbody.ntfy_topic_set, 'ntfy.token': cbody.ntfy_token_set,
+    'ntfy.password': cbody.ntfy_password_set};
+  cfgEdited = new Set();
+  cfgDirty = false;
+  cfgSaved = cbody.saved === true;
+  cfgListen = cfgDoc.listen;
+  setupError = cbody.setup_error || '';
+  const warn = $('#setup-warn');
+  warn.hidden = !setupError;
+  warn.textContent = setupError
+    ? 'sky-notify is not running yet: ' + setupError + '. Fill in the service settings and save.' : '';
+  /* A first run starts from the usual public services rather than from blank boxes;
+     nothing is kept until it is saved. */
+  if (setupError && !cfgSaved) {
+    for (const [k, v] of Object.entries(SUGGESTED)) {
+      const cur = at(cfgDoc, k);
+      if (!cfgLocks[k] && (cur === undefined || cur === null || cur === '' || (Array.isArray(cur) && !cur.length))) {
+        put(cfgDoc, k, structuredClone(v));
+        cfgDirty = true;
+      }
+    }
+    if (sel !== 'settings') { prevSel = sel; sel = 'settings'; document.body.dataset.view = 'detail'; }
+  }
   doc = body.alerts;
   doc.rules = doc.rules || [];
   vocab = body.vocabulary || {};
@@ -2630,6 +2916,7 @@ async function load() {
      its deliveries under, and is the only one history can be asked for. */
   doc.rules.forEach((r, i) => { meta(r).key = meta(r).savedKey = keys[i] || ''; });
   if (sel !== 'settings' && sel > doc.rules.length - 1) sel = Math.max(0, doc.rules.length - 1);
+  if (cfgDirty) markDirty();
   renderList();
   renderPane();
   /* Every rule is previewed on arrival: a rule that has quietly stopped matching

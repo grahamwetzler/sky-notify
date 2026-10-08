@@ -47,8 +47,11 @@ database. That preview loop is the thing a plain YAML editor cannot do.
 - `alerts.yaml` remains authoritative and hand-editable. Environment variables win over the
   file; the UI shows which fields are locked by an env var and disables them.
 - Saved changes are picked up on the next 5-second reload tick. Comments do not survive a save.
-- Startup-only settings (`config.yaml`: feeder URL, ntfy credentials, db mirror, cache dir)
-  are deliberately **not** editable here.
+- Startup settings (feeder URL, ntfy credentials, db mirror, cache dir, listen address) are
+  editable here too. Saving them restarts the service in place. Until the required ones
+  are set, the service serves only this UI, so a first run needs no environment variables.
+- The UI password is chosen on the first visit (or skipped), changed in Settings, and
+  reset with `sky-notify -reset-password`. `SKY_UI_PASSWORD` overrides it.
 
 ## Capabilities and Constraints
 

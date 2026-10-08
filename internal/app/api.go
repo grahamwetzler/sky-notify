@@ -94,7 +94,8 @@ func (s *server) mux(q *queue) http.Handler {
 			"alerts": alerts, "locked": locked,
 			"rule_keys": keys, "vocabulary": s.db.Vocabulary(), "feed_types": s.feedTypes(),
 			"ai_key_set": keySet, "research_prompt_default": alerts.effectiveResearchPrompt(),
-			"research_prompt_builtin": defaultResearchPrompt, "auth": s.auth != nil,
+			"research_prompt_builtin": defaultResearchPrompt,
+			"auth":                    s.auth != nil && s.auth.required(), "auth_mode": s.authMode(),
 		})
 	})
 	mux.HandleFunc("POST /api/preview", func(w http.ResponseWriter, r *http.Request) {
@@ -243,11 +244,20 @@ func (s *server) mux(q *queue) http.Handler {
 		}
 		tokenSet, passwordSet, topicSet := cfg.ntfyToken() != "", cfg.ntfyPassword() != "", cfg.ntfyTopic() != ""
 		cfg.Ntfy.Token, cfg.Ntfy.Password, cfg.Ntfy.Topic = nil, nil, nil
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"config": cfg, "locked": locked,
+		_, _, saved, err := s.store.Get("config")
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err)
+			return
+		}
+		body := map[string]any{
+			"config": cfg, "locked": locked, "saved": saved,
 			"ntfy_token_set": tokenSet, "ntfy_password_set": passwordSet, "ntfy_topic_set": topicSet,
-		})
+		}
+		if s.setupErr != nil {
+			body["setup_error"] = s.setupErr.Error()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(body)
 	})
 	mux.HandleFunc("PUT /api/config", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
@@ -298,9 +308,13 @@ func (s *server) mux(q *queue) http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		// The live process objects (httpClient, DB, tile store, notifier) are built
-		// once at startup from the config LoadConfig read then; saving here has no
-		// effect until the process restarts, same as the config file always required.
-		json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": version, "restart_required": true})
+		// once at startup from the config, so applying this one means building them
+		// again. The restart waits for this response to be written before it closes the
+		// server.
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": version, "restarting": s.restart != nil})
+		if s.restart != nil {
+			s.restart()
+		}
 	})
 	mux.HandleFunc("GET /api/config/export", func(w http.ResponseWriter, r *http.Request) {
 		redact := r.URL.Query().Get("redact") == "true"
@@ -332,13 +346,24 @@ func (s *server) mux(q *queue) http.Handler {
 			}
 		}
 		resp := map[string]any{"ok": true}
-		if len(doc.Config) > 0 {
-			resp["restart_required"] = true
+		restart := len(doc.Config) > 0 && !isJSONNull(doc.Config) && s.restart != nil
+		if restart {
+			resp["restarting"] = true
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
+		if restart {
+			s.restart()
+		}
 	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		if s.setupErr != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]any{"status": "setup",
+				"reasons": []string{"not set up yet: " + s.setupErr.Error()}})
+			return
+		}
 		s.mu.Lock()
 		lastPoll, pollErr, aircraft := s.lastFreshPoll, s.lastPollErr, s.aircraft
 		s.mu.Unlock()
@@ -405,4 +430,21 @@ func writeJSONError(w http.ResponseWriter, status int, err error) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+}
+
+// authMode names the password's state for the page: "env" (SKY_UI_PASSWORD, not
+// editable here), "password", "none", or "unset" (nobody has chosen yet).
+func (s *server) authMode() string {
+	if s.auth == nil {
+		return "none"
+	}
+	switch s.auth.state() {
+	case authEnv:
+		return "env"
+	case authStored:
+		return "password"
+	case authOff:
+		return "none"
+	}
+	return "unset"
 }

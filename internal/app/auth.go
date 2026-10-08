@@ -3,17 +3,18 @@ package app
 import (
 	"bytes"
 	"crypto/hmac"
+	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
+	"html/template"
+	"log/slog"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,54 +42,184 @@ const (
 	loginFailsPerSecond = 20
 	// Past this many clients locked out at once, expired entries are swept.
 	lockoutSweepAt = 1024
+	// The cost of hashing a stored password. Every check of it holds the throttle lock,
+	// so it is kept to tens of milliseconds on a Raspberry Pi; the throttle, not the
+	// hash, is what stops guessing over the network.
+	pbkdf2Iterations = 100_000
 )
 
-// auth guards the web UI and its API behind one shared password. A nil *auth is an
-// open server, which is what an unset SKY_UI_PASSWORD means.
+// authMode is where the UI's password stands.
+type authMode int
+
+const (
+	// authUnset: nobody has chosen yet. A page load is sent to /setup to choose; the
+	// API is open meanwhile, since there is no password to ask for.
+	authUnset authMode = iota
+	// authOff: the operator chose to go without a password.
+	authOff
+	// authStored: a password set from the UI, kept hashed in the settings database.
+	authStored
+	// authEnv: SKY_UI_PASSWORD, which wins over the stored one and is not editable here.
+	authEnv
+)
+
+// auth guards the web UI and its API behind one shared password, which can be set,
+// changed and removed while the service runs.
 type auth struct {
-	password []byte
-	// key signs session cookies. It is derived from a random secret kept on disk and
-	// the password together: the secret keeps sessions valid across a restart, and the
-	// password in it means changing the password signs everyone out.
-	key []byte
-	// mu guards the throttle state, and is held across the comparison itself: checked
+	store  *SettingsStore
+	secret []byte
+
+	// mu guards everything below. It is held across a password check itself: checked
 	// outside it, a burst of concurrent guesses would all be tested before the first
 	// failure could shut the door.
-	mu          sync.Mutex
+	mu   sync.Mutex
+	mode authMode
+	// password is the plaintext for authEnv, or the stored hash for authStored.
+	password string
+	// key signs session cookies. It is derived from the secret and the password
+	// together: the secret keeps sessions valid across a restart, and the password in it
+	// means changing the password signs everyone out.
+	key         []byte
 	lockedUntil map[string]time.Time // by loginClient, or by device
 	windowStart time.Time
 	windowFails int
 }
 
-// newAuth returns nil when password is empty. secretDir holds the signing secret,
-// created on first use.
-func newAuth(password, secretDir string) (*auth, error) {
-	if password == "" {
-		return nil, nil
-	}
-	secret, err := sessionSecret(filepath.Join(secretDir, "session.key"))
+// newAuth takes the password from envPassword when it is set, or else from the store.
+func newAuth(envPassword string, store *SettingsStore) (*auth, error) {
+	secret, err := store.SessionSecret()
 	if err != nil {
+		return nil, fmt.Errorf("session secret: %w", err)
+	}
+	a := &auth{store: store, secret: secret, lockedUntil: map[string]time.Time{}}
+	if envPassword != "" {
+		a.setLocked(authEnv, envPassword)
+		return a, nil
+	}
+	if err := a.reload(); err != nil {
 		return nil, err
 	}
-	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(password))
-	return &auth{password: []byte(password), key: mac.Sum(nil), lockedUntil: map[string]time.Time{}}, nil
+	return a, nil
 }
 
-func sessionSecret(path string) ([]byte, error) {
-	b, err := os.ReadFile(path)
-	if err == nil && len(b) >= 32 {
-		return b, nil
+// reload picks up a password changed outside this process — `sky-notify
+// -reset-password` run through docker exec. A no-op under SKY_UI_PASSWORD.
+func (a *auth) reload() error {
+	hash, chosen, err := a.store.UIPassword()
+	if err != nil {
+		return fmt.Errorf("ui password: %w", err)
 	}
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("session secret: %w", err)
+	mode := authStored
+	switch {
+	case !chosen:
+		mode = authUnset
+	case hash == "":
+		mode = authOff
 	}
-	b = make([]byte, 32)
-	rand.Read(b)
-	if err := os.WriteFile(path, b, 0o600); err != nil {
-		return nil, fmt.Errorf("session secret: %w", err)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.mode != authEnv && (a.mode != mode || a.password != hash) {
+		a.setLocked(mode, hash)
 	}
-	return b, nil
+	return nil
+}
+
+// watch reloads the stored password every interval until ctx is done.
+func (a *auth) watch(done <-chan struct{}, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-t.C:
+			if err := a.reload(); err != nil {
+				slog.Warn("could not re-read the UI password", "err", err)
+			}
+		}
+	}
+}
+
+// setLocked switches the password. a.mu must be held, or a not yet shared.
+func (a *auth) setLocked(mode authMode, password string) {
+	a.mode, a.password = mode, password
+	mac := hmac.New(sha256.New, a.secret)
+	mac.Write([]byte(password))
+	a.key = mac.Sum(nil)
+	clear(a.lockedUntil)
+}
+
+func (a *auth) state() authMode {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.mode
+}
+
+// required reports whether a request needs a session.
+func (a *auth) required() bool {
+	m := a.state()
+	return m == authStored || m == authEnv
+}
+
+// setPassword stores a new password, or none when password is empty. It refuses while
+// SKY_UI_PASSWORD is set, which would win over whatever is stored here.
+func (a *auth) setPassword(password string) error {
+	hash := ""
+	if password != "" {
+		var err error
+		if hash, err = hashPassword(password); err != nil {
+			return err
+		}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.mode == authEnv {
+		return fmt.Errorf("the password is set by %s; change or remove it there", uiPasswordEnv)
+	}
+	if err := a.store.SetUIPassword(hash); err != nil {
+		return err
+	}
+	mode := authOff
+	if hash != "" {
+		mode = authStored
+	}
+	a.setLocked(mode, hash)
+	return nil
+}
+
+func hashPassword(pw string) (string, error) {
+	salt := make([]byte, 16)
+	rand.Read(salt)
+	sum, err := pbkdf2.Key(sha256.New, pw, salt, pbkdf2Iterations, 32)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("pbkdf2-sha256$%d$%s$%s", pbkdf2Iterations,
+		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(sum)), nil
+}
+
+// matchesLocked reports whether pw is the password. a.mu must be held.
+func (a *auth) matchesLocked(pw string) bool {
+	switch a.mode {
+	case authEnv:
+		// Hash both sides so the comparison does not leak the password's length.
+		got, want := sha256.Sum256([]byte(pw)), sha256.Sum256([]byte(a.password))
+		return subtle.ConstantTimeCompare(got[:], want[:]) == 1
+	case authStored:
+		parts := strings.Split(a.password, "$")
+		if len(parts) != 4 || parts[0] != "pbkdf2-sha256" {
+			return false
+		}
+		iter, err1 := strconv.Atoi(parts[1])
+		salt, err2 := base64.RawStdEncoding.DecodeString(parts[2])
+		want, err3 := base64.RawStdEncoding.DecodeString(parts[3])
+		if err1 != nil || err2 != nil || err3 != nil {
+			return false
+		}
+		got, err := pbkdf2.Key(sha256.New, pw, salt, iter, len(want))
+		return err == nil && subtle.ConstantTimeCompare(got, want) == 1
+	}
+	return false
 }
 
 // token is "<expiry unix>.<signature>".
@@ -105,7 +236,10 @@ func (a *auth) deviceToken(exp time.Time) string {
 }
 
 func (a *auth) sign(s string) string {
-	mac := hmac.New(sha256.New, a.key)
+	a.mu.Lock()
+	key := a.key
+	a.mu.Unlock()
+	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(s))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
@@ -166,6 +300,15 @@ func loginClient(r *http.Request) string {
 	return ip.String()
 }
 
+// throttleKey is who r's password guesses are counted against, and whether that is a
+// browser that has signed in before.
+func (a *auth) throttleKey(r *http.Request) (client string, known bool) {
+	if d, ok := a.device(r); ok {
+		return "device " + d, true
+	}
+	return loginClient(r), false
+}
+
 // checkPassword throttles by client. A known device, one with a valid device cookie,
 // is left out of the overall cap: it has proved the password once already.
 func (a *auth) checkPassword(client string, known bool, pw string) loginResult {
@@ -183,9 +326,7 @@ func (a *auth) checkPassword(client string, known bool, pw string) loginResult {
 			return loginThrottled
 		}
 	}
-	// Hash both sides so the comparison does not leak the password's length.
-	got, want := sha256.Sum256([]byte(pw)), sha256.Sum256(a.password)
-	if subtle.ConstantTimeCompare(got[:], want[:]) == 1 {
+	if a.matchesLocked(pw) {
 		delete(a.lockedUntil, client)
 		return loginOK
 	}
@@ -207,6 +348,12 @@ func setSession(w http.ResponseWriter, r *http.Request, value string, maxAge int
 	setCookie(w, r, sessionCookie, "/", value, maxAge)
 }
 
+// signIn gives the browser a session, and marks it as one that has signed in before.
+func (a *auth) signIn(w http.ResponseWriter, r *http.Request) {
+	setSession(w, r, a.token(time.Now().Add(sessionTTL)), int(sessionTTL.Seconds()))
+	setCookie(w, r, deviceCookie, "/", a.deviceToken(time.Now().Add(deviceTTL)), int(deviceTTL.Seconds()))
+}
+
 func setCookie(w http.ResponseWriter, r *http.Request, name, path, value string, maxAge int) {
 	http.SetCookie(w, &http.Cookie{
 		Name: name, Value: value, Path: path, MaxAge: maxAge,
@@ -216,59 +363,156 @@ func setCookie(w http.ResponseWriter, r *http.Request, name, path, value string,
 	})
 }
 
-// routes adds the login and logout endpoints.
-func (a *auth) routes(mux *http.ServeMux) {
-	page, _ := uiFS.ReadFile("login.html")
-	serveLogin := func(w http.ResponseWriter, status int, msg string) {
-		b := page
-		if msg != "" {
-			b = bytes.Replace(page, []byte("<!--error-->"),
-				[]byte(`<p class="err" role="alert">`+msg+`</p>`), 1)
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
-		w.WriteHeader(status)
-		w.Write(b)
+var loginPage = template.Must(template.ParseFS(uiFS, "login.html"))
+
+// loginView is what login.html renders: the sign-in form, or with Setup the first-run
+// choice of a password.
+type loginView struct {
+	Setup bool
+	Error string
+}
+
+func serveLogin(w http.ResponseWriter, status int, v loginView) {
+	var b bytes.Buffer
+	if err := loginPage.Execute(&b, v); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	w.Write(b.Bytes())
+}
+
+// routes adds the login, logout, first-run and password endpoints.
+func (a *auth) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /login", func(w http.ResponseWriter, r *http.Request) {
-		if a.valid(r) {
+		if !a.required() || a.valid(r) {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
 		}
-		serveLogin(w, http.StatusOK, "")
+		serveLogin(w, http.StatusOK, loginView{})
 	})
 	mux.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
-		client, known := loginClient(r), false
-		if d, ok := a.device(r); ok {
-			client, known = "device "+d, true
+		if !a.required() {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
 		}
+		client, known := a.throttleKey(r)
 		switch a.checkPassword(client, known, r.PostFormValue("password")) {
 		case loginWrong:
-			serveLogin(w, http.StatusUnauthorized, "That password is not right.")
+			serveLogin(w, http.StatusUnauthorized, loginView{Error: "That password is not right."})
 			return
 		case loginThrottled:
-			serveLogin(w, http.StatusTooManyRequests, "Too many attempts. Wait a moment and try again.")
+			serveLogin(w, http.StatusTooManyRequests, loginView{Error: "Too many attempts. Wait a moment and try again."})
 			return
 		}
-		setSession(w, r, a.token(time.Now().Add(sessionTTL)), int(sessionTTL.Seconds()))
-		setCookie(w, r, deviceCookie, "/login", a.deviceToken(time.Now().Add(deviceTTL)), int(deviceTTL.Seconds()))
+		a.signIn(w, r)
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	})
 	mux.HandleFunc("POST /logout", func(w http.ResponseWriter, r *http.Request) {
 		setSession(w, r, "", -1)
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 	})
+	// The first visit, before anyone has chosen: set a password, or go without one.
+	// Once chosen this page is gone; Settings changes it from then on.
+	mux.HandleFunc("GET /setup", func(w http.ResponseWriter, r *http.Request) {
+		if a.state() != authUnset {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+		serveLogin(w, http.StatusOK, loginView{Setup: true})
+	})
+	mux.HandleFunc("POST /setup", func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+		if a.state() != authUnset {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+		pw := ""
+		if r.PostFormValue("skip") == "" {
+			pw = r.PostFormValue("password")
+			if pw == "" {
+				serveLogin(w, http.StatusBadRequest, loginView{Setup: true, Error: "Enter a password, or continue without one."})
+				return
+			}
+			if pw != r.PostFormValue("confirm") {
+				serveLogin(w, http.StatusBadRequest, loginView{Setup: true, Error: "The two passwords do not match."})
+				return
+			}
+		}
+		if err := a.setPassword(pw); err != nil {
+			serveLogin(w, http.StatusInternalServerError, loginView{Setup: true, Error: err.Error()})
+			return
+		}
+		if pw != "" {
+			a.signIn(w, r)
+		}
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+	})
+	// Sets, changes or removes the password from Settings. Changing an existing one
+	// needs it, under the same throttle as signing in: a session left open on a shared
+	// machine must not be enough to lock its owner out.
+	mux.HandleFunc("PUT /api/password", func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+		var body struct {
+			Current  string `json:"current"`
+			Password string `json:"password"`
+		}
+		if err := decodeStrict(r.Body, &body); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err)
+			return
+		}
+		switch a.state() {
+		case authEnv:
+			writeJSONError(w, http.StatusConflict, fmt.Errorf("the password is set by %s; change or remove it there", uiPasswordEnv))
+			return
+		case authStored:
+			client, known := a.throttleKey(r)
+			switch a.checkPassword(client, known, body.Current) {
+			case loginWrong:
+				writeJSONError(w, http.StatusForbidden, errors.New("the current password is not right"))
+				return
+			case loginThrottled:
+				writeJSONError(w, http.StatusTooManyRequests, errors.New("too many attempts; wait a moment and try again"))
+				return
+			}
+		}
+		if err := a.setPassword(body.Password); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err)
+			return
+		}
+		// The new password signs every other browser out; this one stays in.
+		if body.Password != "" {
+			a.signIn(w, r)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "auth": body.Password != ""})
+	})
 }
 
-// guard lets through only what a signed-out visitor may reach: the login page, the
-// font it uses, and /healthz, which the container's own HEALTHCHECK calls with no
-// cookie. The API answers 401 so the page can send itself to the login screen; a page
-// load is redirected there directly.
+// guard lets through only what a signed-out visitor may reach: the login and setup
+// pages, the font they use, and /healthz, which the container's own HEALTHCHECK calls
+// with no cookie. The API answers 401 so the page can send itself to the login screen;
+// a page load is redirected there directly. Before anyone has chosen a password, a page
+// load goes to /setup to choose one.
 func (a *auth) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/login", "/logout", "/healthz", "/public-sans.woff2":
+		case "/login", "/logout", "/setup", "/healthz", "/public-sans.woff2":
+			next.ServeHTTP(w, r)
+			return
+		}
+		switch a.state() {
+		case authOff:
+			next.ServeHTTP(w, r)
+			return
+		case authUnset:
+			if r.Method == http.MethodGet && !strings.HasPrefix(r.URL.Path, "/api/") {
+				http.Redirect(w, r, "/setup", http.StatusSeeOther)
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
